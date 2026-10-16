@@ -9,6 +9,9 @@ What is read for a shared repository (a GET each; GraphQL is the one POST on the
   - open pull requests                     REST, ETag; this is where a teammate's fork shows up (head repository)
   - claim comments of #148                 REST, ETag, only for issues labelled ccboard:in-progress, parsed by nodes_epics.parse_claim; absent is fine
   - linked branches, closing issues, recent branch tips with their author: one GraphQL query per repository, slowly (GQL_S), earlier only when the REST lists changed.
+  - open issues with NO assignee (issue #200, Team P4)  REST, one page of 100, ETag, at most every OPEN_S seconds per repository, only after the repository's own read worked and only
+    while the whole hour's budget keeps FILES_RESERVE points for the core reads. They feed the free issues of the Team view and nothing else; only the number, title, label names
+    and date of an issue are kept (the body is dropped before the answer is cached), and a pull request GitHub lists among the issues is left out.
   - the files a teammate's open or draft pull request changes (issue #199, Team P3): a GET of /pulls/{n}/files per pull request, only for a pull request that is not the owner's own,
     only when it is new or its `updated_at` moved (or, rarely, to revalidate with the ETag), at most FILES_PRS_MAX pull requests and FILES_PAGES pages of 100 each, and at most
     FILES_BUDGET points an hour of the poll's BUDGET_PER_HOUR. The lists feed app/team.py's warnings; nothing is written.
@@ -62,7 +65,9 @@ FILES_PAGES = 2                   # pages of 100 files a pull request: 200 names
 FILES_PER_CYCLE = 3               # pages one REST cycle of one repository may read (a slow poll: the lists fill in over a few cycles)
 FILES_REVALIDATE_S = 1800.0       # a list whose pull request did not move is asked again (an ETag, so a 304) this often
 FILES_BUDGET = 100               # points an hour of the poll's BUDGET_PER_HOUR that changed-file reads may spend (they count in the whole budget too)
-FILES_RESERVE = 100              # points of the whole hour's budget that changed-file reads leave to the core reads: they stop when fewer than this would remain
+OPEN_S = 600.0                    # seconds between two reads of one repository's unassigned open issues (conditional: a 304 changes nothing)
+OPEN_MAX = 100                    # one page only; a full page marks the list as cut
+FILES_RESERVE = 100             # points of the whole hour's budget that changed-file reads leave to the core reads: they stop when fewer than this would remain
 
 REASON_STATE = {"sso": "sso", "no_access": "no_access", "not_found": "not_found", "rate_limited": "rate_limited", "no_login": "no_login", "no_gh": "no_gh"}
 HARD = ("sso", "no_access", "not_found", "no_login", "no_gh")
@@ -213,6 +218,14 @@ def _labels(it) -> list[str]:
     return out
 
 
+def _is_bot(a) -> bool:
+    """An app GitHub lists among the assignees (type Bot, or a login ending in [bot]) is not a teammate."""
+    if not isinstance(a, dict):
+        return False
+    login = a.get("login")
+    return a.get("type") == "Bot" or (isinstance(login, str) and login.lower().endswith("[bot]"))
+
+
 def parse_issues(items) -> list[dict]:
     """The open issues somebody is assigned to: a pull request GitHub lists among the issues is left out (it comes from the pull list)."""
     out = []
@@ -220,12 +233,26 @@ def parse_issues(items) -> list[dict]:
         if not isinstance(it, dict) or "pull_request" in it or team.PRESENCE_LABEL in _labels(it):
             continue                                                       # a pull request comes from the pull list; the presence status issue (issue #198) is not work
         n = team.number_of(it.get("number"))
-        who = [u for u in (team.user_of(a) for a in (it.get("assignees") or [])[:10]) if u] if isinstance(it.get("assignees"), list) else []
+        who = [u for u in (team.user_of(a) for a in (it.get("assignees") or [])[:10] if not _is_bot(a)) if u] if isinstance(it.get("assignees"), list) else []
         if n is None or not who:
             continue
         out.append({"number": n, "title": team.text(it.get("title")), "labels": _labels(it), "assignees": who, "updated_at": team.iso_of(it.get("updated_at"))})
         if len(out) >= ISSUES_MAX:
             break
+    return out
+
+
+def parse_open_issues(items) -> list[dict]:
+    """The open issues nobody is assigned to (issue #200): number, title, label names and date. A pull request GitHub lists among the issues is left out; the presence status issue is
+    left to app/team.py, which never offers it as work."""
+    out = []
+    for it in items[:OPEN_MAX] if isinstance(items, list) else []:
+        if not isinstance(it, dict) or "pull_request" in it:
+            continue
+        n = team.number_of(it.get("number"))
+        if n is None:
+            continue
+        out.append({"number": n, "title": team.text(it.get("title")), "labels": _labels(it), "updated_at": team.iso_of(it.get("updated_at"))})
     return out
 
 
@@ -271,6 +298,7 @@ def parse_graph(data) -> dict | None:
     if not isinstance(repo, dict):
         return None
     linked, closes, tips = {}, {}, []
+    n_issues, n_pulls = len((repo.get("issues") or {}).get("nodes") or []), len((repo.get("pullRequests") or {}).get("nodes") or [])
     for it in ((repo.get("issues") or {}).get("nodes") or [])[:60]:
         n = team.number_of(it.get("number")) if isinstance(it, dict) else None
         if n is None:
@@ -293,7 +321,7 @@ def parse_graph(data) -> dict | None:
     cost = rl.get("cost") if isinstance(rl.get("cost"), int) and not isinstance(rl.get("cost"), bool) and 0 < rl.get("cost") < 1000 else 1
     rem = rl.get("remaining") if isinstance(rl.get("remaining"), int) and not isinstance(rl.get("remaining"), bool) and rl.get("remaining") >= 0 else None
     return {"linked": linked, "closes": closes, "tips": tips[:TIPS_KEEP], "tips_truncated": bool((refs.get("pageInfo") or {}).get("hasNextPage")) or len(tips) > TIPS_KEEP,
-            "cost": cost, "remaining": rem}
+            "full": {"issues": n_issues >= team.GQL_WINDOW, "pulls": n_pulls >= team.GQL_WINDOW}, "cost": cost, "remaining": rem}
 
 
 def parse_claims(comments, issue: int, server_now: float | None) -> list[dict]:
@@ -319,8 +347,9 @@ def parse_claims(comments, issue: int, server_now: float | None) -> list[dict]:
 
 def new_read(slug: str) -> dict:
     return {"slug": slug, "status": "pending", "reason": None, "message": None, "wait_s": None, "read_at": None, "gql_at": None, "private": None, "fork": None,
-            "default_branch": None, "issues": [], "pulls": [], "linked": {}, "tips": [], "claims": [], "closes": {}, "claims_at": 0.0, "graph_error": None,
-            "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None, "pull_files": {}}
+            "default_branch": None, "issues": [], "pulls": [], "linked": {}, "tips": [], "claims": [], "closes": {}, "claims_at": 0.0, "graph_error": None, "gql_full": {"issues": False, "pulls": False},
+            "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None, "pull_files": {},
+            "open_issues": None, "open_truncated": False, "open_at": None}
 
 
 def parse_pull_files(data) -> tuple[list[str], bool]:
@@ -428,6 +457,7 @@ class Poller:
         self.wakeup = threading.Event()
         self.thread: threading.Thread | None = None
         self.pause_fn = pause or (lambda s: self.stop_ev.wait(s))
+        self.on_read = None                         # issue #200: called as on_read(key, entry) after a repository was read; the change detection of app/main.py, which only looks at the read
         self.loaded = False
         self.pmem: dict[tuple, dict] = {}           # (repository key, person id, board nid) -> {seq, seen_at, moved}: what the presence reads saw, on GitHub's clock
         self.verdicts: dict[tuple, bool] = {}       # (comment id, updated_at) -> last edited by its owner (or never edited)
@@ -436,7 +466,8 @@ class Poller:
     def snapshot(self) -> dict[str, dict]:
         with self.lock:
             return {k: {**v, "issues": list(v["issues"]), "pulls": list(v["pulls"]), "tips": list(v["tips"]), "claims": list(v["claims"]), "linked": dict(v["linked"]),
-                        "truncated": dict(v["truncated"]), "pull_files": dict(v.get("pull_files") or {})} for k, v in self.reads.items()}
+                        "truncated": dict(v["truncated"]), "gql_full": dict(v.get("gql_full") or {}), "pull_files": dict(v.get("pull_files") or {}),
+                        "open_issues": list(v["open_issues"]) if isinstance(v.get("open_issues"), list) else None} for k, v in self.reads.items()}
 
     def entries(self) -> list[dict]:
         shared = self.db.team_shared()
@@ -485,6 +516,7 @@ class Poller:
             for k in keys:
                 self.reads.pop(k, None)
                 self.sched.pop(k, None)
+                team.watch.forget(k)                    # issue #200: a repository switched back on starts from a new baseline
 
     def drop_meta(self, members) -> None:
         for m in members:
@@ -539,6 +571,7 @@ class Poller:
             for k in [k for k in self.reads if k not in live]:
                 self.reads.pop(k, None)
                 self.sched.pop(k, None)
+                team.watch.forget(k)
             if not entries:
                 return 30.0
             due = []
@@ -701,6 +734,7 @@ class Poller:
         with self.lock:
             self.reads.pop(e["key"], None)
             self.sched.pop(e["key"], None)
+            team.watch.forget(e["key"])                                    # the old key's baseline goes with its read
             self.sched[ck] = {"rest": 0.0, "gql": 0.0, "gql_last": -1e9}
 
     def _cycle(self, e: dict, now: float) -> None:
@@ -768,12 +802,18 @@ class Poller:
                 sc["gql"] = now + SOFT_RETRY_S                                     # a hiccup of the GraphQL read alone: ask again soon, the repository stays ok
             if graph is not None:
                 with self.lock:
-                    rd.update(gql_at=self.wall(), linked=graph["linked"], tips=graph["tips"], closes=graph["closes"], graph_error=None)
+                    rd.update(gql_at=self.wall(), linked=graph["linked"], tips=graph["tips"], closes=graph["closes"], graph_error=None, gql_full=graph["full"])
                     rd["truncated"]["tips"] = graph["tips_truncated"]
                     rd["pulls"] = parse_pulls(pulls_raw, f"{o}/{n}", graph["closes"]) if pulls_raw else rd["pulls"]
                     sc["gql_last"] = now
                     sc["gql"] = now + GQL_S * self._factor()
-            self._files_stage(o, n, rd, now)                                                          # issue #199: the changed files of teammates' pull requests, last and slowest
+            if self.on_read is not None:
+                try:
+                    self.on_read(key, e)                                                              # issue #200: tells nobody anything by itself; it reads this snapshot and decides
+                except Exception as ex:                                                               # a failing watcher never stops the poll
+                    log.warning("team watch failed: %s", ex.__class__.__name__)
+            self._open_stage(o, n, rd, sc, now)                                                       # issue #200: the unassigned open issues, slowly, for the free issues of the Team view
+            self._files_stage(o, n, rd, now)                                                        # issue #199: the changed files of teammates' pull requests, last and slowest
         except _Defer as d:
             sc["rest"] = now + d.wait
         except _Low as low:
@@ -781,16 +821,44 @@ class Poller:
         except github.GhReadError as err:
             self._fail(key, err, now)
 
-    def _files_room(self) -> bool:
-        """May one more changed-files page be read now? Only when GitHub has not asked anyone on this login to wait, the remainder is not low, the files' own share of the hour is
-        not spent and the poll's whole budget keeps FILES_RESERVE points for the core reads after this one. Never raises: the files are the last thing a cycle does and the first thing to wait."""
+    def _spare_room(self) -> bool:
+        """May one more read that is not a core read be made now? Only when GitHub has not asked anyone on this login to wait, the remainder is not low and the poll's whole budget keeps
+        FILES_RESERVE points for the core reads after this one. Never raises."""
         now = self.mono()
         if self.reader.wait_left() > 0 or github.reader.wait_left() > 0:
             return False
         rem = self._remaining()
         if rem is not None and rem < STOP_BELOW:
             return False
-        return self.files_budget.room(now, 1) and self.budget.room(now, 1 + FILES_RESERVE)
+        return self.budget.room(now, 1 + FILES_RESERVE)
+
+    def _files_room(self) -> bool:
+        """May one more changed-files page be read now? The spare-room rule above and the files' own share of the hour not spent. Never raises: the files are the last thing a cycle
+        does and the first thing to wait."""
+        return self._spare_room() and self.files_budget.room(self.mono(), 1)
+
+    def _open_stage(self, o: str, n: str, rd: dict, sc: dict, now: float) -> None:
+        """Read the open issues nobody is assigned to (issue #200), one page of OPEN_MAX, at most every OPEN_S seconds (longer under a low remainder). It runs after the repository's own read
+        worked and after the core reads of the cycle, under the spare-room rule: it is the first thing to wait when the hour's budget runs short. A full page marks the list as cut. A read
+        that fails (the answer too large, GitHub's 5xx, no access to the issues) leaves the list as `None`, so the free issues say "unread" and never list from an old answer; only a
+        rate limit is raised, as the repository's state like any other."""
+        if now < sc.get("open", 0.0) or not self._spare_room():
+            return
+        try:
+            rep = self._get(github.unassigned_issues_path(o, n, 1, OPEN_MAX))
+        except github.GhReadError as err:
+            if err.reason == "rate_limited":
+                raise
+            with self.lock:
+                rd.update(open_issues=None, open_truncated=False, open_at=None)
+            sc["open"] = now + OPEN_S
+            return
+        data = rep.data if isinstance(rep.data, list) else []
+        with self.lock:
+            if rep.source == "network" or rd.get("open_issues") is None:                         # a 304 changes nothing and is not parsed again
+                rd.update(open_issues=parse_open_issues(data), open_truncated=len(data) >= OPEN_MAX)
+            rd["open_at"] = self.wall()
+        sc["open"] = now + OPEN_S * self._factor()
 
     def _files_stage(self, o: str, n: str, rd: dict, now: float) -> None:
         """Read the changed files of the teammates' open and draft pull requests (issue #199), a few pages a cycle. The owner's own pull requests are not read (their files warn nobody),
@@ -925,6 +993,7 @@ class Poller:
                 check = "failed"
             if len(self.verdicts) > PRESENCE_MEM_MAX:
                 self.verdicts.clear()
+                check = "failed"                                           # the verdicts of this read are gone, so its edited comments are dropped below: say so
         lines = []
         for c in cands:
             if c["updated_at"] != c["created_at"] and self.verdicts.get((c["id"], c["updated_at"])) is not True:
@@ -995,4 +1064,5 @@ def reset() -> None:
             poller.stop(2.0)
         poller = None
     team.clear_hints()
+    team.watch.forget()
     _spelled.clear()

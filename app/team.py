@@ -815,6 +815,427 @@ def mark_rows(people: list[dict], lc: list[dict], hits: dict) -> None:
                 row["collides"] = c
 
 
+# ---------------------------------------------------------------- free issues and the one view of the whole team (issue #200, Team P4)
+#
+# Both are worked out from the reads the poll already made (nothing new is read from GitHub, nothing is written) and from this board's own tasks.
+#
+# `free` is the block of a shared repository's open issues that nobody holds, by the rules of Team P3: a teammate holds an issue when `conflicts` has a warning for it (assigned, a live
+# claim, a linked branch, a trusted pull request that closes it, or a presence line that is not gone or unknown; a stale one still counts: somebody touched it lately), and the
+# owner holds an issue assigned to them, claimed by them, linked by them, closed by their pull request, named by their presence line or carried by one of their open tasks.
+#   {state, reason, message, held[issue numbers], issues[{number, title, url, labels[], updated_at}], count, truncated}
+#   state   ok       `issues` are the open issues nobody holds
+#           unread   the holders are known but the read has no list of open issues yet (the reader asks GitHub for the open issues nobody is assigned to once in a while, after the
+#                    repository's own read, and only while the hour's budget has room; a failed read clears the list): `issues` is empty and `held` is the list of issue numbers that
+#                    are NOT free. An empty list here never means "everything is taken".
+#           unknown  a holder check is not known (the read failed, is old, the login is unknown, the GraphQL read has not run or failed, presence could not be read, a list was cut):
+#                    `issues` is empty, `reason` says which. Unknown is never free.
+# `reason` is the repository's own failure (sso, no_access, not_found, rate_limited, low_budget, no_login, no_gh, error), loading, stale, identity, graph_pending, graph_failed,
+# presence or truncated.
+
+FREE_MAX = 50
+OPEN_OLD_S = 3600               # a list of open issues older than this is not used: free is unknown, never guessed from an old answer
+OPEN_ISSUES_MAX = 300
+FREE_WORDS = {
+    "loading": MESSAGES["loading"],
+    "stale": "The last read of GitHub is old, so nobody can say which issues are free.",
+    "identity": "This board does not know its GitHub login yet, so it cannot tell your work from a teammate's.",
+    "graph_pending": "Linked branches and pull request links are not read yet, so nobody can say which issues are free.",
+    "graph_failed": "Linked branches and pull request links could not be read, so nobody can say which issues are free.",
+    "presence": "The presence comments could not be read, so nobody can say which issues are free.",
+    "truncated": "This repository has more issues, pull requests or branches than the read keeps, so nobody can say which issues are free.",
+    "unread": "The open issues of this repository have not been read yet, so free issues are not listed.",
+    "open_old": "The list of open issues is old, so nobody can say which issues are free.",
+    "graph_window": "This repository has more assigned issues or open pull requests than the link read covers, so nobody can say which issues are free.",
+}
+GQL_WINDOW = 30                 # the GraphQL read looks at this many assigned issues and this many open pull requests (app/github.py GQL, `first:30`)
+
+
+def free_unknown(reason: str, held: list) -> dict:
+    """A free block that lists nothing because a holder check is not known (or the repository is not readable): unknown is never free."""
+    why = reason if reason in FREE_WORDS or reason in MESSAGES else "error"
+    return {"state": "unknown", "reason": why, "message": FREE_WORDS.get(why) or MESSAGES.get(why, ""), "held": held, "issues": [], "count": 0, "truncated": False}
+
+
+def _window_short(read: dict) -> bool:
+    """Does the link read (linked branches, the issues a pull request closes) miss some work? True when either GraphQL window was full, when the pull list holds more pull requests than
+    the window covers, or when a pull request of somebody who may write has no closing links after the first GraphQL read (it is outside the window, or newer than that read)."""
+    full = read.get("gql_full") if isinstance(read.get("gql_full"), dict) else {}
+    if full.get("issues") is True or full.get("pulls") is True:
+        return True
+    pulls = read.get("pulls") if isinstance(read.get("pulls"), list) else []
+    return len(pulls) > GQL_WINDOW or any(trusted_pull(pr) and pr.get("closes") is None for pr in pulls[:200])
+
+
+def _unclocked(read: dict, owner: str, name: str) -> set[int]:
+    """The issues named by a presence line that has no clock from GitHub (word unknown) and is not ended: such a line may be live, so its issue is held, never free."""
+    return {board["issue"] for _, board in _presence_person(read, owner, name, keep_gone=True) if board["issue"] and board["live"] == "unknown" and board["state"] != "ended"}
+
+
+def holds(read: dict, me_login: str | None, me_id: int | None, owner: str, name: str, lc: list[dict] | None = None) -> set[int]:
+    """The issue numbers the owner holds: assigned to them, a live claim of theirs, a branch of theirs linked to the issue, a pull request of theirs that closes it, a presence line of
+    theirs (any board of theirs, not ended, not gone or unknown) and the issue of each of this board's own open tasks (`lc`, from `_local_clean`)."""
+    out: set[int] = set()
+    if not isinstance(read, dict):
+        return out
+    for t in lc or []:
+        if t.get("issue"):
+            out.add(t["issue"])
+    for it in (read.get("issues") or [])[:ISSUE_WARN_MAX] if isinstance(read.get("issues"), list) else []:
+        n = number_of(it.get("number")) if isinstance(it, dict) else None
+        if n is not None and any(same_person(user_of(a), me_login, me_id) for a in (it.get("assignees") or [])[:10]):
+            out.add(n)
+    for c in (read.get("claims") or [])[:100] if isinstance(read.get("claims"), list) else []:
+        n = number_of(c.get("issue")) if isinstance(c, dict) else None
+        if n is not None and c.get("live") is True and same_person(user_of(c.get("user")), me_login, me_id):
+            out.add(n)
+    for n, branches in (read.get("linked") or {}).items() if isinstance(read.get("linked"), dict) else []:
+        num = number_of(n) if isinstance(n, int) else number_of(int(n)) if isinstance(n, str) and n.isdigit() else None
+        if num is not None and any(same_person(user_of(lb.get("author")), me_login, me_id) for lb in (branches[:5] if isinstance(branches, list) else []) if isinstance(lb, dict)):
+            out.add(num)
+    for pr in (read.get("pulls") or [])[:200] if isinstance(read.get("pulls"), list) else []:
+        if isinstance(pr, dict) and isinstance(pr.get("closes"), list) and same_person(user_of(pr.get("author")), me_login, me_id):
+            out.update(c for c in (number_of(x) for x in pr["closes"][:5]) if c is not None)
+    for user, board in _presence_person(read, owner, name, keep_gone=True):
+        if same_person(user, me_login, me_id) and board["issue"] and board["live"] in WARN_LIVE and board["state"] != "ended":
+            out.add(board["issue"])
+    return out
+
+
+def free_of(read: dict, status: str, stale: bool, warnings: dict | None, owner: str, name: str, me_login: str | None, me_id: int | None, lc: list[dict], now: float | None = None) -> dict:
+    """The `free` block of one shared repository that has been read at least once (see above). `warnings` is the block's own (None when nothing was read). `read["open_issues"]` is
+    the first page of the open issues nobody is assigned to; `read["open_truncated"]` says that page was full, so `truncated` is true and the list may be longer than it shows."""
+    mine = holds(read, me_login, me_id, owner, name, lc)
+    theirs = {int(k) for k in ((warnings or {}).get("issues") or {}) if str(k).isdigit()}
+    held = sorted(mine | theirs | _unclocked(read, owner, name))
+    pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
+    tr = read.get("truncated") if isinstance(read.get("truncated"), dict) else {}
+    if status != "ok":
+        reason = status
+    elif stale:
+        reason = "stale"
+    elif not warnings or not warnings.get("identity_known"):
+        reason = "identity"
+    elif not isinstance(read.get("gql_at"), (int, float)) or isinstance(read.get("gql_at"), bool):
+        reason = "graph_pending"
+    elif read.get("graph_error"):
+        reason = "graph_failed"
+    elif pres is not None and (pres.get("status") == "error" or pres.get("editor_check") == "failed"):
+        reason = "presence"
+    elif any(tr.get(k) is True for k in ("issues", "pulls", "tips")) or (pres is not None and pres.get("truncated") is True):
+        reason = "truncated"
+    elif _window_short(read):
+        reason = "graph_window"
+    else:
+        reason = None
+    if reason is not None:
+        return free_unknown(reason, held)
+    raw = read.get("open_issues")
+    if not isinstance(raw, list):
+        return {"state": "unread", "reason": "unread", "message": FREE_WORDS["unread"], "held": held, "issues": [], "count": 0, "truncated": False}
+    at = read.get("open_at")
+    if now is not None and isinstance(at, (int, float)) and not isinstance(at, bool) and now - at > OPEN_OLD_S:
+        return free_unknown("open_old", held)
+    taken = set(held)
+    rows = []
+    for it in raw[:OPEN_ISSUES_MAX]:
+        n = number_of(it.get("number")) if isinstance(it, dict) else None
+        if n is None or n in taken or "pull_request" in it or (isinstance(it.get("assignees"), list) and it["assignees"]):
+            continue
+        labels = [text(x, 50) for x in (it.get("labels") or [])[:_LABEL_MAX] if text(x, 50)] if isinstance(it.get("labels"), list) else []
+        if PRESENCE_LABEL in labels:
+            continue                                                       # the presence status issue is machinery, never work to pick
+        rows.append({"number": n, "title": text(it.get("title")), "url": issue_url(owner, name, n), "labels": labels, "updated_at": iso_of(it.get("updated_at"))})
+    rows.sort(key=lambda r: (-(_epoch(r["updated_at"]) or 0), r["number"]))
+    return {"state": "ok", "reason": None, "message": "", "held": held, "issues": rows[:FREE_MAX], "count": len(rows), "truncated": len(rows) > FREE_MAX or read.get("open_truncated") is True}
+
+
+# ---------------------------------------------------------------- the whole team in one list (issue #200)
+#
+# `overview(repos)` takes the blocks `repo_state` made and returns the one view the sidebar group, the Home line and the Team page read:
+#   {api, counts{shared, ok, loading, problem, teammates, live, active_repos, rows, free{count, ok, unread, unknown}, truncated},
+#    people[{key, id, login, you, live, last_seen_s, repos[slug], rows}],
+#    rows[{person, login, you, repo_slug, slug, repo_url, read_at, stale, kind, issue, issue_url, title, branch, branch_url, pr, pr_url, draft, agent, state, live, since, last,
+#          last_seen_s, claim, collides}]}
+# A person is one person across repositories (the numeric id, else the lower-case login). `you` is the owner: listed, never counted as a teammate. A row is one piece of work:
+# a board's presence line (kind presence), an assigned issue (issue), a pull request (pr), a pushed or linked branch (branch) or, when GitHub names a person for nothing else, kind seen.
+# `state` says it in one word: working and waiting (a live board), idle, unconfirmed (a first sighting), stale, ended, unknown (no clock from GitHub), or github (GitHub shows the work,
+# no board of that person publishes presence). A repository whose read is old or failed shows its rows as stale and counts nobody as live: an old answer is never "live". Nothing in
+# the overview depends on the clock, so the ETag does not move between two reads.
+
+ROW_STATES = ("working", "waiting", "idle", "unconfirmed", "stale", "ended", "unknown", "github")
+_ROW_RANK = {s: i for i, s in enumerate(ROW_STATES)}
+ROW_KINDS = ("presence", "issue", "pr", "branch", "seen")
+ROWS_MAX = 600
+OVERVIEW_PEOPLE_MAX = 200
+_LIVEISH = ("live", "idle", "unconfirmed")
+
+
+def _row_state(word: str | None, pstate: str | None) -> str:
+    if word is None:
+        return "github"
+    if pstate == "ended" and word in (*_LIVEISH, "stale"):
+        return "ended"
+    if word == "live":
+        return "working" if pstate == "running" else "waiting"
+    return word if word in ("idle", "unconfirmed", "stale", "unknown") else "stale"
+
+
+def _pkey(p: dict, ids: dict) -> str:
+    uid = p.get("id")
+    if uid is None and p.get("login"):
+        uid = ids.get(p["login"].lower())
+    return f"id:{uid}" if uid is not None else f"login:{(p.get('login') or '').lower()}"
+
+
+def _empty_row(base: dict, kind: str, **kw) -> dict:
+    r = {**base, "kind": kind, "issue": None, "issue_url": None, "title": None, "branch": None, "branch_url": None, "pr": None, "pr_url": None, "draft": None, "agent": None,
+         "state": "github", "live": None, "since": None, "last": None, "last_seen_s": None, "claim": None, "collides": False}
+    r.update(kw)
+    return r
+
+
+def _rows_of(b: dict, p: dict, pk: str) -> list[dict]:
+    """The rows one person has in one repository block."""
+    so, _, sn = b["slug"].partition("/")
+    stale = bool(b.get("stale"))
+    base = {"person": pk, "login": p["login"], "you": bool(p["you"]), "repo_slug": b["repo_slug"], "slug": b["slug"], "repo_url": b["url"], "read_at": b["read_at"], "stale": stale}
+    issues = {i["number"]: i for i in p["issues"]}
+    prs_for: dict = {}
+    for pr in p["prs"]:
+        for c in pr.get("closes") or []:
+            prs_for.setdefault(c, pr)
+    used_issue, used_branch, used_pr = set(), set(), set()
+    out: list[dict] = []
+
+    def attach_pr(row: dict, n) -> None:
+        pr = prs_for.get(n) if n else None
+        if pr is None:
+            return
+        row.update(pr=pr["number"], pr_url=pr["url"], draft=pr["draft"])
+        row["collides"] = row["collides"] or bool(pr.get("collides"))
+        used_pr.add(pr["number"])
+        if pr.get("head"):
+            used_branch.add(pr["head"])
+
+    def claim_of(it) -> dict | None:
+        return {"status": it["claim"]["status"], "live": it["claim"]["live"]} if it and it.get("claim") else None
+
+    pres = p.get("presence")
+    seen_board = set()
+    for bd in sorted((pres or {}).get("boards") or [], key=lambda x: (_LIVE_RANK.get(x["live"], 9), x["last_seen_s"] if x["last_seen_s"] is not None else 10 ** 9)):
+        k = (bd["issue"], bd["branch"])
+        if k in seen_board:
+            continue                                                       # two boards of one person on the same work: one row, the livelier one
+        seen_board.add(k)
+        word = "stale" if stale and bd["live"] in _LIVEISH else bd["live"]
+        it = issues.get(bd["issue"]) if bd["issue"] else None
+        row = _empty_row(base, "presence", issue=bd["issue"], issue_url=bd["issue_url"], title=it["title"] if it else None, branch=bd["branch"], branch_url=bd["branch_url"],
+                         agent=bd["agent"], state=_row_state(word, bd["state"]), live=word, since=bd["since"], last=bd["last"], last_seen_s=bd["last_seen_s"],
+                         claim=claim_of(it), collides=bool(it and it.get("collides")))
+        if it:
+            used_issue.add(it["number"])
+            used_branch.update(it["branches"])
+        if bd["branch"]:
+            used_branch.add(bd["branch"])
+        attach_pr(row, bd["issue"])
+        out.append(row)
+    for it in p["issues"]:
+        if it["number"] in used_issue:
+            continue
+        br = it["branches"][0] if it["branches"] else None
+        row = _empty_row(base, "issue", issue=it["number"], issue_url=it["url"], title=it["title"], branch=br, branch_url=branch_url(so, sn, br) if br else None,
+                         last=it["updated_at"], claim=claim_of(it), collides=bool(it.get("collides")))
+        used_issue.add(it["number"])
+        used_branch.update(it["branches"])
+        attach_pr(row, it["number"])
+        out.append(row)
+    for pr in p["prs"]:
+        if pr["number"] in used_pr:
+            continue
+        n = pr["closes"][0] if pr.get("closes") else None
+        out.append(_empty_row(base, "pr", issue=n, issue_url=issue_url(so, sn, n) if n else None, branch=pr["head"], branch_url=branch_url(so, sn, pr["head"]) if pr.get("head") else None,
+                              pr=pr["number"], pr_url=pr["url"], title=pr["title"], draft=pr["draft"], last=pr["updated_at"], collides=bool(pr.get("collides"))))
+        used_pr.add(pr["number"])
+        if pr.get("head"):
+            used_branch.add(pr["head"])
+    for br in p["branches"]:
+        if br["name"] in used_branch:
+            continue
+        used_branch.add(br["name"])
+        n = br.get("issue")
+        out.append(_empty_row(base, "branch", issue=n, issue_url=issue_url(so, sn, n) if n else None, branch=br["name"], branch_url=br["url"], last=br["at"], collides=bool(br.get("collides"))))
+    if not out:
+        out.append(_empty_row(base, "seen", last=p["last_active"]))
+    return out
+
+
+def overview(repos: list[dict]) -> dict:
+    """The one view of every shared repository (see above). `repos` are the blocks `repo_state` made; a repository that is not shared adds nothing."""
+    shared = [b for b in repos if b.get("shared")]
+    ids: dict = {}
+    for b in shared:
+        for p in b.get("people") or []:
+            if p.get("id") is not None and p.get("login"):
+                ids[p["login"].lower()] = p["id"]
+    rows: list[dict] = []
+    people: dict = {}
+    live_people: set = set()
+    active_repos = 0
+    for b in shared:
+        counted = b.get("state") == "ok" and not b.get("stale")
+        repo_live = False
+        for p in b.get("people") or []:
+            pk = _pkey(p, ids)
+            mine = _rows_of(b, p, pk)
+            rows += mine
+            ent = people.setdefault(pk, {"key": pk, "id": p.get("id") if p.get("id") is not None else ids.get((p.get("login") or "").lower()), "login": p.get("login"), "you": False,
+                                         "live": "none", "last_seen_s": None, "repos": [], "rows": 0})
+            ent["you"] = ent["you"] or bool(p["you"])
+            ent["login"] = ent["login"] or p.get("login")
+            ent["rows"] += len(mine)
+            if b["slug"] not in ent["repos"]:
+                ent["repos"].append(b["slug"])
+            words = [r for r in mine if r["live"] is not None]
+            if words:
+                best = min(words, key=lambda r: (_LIVE_RANK.get(r["live"], 9), r["last_seen_s"] if r["last_seen_s"] is not None else 10 ** 9))
+                if _LIVE_RANK.get(best["live"], 9) < _LIVE_RANK.get(ent["live"], 9):
+                    ent["live"], ent["last_seen_s"] = best["live"], best["last_seen_s"]
+            if counted and not p["you"] and any(r["live"] in ("live", "idle") for r in mine):
+                live_people.add(pk)
+                repo_live = True
+        active_repos += 1 if repo_live else 0
+    rows.sort(key=lambda r: (not r["you"], _ROW_RANK[r["state"]], -(_epoch(r["last"]) or 0), (r["login"] or "").lower(), r["slug"].lower(), r["issue"] or 0, r["branch"] or "", r["pr"] or 0))
+    plist = sorted(people.values(), key=lambda e: (not e["you"], _LIVE_RANK.get(e["live"], 9), (e["login"] or "").lower(), e["id"] or 0))
+    cut = len(rows) > ROWS_MAX or len(plist) > OVERVIEW_PEOPLE_MAX
+    frees = [b["free"] for b in shared if isinstance(b.get("free"), dict)]
+    counts = {"shared": len(shared), "ok": sum(1 for b in shared if b.get("state") == "ok"), "loading": sum(1 for b in shared if b.get("state") == "loading"),
+              "problem": sum(1 for b in shared if b.get("state") not in ("ok", "loading")),
+              "teammates": sum(1 for e in people.values() if not e["you"]), "live": len(live_people), "active_repos": active_repos, "rows": len(rows),
+              "free": {"count": sum(f["count"] for f in frees if f["state"] == "ok"), "ok": sum(1 for f in frees if f["state"] == "ok"),
+                       "unread": sum(1 for f in frees if f["state"] == "unread"), "unknown": sum(1 for f in frees if f["state"] == "unknown")},
+              "truncated": cut}
+    return {"api": 1, "counts": counts, "people": plist[:OVERVIEW_PEOPLE_MAX], "rows": rows[:ROWS_MAX]}
+
+
+# ---------------------------------------------------------------- a teammate started on an issue the owner holds (issue #200): change detection between two reads
+#
+# `starts_pairs` lists the teammates who are on each issue in one read; `Watch` keeps the previous list per repository and the pairs already told. The first read of a repository (and
+# the first one after an outage of an hour, or after the repository was switched off) only becomes the baseline: nothing is told for what was already there. A pair (teammate, issue)
+# counts as present while the Team P3 rules have a taken or recent warning for it, which already leaves out the owner's own logins and boards, a pull request of somebody who may not
+# write to the repository, a gone or unknown presence line and an unnamed user. The notice is told for a pair that is new and whose issue the owner holds.
+# Nothing here reads GitHub or sends anything: the events go to app/notify.py, which sends only when the owner switched the kind on.
+
+START_MAX = 5                    # notices one read may bring
+START_GAP_S = 3600.0             # two reads further apart than this are not "successive"
+TOLD_MAX = 2000
+START_STATUS = ("taken", "recent")
+
+
+def starts_pairs(read: dict, me_login: str | None, me_id: int | None, owner: str, name: str, now: float) -> tuple[bool, dict]:
+    """(identity known, {(person key, issue): login}) of the teammates present on an issue in this read, by the Team P3 rules."""
+    if not isinstance(read, dict):
+        return False, {}
+    warnings, _ = conflicts(read, me_login, me_id, owner, name, now, [])
+    if not warnings["identity_known"]:
+        return False, {}
+    out: dict = {}
+    for k, ws in warnings["issues"].items():
+        for w in ws:
+            if w.get("status") not in START_STATUS:
+                continue
+            who = w.get("person") or {}
+            pk = ("id", who["id"]) if who.get("id") is not None else ("login", (who.get("login") or "").lower())
+            out[(pk, int(k))] = who.get("login")
+    return True, out
+
+
+def starts_from(prev: set | None, cur: dict, mine: set, me_login: str | None, me_id: int | None) -> list[dict]:
+    """The new pairs of `cur` (a {(person key, issue): login} map) that are not in `prev`, on an issue in `mine`: [{login, issue, person}]. Nothing for the first read (`prev` None),
+    for the owner's own login or id, for an app (a [bot] login) or for a person with no login to name."""
+    if prev is None:
+        return []
+    out = []
+    for (pk, n), login in sorted(cur.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
+        if (pk, n) in prev or n not in mine:
+            continue
+        who = {"id": pk[1] if pk[0] == "id" else None, "login": login}
+        if same_person(who, me_login, me_id) or (me_login and isinstance(login, str) and login.lower() == me_login.lower()):
+            continue                                                       # the owner and every board under the owner's login never tell the owner about themselves
+        lg = login_of(login)
+        if lg is None or lg.lower().endswith("[bot]"):
+            continue
+        out.append({"login": lg, "issue": n, "person": pk})
+    return out
+
+
+class Watch:
+    """The memory of the change detection: the pairs of the last read of each repository and the pairs already told. In memory only: a restart starts from a new baseline."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.prev: dict = {}
+        self.at: dict = {}
+        self.told: dict = {}
+
+    def forget(self, key: str | None = None) -> None:
+        with self.lock:
+            if key is None:
+                self.prev.clear()
+                self.at.clear()
+                self.told.clear()
+            else:
+                self.prev.pop(key, None)
+                self.at.pop(key, None)
+                for k in [k for k in self.told if k[0] == key]:
+                    del self.told[k]
+
+    @staticmethod
+    def _incomplete(read: dict) -> bool:
+        """Is a part of this read missing? Presence that could not be read, its editors not checked or its comments cut, a cut list, or a link read that misses work."""
+        pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
+        if pres is not None and (pres.get("status") not in ("ok", "none", "closed") or pres.get("editor_check") == "failed" or pres.get("truncated") is True):
+            return True
+        tr = read.get("truncated") if isinstance(read.get("truncated"), dict) else {}
+        return any(tr.get(k) is True for k in ("issues", "pulls", "tips")) or _window_short(read)
+
+    def step(self, key: str, read: dict, me_login: str | None, me_id: int | None, owner: str, name: str, now: float, lc: list[dict] | None = None) -> list[dict]:
+        """The pairs to tell for one finished read of `key` (usually []). The baseline moves on at every read that is ok, has been through the GraphQL read and knows the owner's
+        login, whatever the kind's switch says, so switching the kind on later tells only what starts afterwards."""
+        if not isinstance(read, dict) or read.get("status") != "ok" or not isinstance(read.get("read_at"), (int, float)) or isinstance(read.get("read_at"), bool):
+            return []
+        if not isinstance(read.get("gql_at"), (int, float)) or isinstance(read.get("gql_at"), bool) or read.get("graph_error"):
+            return []                                                      # linked branches and pull request links are not known yet: what they add later is not a start
+        if self._incomplete(read):
+            return []                                                      # a part of the read is missing (presence lines dropped, a list cut): it is not a baseline, and the good read after it is not a start
+        known, cur = starts_pairs(read, me_login, me_id, owner, name, now)
+        if not known:
+            return []                                                      # the owner is unknown: nobody can be told from the owner's own work
+        at = float(read["read_at"])
+        with self.lock:
+            last = self.at.get(key)
+            if last is not None and at <= last:
+                return []                                                  # the same read again
+            prev = self.prev.get(key)
+            if prev is not None and last is not None and at - last > START_GAP_S:
+                prev = None
+            self.prev[key], self.at[key] = set(cur), at
+        events = starts_from(prev, cur, holds(read, me_login, me_id, owner, name, lc), me_login, me_id)
+        out = []
+        with self.lock:
+            for ev in events:
+                tk = (key, ev["person"], ev["issue"])
+                if tk in self.told:
+                    continue
+                self.told[tk] = at
+                while len(self.told) > TOLD_MAX:
+                    self.told.pop(next(iter(self.told)))
+                out.append(ev)
+        return out[:START_MAX]
+
+
+watch = Watch()
+
+
 # ---------------------------------------------------------------- the body
 
 def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int | None, now: float, local=None) -> dict:
@@ -832,20 +1253,21 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
            "shared": bool(entry.get("shared"))}
     base = {"state": "off", "message": MESSAGES["off"], "wait_s": None, "stale": False, "read_at": None, "age_s": None, "gql_at": None, "graph_pending": False,
             "graph_failed": False, "private": None, "people": [], "counts": {"people": 0, "teammates": 0, "issues": 0, "branches": 0, "prs": 0, "unattributed_branches": 0},
-            "truncated": {"issues": False, "pulls": False, "tips": False}, "warnings": None}
+            "truncated": {"issues": False, "pulls": False, "tips": False}, "warnings": None, "free": None}
     if not out["shared"]:
         return {**out, **base, "presence": None}
     if read is None or read.get("status") == "pending" and not read.get("read_at"):
-        return {**out, **base, "presence": None, "state": "loading", "message": MESSAGES["loading"]}
+        return {**out, **base, "presence": None, "state": "loading", "message": MESSAGES["loading"], "free": free_unknown("loading", [])}
     status = read.get("status") if read.get("status") in STATES else "error"
     read_at = read.get("read_at") if isinstance(read.get("read_at"), (int, float)) and not isinstance(read.get("read_at"), bool) else None
     age = max(0, int(now - read_at)) if read_at is not None else None
     people, counts = people_of(read, me_login, me_id, so, sn, now) if read_at is not None else ([], base["counts"])
-    warnings = None
+    warnings, lc = None, _local_clean(local)
     if read_at is not None:                                                  # issue #199: the advice for the launcher, from the same read; no network
-        lc = _local_clean(local)
         warnings, hits = conflicts(read, me_login, me_id, so, sn, now, lc)
         mark_rows(people, lc, hits)
+    stale = status != "ok" or age is None or age > STALE_S
+    free = free_of(read, status, stale, warnings, so, sn, me_login, me_id, lc, now) if read_at is not None else free_unknown(status if status != "ok" else "loading", [])          # issue #200: from the same read, no network
     wait = read.get("wait_s") if isinstance(read.get("wait_s"), int) and not isinstance(read.get("wait_s"), bool) and read.get("wait_s") > 0 else None
     msg = MESSAGES[status] if status != "rate_limited" or not wait else f"GitHub asked this board to wait {wait} s."
     gql_at = read.get("gql_at") if isinstance(read.get("gql_at"), (int, float)) and not isinstance(read.get("gql_at"), bool) else None
@@ -855,20 +1277,20 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
     presence = {"state": pres.get("status") if pres.get("status") in READ_PRESENCE else "error", "issue": pn, "issue_url": issue_url(so, sn, pn) if pn and so else None,
                 "truncated": pres.get("truncated") is True, "editor_check": pres.get("editor_check") if pres.get("editor_check") in ("ok", "failed", "none") else "none",
                 "message": READ_PRESENCE.get(pres.get("status"), READ_PRESENCE["error"])} if pres else None
-    return {**out, "presence": presence, "state": status, "message": msg, "wait_s": wait, "stale": status != "ok" or age is None or age > STALE_S,
+    return {**out, "presence": presence, "state": status, "message": msg, "wait_s": wait, "stale": stale,
             "read_at": _iso_now(read_at) if read_at is not None else None, "age_s": age, "gql_at": _iso_now(gql_at) if gql_at is not None else None,
             "graph_pending": gql_at is None, "graph_failed": bool(read.get("graph_error")), "private": read.get("private") if isinstance(read.get("private"), bool) else None, "people": people, "counts": counts,
-            "truncated": {k: tr.get(k) is True for k in ("issues", "pulls", "tips")}, "warnings": warnings}
+            "truncated": {k: tr.get(k) is True for k in ("issues", "pulls", "tips")}, "warnings": warnings, "free": free}
 
 
 def build(entries: list[dict], reads: dict, me_login: str | None, me_id: int | None, now: float, local=None) -> dict:
-    """The body of GET /api/team/state: {api, enabled, me, repos[...], at}. `enabled` is true when at least one repository is shared. `me` is null while the board does not know
+    """The body of GET /api/team/state: {api, enabled, me, repos[...], overview, at} (`overview`: the people of every shared repository in one list, issue #200). `enabled` is true when at least one repository is shared. `me` is null while the board does not know
     which GitHub login it acts as (unknown, not "nobody")."""
     loc = local if isinstance(local, dict) else {}
     repos = [repo_state(e, reads.get(e.get("key")), me_login, me_id, now, loc.get(e.get("key"))) for e in entries]
     repos.sort(key=lambda r: (not r["shared"], r["slug"].lower()))
     return {"api": API, "enabled": any(r["shared"] for r in repos),
-            "me": {"login": me_login, "id": me_id} if me_login else None, "repos": repos, "at": _iso_now(now)}
+            "me": {"login": me_login, "id": me_id} if me_login else None, "repos": repos, "overview": overview(repos), "at": _iso_now(now)}
 
 
 def digest(body: dict) -> str:

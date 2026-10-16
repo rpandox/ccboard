@@ -85,6 +85,18 @@ function scrollBehavior() {
 
 function ownKey(map, key) { return Object.prototype.hasOwnProperty.call(map, key); }
 
+/* Team (issue #200): the few bytes the sidebar, Home and the palette need to ask for the Team view. Everything else is pages/team.js, the lazy 'teamview' bundle, which loads only while the
+   board says some repository is shared (state.team.shared, app/main.py). With nothing shared nothing here loads a script, asks the network or changes a screen. */
+let teamViewBad = 0;
+function teamShared(st) { const s = st || (typeof state !== 'undefined' ? state : null); return !!s && !!s.team && s.team.shared === true; }
+function teamUse(fn) {
+  if (!teamShared()) return false;
+  if (typeof TeamView !== 'undefined' && TeamView.ready) { fn(); return true; }
+  if (typeof Lazy !== 'undefined' && !(teamViewBad && Date.now() - teamViewBad < 60000)) Lazy.load('teamview').then(() => { if (typeof TeamView !== 'undefined' && TeamView.ready) fn(); }, () => { teamViewBad = Date.now(); });
+  return true;
+}
+function teamSync(st) { if (teamShared(st)) teamUse(() => TeamView.start()); else if (typeof TeamView !== 'undefined' && TeamView.ready) TeamView.stop(); }
+
 function stateGlyph(state) {
   const st = ownKey(STATE_GLYPH, state) ? state : 'unknown';
   return el('span', { class: 'glyph ' + st, role: 'img', 'aria-label': GLYPH_LABEL[st], title: GLYPH_LABEL[st], text: STATE_GLYPH[st] });

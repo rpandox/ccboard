@@ -966,6 +966,7 @@ function homeRender(st) {
   homePatchSummary(model.counts, model.filter);
   for (const [k, btn] of Object.entries(r.group.ccBtns)) btn.setAttribute('aria-pressed', model.mode === k ? 'true' : 'false');
   homePatchAway(s);
+  if (!teamUse(() => TeamView.homePaint(r)) && r.team) { r.team.remove(); r.team = null; }                          // Team (issue #200): one quiet line while a repository is shared; with none shared there is no node at all
   Nodes.use(() => Nodes.slot('strip', r.away));                                     // paired nodes: the Nodes strip after the away line, before the inbox (nodes-hub.js)
   homePatchInbox(s);
   Nodes.use(() => Nodes.slot('inbox', r.inboxHost, { limit: HOME_INBOX_LIMIT }));   // and the inbox items of other nodes under the local ones
@@ -1047,7 +1048,7 @@ registerPage('home', {
     });
     let usage = null;
     if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.usageCard === 'function') { try { usage = Widgets.usageCard(usageHost); } catch (e) { console.error('ccboard usage card', e); } }
-    homePage.refs = { summary, group, away, awaySig: null, inboxHost, usageHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
+    homePage.refs = { summary, group, away, team: null, awaySig: null, inboxHost, usageHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
     startAgeTicker();
   },

@@ -2,6 +2,29 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.54 - 2026-10-16
+
+### Added
+- Team P4, the whole team in one place (#200, the last phase of #196). **Team** is a page (`#/team`), a collapsed group in the sidebar below **Other nodes** with the number of teammates who are live, one quiet line on Home (`● 3 teammates active in 2 repos`) and **Team** and **Team: owner/repo** in the command palette. The page groups the rows by person or by repo (a segmented control), each row in glyph and words (`✽ Working`, `✻ Waiting`, `∙ Idle`, `◌ Not confirmed yet`, `! Stale`, `○ Ended`, `? Unknown`, `◦ On GitHub`) with the issue, branch, agent, since, last seen and the age of the read; filters for person, repo and state ride in the address. A repository that cannot be read says so with its next step and shows stale rows, never "no teammates". None of it exists, and nothing is requested, while no repository is shared.
+- Free issues per shared repository, in words and never guessed: the open issues nobody holds (no assignee, no live status, no linked branch, no claim, no closing pull request). A live board lists them from one page of the open issues nobody is assigned to; until that is read, or when it is old or failed, it says `unread` or `unknown`, names the numbers that are held and lists nothing as free, and a full page says the list may be longer. `GET /api/team/state` gains `overview` and `free`; no route was added and none is in `NODE_ROUTES`.
+- One more notification, **A teammate started on an issue I hold** (Settings > Notifications, listed only while a repository is shared). Off by default; when on, ntfy and Web Push, once per teammate and issue, with the login, the issue number and your repository's name and nothing from a GitHub title; never for your own logins or boards or a pull request of somebody who may not write; silent for the first read, after a gap of an hour or a switch off and on; at most five a read; a tap opens `#/team`.
+- README **Working with a team**: what is read, what is published, how to switch it off, what stays private, the limits, and the steps of the two-login check on a private organization repository (an owner action, not run) with what stays UNVERIFIED; a Team paragraph in the Security model; the ROADMAP as-built note.
+- `?demo=1` shows all of it; `&team=freeok|freeempty|freecut|twoshared` are new (the free list in its other states; a second shared repository), and the existing `&team=` states change the page too. `demo/team.json` carries `overview` and `free`, held to `app/team.py` by tests for the base and for every variant.
+
+### Changed
+- One new read, the free list's: `GET /repos/{owner}/{repo}/issues?state=open&assignee=none&per_page=100&page=1`, one more allowed shape of the read-only reader (owner and repository checked, nothing near it). One page of 100, conditional (a 304 keeps the answer), at most every 10 minutes per repository, only after the repository's own read worked, inside the 600 points an hour and only while 100 of them are left for the core reads, with the shared back-off and low-remainder stop; nothing is asked while nothing is shared. Only number, title, label names and date are cached (no bodies), and pull requests are dropped. Measured with the test fake: 105, 525 and 600 points an hour for 1, 5 and 20 shared repositories (99, 495 and 599 before); with pull request file reads 117, 580 and 599 (111, 555 and 601 before).
+- First paint is 539,849 bytes of script (+2,285 for the hooks in `core.js`, `shell.js` and `home.js` and the `#/team` address of `router.js`); the page, the sidebar group, the Home line and the palette rows are the lazy `teamview` bundle, loaded only while `state.team.shared` is true.
+- Known limits, UNVERIFIED: the two-login check on a real private organization repository, a real 304, single sign-on and app approval, what a read-only collaborator sees, what watchers are notified of, what a delete leaves behind, a real list of open issues without an assignee (a page of 100 with long bodies can pass the 2 MiB answer cap, then free stays `unread`), and screenshots at 1280, 1024 and 390 pixels. A stale presence line counts as holding an issue.
+
+### Fixed
+- No false "started on #N" after a failed check. A read that lost presence lines (comments that could not be read, editors not checked, a cut thread, a cut list, or a read that cleared its editor memory) no longer becomes the baseline, so the next good read is not mistaken for new starts.
+- A free list never shows an issue a teammate may hold. It says `unknown` (the new reason `graph_window`) when the presence thread was cut, when 30 assigned issues or 30 open pull requests filled the link read, when there are more open pull requests than it covers, or when a pull request of somebody who may write has no closing links yet; a status line with no clock from GitHub holds its issue. Limit, stated in the page and the README: an unassigned issue with a linked branch and no status line can show as free.
+- An app assigned to an issue (GitHub type Bot, or a login ending in `[bot]`) is no longer a teammate in the people, the holders or the notice.
+- Less work on every page: the team rows, the live count and the live people are worked out once for each answer, and the board builds the team answer once for repeated polls with nothing new (at most 10 s old, same ETag).
+- A repository that moves to its canonical name forgets its old change detection, and only a signed-in person can switch **A teammate started on an issue I hold** on (the hook token and node or device tokens get 403 for that change; the other switches are unchanged).
+
+Upgrade: nothing to do.
+
 ## v0.5.53 - 2026-10-15
 
 ### Added

@@ -1028,3 +1028,261 @@ def test_a_graphql_rate_limit_is_shared_with_the_epic_reader_too(tw):
     tw.gh.world["gql_rate"] = {"limit": 5000, "remaining": 0, "reset": START + 3600}
     tw.run_for(30)
     assert tw.block()["state"] == "rate_limited" and github.reader.wait_left() > 0
+
+
+# ================================================================ the open issues nobody is assigned to (issue #200, Team P4): the read behind the free issues
+
+UNASSIGNED = "assignee=none"
+
+
+def open_paths(tw, repo=REPO):
+    return [p for p in tw.gh.paths() if UNASSIGNED in p and p.startswith(f"/repos/{repo}/")]
+
+
+def open_calls(tw, repo=REPO):
+    return [c for c in tw.gh.calls() if UNASSIGNED in c["argv"][-1] and c["argv"][-1].startswith(f"/repos/{repo}/")]
+
+
+def test_the_unassigned_issues_path_is_one_allowed_get_shape_and_nothing_near_it_is():
+    path = github.unassigned_issues_path("acme", "shop")
+    assert path == "/repos/acme/shop/issues?state=open&assignee=none&per_page=100&page=1" and github.allowed_path(path)
+    a = github.argv(path, TAG)
+    assert a[:5] == ["gh", "api", "--include", "--method", "GET"] and a[-1] == path and a.count("--method") == 1 and f"If-None-Match: {TAG}" in a
+    assert not set(a) & {"-X", "-f", "-F", "--field", "--raw-field", "--input", "--paginate", "--jq"}
+    assert github.allowed_path(github.unassigned_issues_path("a-b", "r.s_t-u", 2, 50))
+    for bad in ("/repos/acme/shop/issues?state=open&assignee=none", "/repos/acme/shop/issues?state=open&assignee=none&per_page=100&page=1&x=1",
+                "/repos/acme/shop/issues?state=all&assignee=none&per_page=100&page=1", "/repos/acme/shop/issues?state=closed&assignee=none&per_page=100&page=1",
+                "/repos/acme/shop/issues?state=open&assignee=nobody&per_page=100&page=1", "/repos/acme/shop/issues?state=open&assignee=none,bob&per_page=100&page=1",
+                "/repos/acme/shop/issues?assignee=none&state=open&per_page=100&page=1", "/repos/acme/shop/issues?state=open&assignee=none&labels=x&per_page=100&page=1",
+                "/repos/acme/shop/pulls?state=open&assignee=none&per_page=100&page=1", "/repos/acme/shop/issues/3?state=open&assignee=none&per_page=100&page=1",
+                "/repos/acme/shop/issues?state=open&assignee=none&per_page=100&page=1\n", "/repos/-a/shop/issues?state=open&assignee=none&per_page=100&page=1",
+                "/repos/acme/../issues?state=open&assignee=none&per_page=100&page=1", "/repos/acme/shop/x/issues?state=open&assignee=none&per_page=100&page=1"):
+        assert not github.allowed_path(bad), bad
+        with pytest.raises(github.GhReadError):
+            github.argv(bad)
+    for owner, repo, page, per in (("", "r", 1, 100), ("a b", "r", 1, 100), ("a", "..", 1, 100), ("-a", "r", 1, 100), ("a", "r;x", 1, 100), ("a", "r", 0, 100), ("a", "r", 1000, 100), ("a", "r", 1, 101)):
+        with pytest.raises(github.GhReadError):
+            github.unassigned_issues_path(owner, repo, page, per)
+
+
+def test_a_page_of_unassigned_issues_is_kept_without_bodies_and_a_304_still_returns_it():
+    body = "b" * 60000
+    page = [{"number": 4, "title": "Four", "body": body, "labels": [{"name": "bug", "color": "ff0000"}, "plain", {"id": 3}], "user": {"login": "carol"}, "assignees": [], "updated_at": "2026-10-01T09:00:00Z"},
+            {"number": 9, "title": "A pull request", "body": body, "pull_request": {"url": "x"}}, "junk", {"number": "x", "title": 5, "labels": "no"}]
+    path = github.unassigned_issues_path("acme", "shop")
+    asked = []
+
+    def fetch(p, etag):
+        asked.append(etag)
+        return (304, {"etag": 'W/"t2"'}, {}) if etag else (200, {"etag": 'W/"t2"'}, page)
+
+    clock = [100.0]
+    r = github.Reader(fetch=fetch, mono=lambda: clock[0])
+    rep = r.get(path)
+    assert rep.data == [{"number": 4, "title": "Four", "labels": [{"name": "bug"}, {"name": "plain"}], "updated_at": "2026-10-01T09:00:00Z"}, {"pull_request": True},
+                        {"number": None, "title": "", "labels": [], "updated_at": None}]
+    assert r.cache[path].data == rep.data and "bbbb" not in json.dumps(r.cache[path].data) and "carol" not in json.dumps(r.cache[path].data)
+    clock[0] += 600
+    again = r.get(path)
+    assert again.source == "revalidated" and asked == [None, 'W/"t2"'] and again.data == rep.data
+    r2 = github.Reader(fetch=lambda p, e: (200, {}, [{"number": 1, "body": "keep"}]), mono=lambda: 0.0)
+    assert r2.get(github.assigned_issues_path("acme", "shop")).data == [{"number": 1, "body": "keep"}], "any other path is cached whole"
+
+
+def test_open_issues_drop_pull_requests_and_junk_and_cap_what_github_sent():
+    items = [{"number": 2, "title": "<b>" + "T" * 900, "labels": [{"name": "bug"}, {"name": "x" * 400}] + [{"name": f"l{i}"} for i in range(60)], "updated_at": "2026-10-01T09:00:00Z"},
+             {"number": 3, "title": "A pull request", "pull_request": {}}, {"number": "x"}, {"number": True}, {"number": 0}, "junk", None, {"title": "no number"},
+             {"number": 5, "title": "ctl\x00\x07‮ end", "labels": "no", "updated_at": 5}]
+    got = team_github.parse_open_issues(items)
+    assert [i["number"] for i in got] == [2, 5] and all(set(i) == {"number", "title", "labels", "updated_at"} for i in got)
+    assert len(got[0]["title"]) <= team.TEXT_MAX and len(got[0]["labels"]) <= 30 and all(len(x) <= 50 for x in got[0]["labels"])
+    assert got[1]["labels"] == [] and got[1]["updated_at"] is None and "\x00" not in got[1]["title"] and "‮" not in got[1]["title"]
+    assert len(team_github.parse_open_issues([{"number": n} for n in range(1, 400)])) == team_github.OPEN_MAX
+    assert team_github.parse_open_issues({"message": "x"}) == [] and team_github.parse_open_issues(None) == []
+
+
+def test_the_reader_keeps_the_unassigned_open_issues_with_no_body_and_leaves_pull_requests_out(tw):
+    seed(tw.gh)
+    tw.gh.add_issue(REPO, 4, "Four", labels=["bug", "help wanted"], body="long text " * 500)
+    tw.gh.add_issue(REPO, 30, "A pull request among the issues", pull_request=True, body="pr text")
+    tw.share()
+    tw.settle()
+    rd = tw.poller.snapshot()[KEY]
+    assert [i["number"] for i in rd["open_issues"]] == [2, 4], "issue 1 and 3 are assigned, 30 and the pull request 7 are pull requests"
+    assert rd["open_issues"][1] == {"number": 4, "title": "Four", "labels": ["bug", "help wanted"], "updated_at": "2026-10-01T09:00:00Z"} and rd["open_truncated"] is False
+    path = github.unassigned_issues_path("acme", "shop")
+    assert open_paths(tw) == [path], "one page, the exact allowed shape"
+    cached = tw.poller.reader.cache[path].data
+    assert "long text" not in json.dumps(cached) and "pr text" not in json.dumps(cached) and "body" not in json.dumps(cached)
+    assert tw.gh.writes() == []
+
+
+def test_the_open_issues_are_asked_conditionally_and_at_most_every_600_seconds(tw):
+    seed(tw.gh)
+    tw.share()
+    tw.settle()
+    assert len(open_paths(tw)) == 1 and open_calls(tw)[0]["status"] == 200
+    tw.run_for(500)
+    assert len(open_paths(tw)) == 1, "the core reads came round again (every 120 s) and the open issues did not"
+    tw.run_for(200)
+    calls = open_calls(tw)
+    assert len(calls) == 2 and calls[1]["status"] == 304, "asked again after the 600 s, with the ETag: a 304 changes nothing"
+    assert [i["number"] for i in tw.poller.snapshot()[KEY]["open_issues"]] == [2], "the 304 kept the answer"
+    tw.gh.add_issue(REPO, 5, "Five")
+    tw.run_for(700)
+    calls = open_calls(tw)
+    assert len(calls) == 3 and calls[2]["status"] == 200
+    assert [i["number"] for i in tw.poller.snapshot()[KEY]["open_issues"]] == [2, 5]
+    tw.run_for(3600)
+    assert len(open_paths(tw)) <= 3 + 6, "at most 6 an hour for one repository"
+
+
+def test_a_full_page_of_open_issues_is_marked_cut_and_no_second_page_is_asked(tw):
+    seed(tw.gh)
+    for n in range(10, 10 + 99):
+        tw.gh.add_issue(REPO, n, f"Open {n}")
+    tw.share()
+    tw.settle()
+    rd = tw.poller.snapshot()[KEY]
+    assert len(rd["open_issues"]) == 100 and rd["open_truncated"] is True, "99 + issue 2: the page is full"
+    tw.gh.add_issue(REPO, 500, "One more, on a page nobody asks for")
+    tw.run_for(700)
+    rd = tw.poller.snapshot()[KEY]
+    assert len(rd["open_issues"]) == 100 and rd["open_truncated"] is True
+    assert set(open_paths(tw)) == {github.unassigned_issues_path("acme", "shop", 1, 100)}, "page 1 only, however long the list is"
+    for n in range(10, 70):
+        tw.gh.world["issues"].pop(f"{REPO}#{n}")
+    tw.gh.set()
+    tw.run_for(700)
+    rd = tw.poller.snapshot()[KEY]
+    assert len(rd["open_issues"]) == 41 and rd["open_truncated"] is False
+
+
+def test_the_open_issues_wait_for_the_repository_to_be_read_and_never_precede_it(tw):
+    seed(tw.gh)
+    tw.gh.world["sso"] = [REPO]
+    tw.share()
+    tw.run_for(900)
+    assert tw.block()["state"] == "sso" and open_paths(tw) == [], "a repository GitHub refuses is not asked for its issues"
+    tw.gh.world["sso"] = []
+    tw.run_for(700)
+    assert tw.block()["state"] == "ok" and len(open_paths(tw)) == 1
+
+
+def test_nothing_shared_means_no_open_issue_read_and_only_a_shared_repository_is_asked(tw):
+    seed(tw.gh)
+    seed(tw.gh, "acme/tools")
+    tw.run_for(3600)
+    assert tw.gh.paths() == [] and tw.poller.reads == {}, "off means off: not one call"
+    tw.share()                                                                         # acme/shop only; acme/tools is a project of this board that nobody switched on
+    tw.run_for(1300)
+    assert open_paths(tw) and open_paths(tw, "acme/tools") == [] and not [p for p in tw.gh.paths() if "acme/tools" in p]
+    tw.db.team_share_set(KEY, False)
+    tw.run_for(60)
+    tw.gh.clear_calls()
+    tw.run_for(3600)
+    assert tw.gh.paths() == [], "switched off again: nothing is asked, the open issues included"
+
+
+def test_the_open_issues_keep_the_reserve_of_the_core_reads_like_the_files_do(tw):
+    seed(tw.gh)
+    tw.share()
+    tw.poller.budget.add(tw.clock.mono(), team_github.BUDGET_PER_HOUR - team_github.FILES_RESERVE)
+    tw.run_for(300)
+    assert tw.block()["state"] == "ok" and tw.block()["read_at"], "the core reads go on"
+    assert open_paths(tw) == [], "fewer than 100 points to spare after the core reads: the open issues wait"
+    assert tw.poller.budget.spent(tw.clock.mono()) <= team_github.BUDGET_PER_HOUR
+
+
+def test_a_back_off_a_low_remainder_and_a_shared_wait_stop_the_open_issue_read(tw):
+    seed(tw.gh)
+    tw.share()
+    tw.settle()
+    tw.gh.clear_calls()
+    sc = tw.poller.sched[KEY]
+    rd = tw.poller.reads[KEY]
+    later = tw.clock.mono() + 5000
+    tw.poller.reader.remaining = team_github.STOP_BELOW - 1
+    tw.poller._open_stage("acme", "shop", rd, sc, later)
+    assert tw.gh.paths() == [], "under STOP_BELOW"
+    tw.poller.reader.remaining = 4000
+    github.reader.defer_to(tw.clock.mono() + 500)
+    tw.poller._open_stage("acme", "shop", rd, sc, later)
+    assert tw.gh.paths() == [], "GitHub asked this login to wait"
+    github.reader.until = 0.0
+    tw.poller._open_stage("acme", "shop", rd, sc, later)
+    assert len(open_paths(tw)) == 1, "and it reads again when none of that holds"
+
+
+def test_a_failed_open_issue_read_leaves_the_list_unread_and_the_repository_ok(tw):
+    seed(tw.gh)
+    tw.gh.fail(UNASSIGNED, 500, times=-1)
+    tw.share()
+    tw.settle()
+    tw.run_for(60)
+    rd = tw.poller.snapshot()[KEY]
+    assert rd["open_issues"] is None and rd["status"] == "ok" and tw.block()["state"] == "ok"
+    assert len(open_paths(tw)) == 1
+    tw.run_for(300)
+    assert len(open_paths(tw)) == 1, "not asked again at once: the next try is a full interval away"
+    assert tw.block()["free"]["state"] == "unread"
+
+
+def test_a_rate_limit_on_the_open_issues_is_the_repositorys_state(tw):
+    seed(tw.gh)
+    tw.share()
+    tw.gh.fail(UNASSIGNED, 403, headers={"retry-after": "300"}, body={"message": "You have exceeded a secondary rate limit"})
+    tw.run_for(60)
+    assert tw.block()["state"] == "rate_limited" and github.reader.wait_left() > 0
+
+
+def test_twenty_shared_repositories_spend_the_open_issue_reads_inside_the_budget_and_at_most_6_an_hour_each(tw, capsys):
+    slugs = budget_run(tw, 20)
+    per = [len(open_paths(tw, s)) for s in slugs]
+    with capsys.disabled():
+        print(f"\nOPEN_READS_20 per repository {sorted(per)} total {sum(per)} of {tw.gh.points()} points")
+    assert 1 <= min(per) and max(per) <= 6, "every repository got its list inside the hour, none more than 6 times"
+    assert tw.gh.points() <= team_github.BUDGET_PER_HOUR + 8
+    assert all(r["state"] == "ok" for r in tw.body()["repos"] if r["shared"])
+
+
+# ================================================================ review fixes (issue #200): bots, the link windows and the move to a new key
+
+def test_an_app_assigned_to_an_issue_is_not_a_teammate():
+    items = [{"number": 4, "title": "Four", "assignees": [{"id": 99, "login": "Copilot", "type": "Bot"}, {"id": 2, "login": "bob", "type": "User"}]},
+             {"number": 5, "title": "Five", "assignees": [{"id": 99, "login": "Copilot", "type": "Bot"}]},
+             {"number": 6, "title": "Six", "assignees": [{"id": 98, "login": "dependabot[bot]"}, {"id": 3, "login": "carol"}]}]
+    got = team_github.parse_issues(items)
+    assert [(i["number"], [a["login"] for a in i["assignees"]]) for i in got] == [(4, ["bob"]), (6, ["carol"])], "an issue held only by an app is nobody's"
+    rd = {"issues": got, "pulls": [], "linked": {}, "tips": [], "claims": [], "default_branch": "main"}
+    people, _ = team.people_of(rd, "alice", 1, "acme", "shop", START)
+    assert sorted(p["login"] for p in people) == ["bob", "carol"]
+    warned, _ = team.conflicts(rd, "alice", 1, "acme", "shop", START)
+    assert sorted(warned["issues"]) == ["4", "6"] and "Copilot" not in json.dumps(warned) and "dependabot" not in json.dumps(warned)
+    assert team.starts_pairs(rd, "alice", 1, "acme", "shop", START)[1].keys() == {(("id", 2), 4), (("id", 3), 6)}, "the notice never names an app"
+
+
+def test_the_link_read_says_when_a_window_was_full():
+    def node(n):
+        return {"number": n, "linkedBranches": {"nodes": []}, "closingIssuesReferences": {"nodes": []}}
+    def answer(issues, pulls):
+        return {"data": {"repository": {"issues": {"nodes": [node(n) for n in range(issues)]}, "pullRequests": {"nodes": [node(n) for n in range(pulls)]}, "refs": {"nodes": []}}}}
+    assert github.GQL_TEAM.count(f"first:{team.GQL_WINDOW}") == 2, "the constant is the window of both lists of the query"
+    assert team_github.parse_graph(answer(3, 3))["full"] == {"issues": False, "pulls": False}
+    assert team_github.parse_graph(answer(team.GQL_WINDOW, 3))["full"] == {"issues": True, "pulls": False}
+    assert team_github.parse_graph(answer(3, team.GQL_WINDOW))["full"] == {"issues": False, "pulls": True}
+
+
+def test_a_repository_that_moves_to_a_new_key_forgets_the_change_detection_of_the_old_one(tw):
+    seed(tw.gh)
+    tw.share()
+    entry = next(e for e in tw.poller.entries() if e["key"] == KEY)
+    team.watch.forget()
+    try:
+        team.watch.prev[KEY], team.watch.at[KEY], team.watch.told[(KEY, ("id", 2), 5)] = {(("id", 2), 5)}, 1.0, 1.0
+        team.watch.prev["github.com/acme/other"] = {(("id", 2), 5)}
+        tw.poller._retarget(entry, "acme/renamed")
+        assert KEY not in team.watch.prev and KEY not in team.watch.at and not any(k[0] == KEY for k in team.watch.told), "the old key's baseline is gone"
+        assert "github.com/acme/other" in team.watch.prev, "another repository's is not touched"
+    finally:
+        team.watch.forget()

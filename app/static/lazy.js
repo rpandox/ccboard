@@ -36,13 +36,15 @@ const LAZY_BUNDLES = {
   epic: { js: ['/static/pages/epic.js'], css: [{ href: '/static/pages/epic.css', rank: 15 }], probe: () => typeof epicPage !== 'undefined' },
   // the Team view (issue #197): the project page's Team tab, Settings > Team and the demo's answers for /api/team; both pages load it on first use, never at first paint
   team: { js: ['/static/team.js'], css: [{ href: '/static/pages/team.css', rank: 16 }], probe: () => typeof Team !== 'undefined' },
+  // the Team page (issue #200): #/team, and what the sidebar group, the Home line and the palette draw once the board shares a repository (core.js teamUse); never at first paint
+  teamview: { needs: ['team'], js: ['/static/pages/team.js'], css: [{ href: '/static/pages/team-view.css', rank: 17 }], probe: () => typeof TeamView !== 'undefined' },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
   quad: { needs: ['termkit'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 12 }], probe: () => typeof Quad !== 'undefined' },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 11 }], probe: () => typeof wizPage !== 'undefined' },
 };
 
 /* route id -> the bundle that registers its page (the routes not named here are registered by index.html's own scripts) */
-const LAZY_ROUTES = { agents: 'agents', project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub', epic: 'epic' };
+const LAZY_ROUTES = { agents: 'agents', project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub', epic: 'epic', team: 'teamview' };
 
 const lazyPromises = {};      // bundle -> the promise of its load, while it is running or done
 const lazyDoneSet = {};       // bundle -> true once its files ran (a probe can say so too, until this loader has touched the bundle)

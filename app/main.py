@@ -4456,17 +4456,21 @@ class NotifyPrefsIn(BaseModel):
     limit: bool | None = None       # rate limit hit
     error: bool | None = None       # error / crash
     login: bool | None = None       # a login that no longer works
+    team: bool | None = None        # issue #200: a teammate started on an issue I hold (off until switched on; listed only while a repository is shared)
 
 
 @app.get("/api/notify/prefs")
 def api_notify_prefs():
-    """{prefs: {needs, done, limit, error, login}, samples: {<same keys>: {title, body, priority, buttons}}}: the Settings toggles and the
-    example notice behind each, built by the code that builds the real ones."""
+    """{prefs: {needs, done, limit, error, login[, team]}, samples: {<same keys>: {title, body, priority, buttons}}}: the Settings toggles and the
+    example notice behind each, built by the code that builds the real ones. `team` (a teammate started on an issue I hold) is off until switched on and is present only while some
+    repository is shared with the team."""
     return {"prefs": notify.prefs(), "samples": notify.samples()}
 
 
 @app.put("/api/notify/prefs")
-def api_notify_prefs_set(body: NotifyPrefsIn):
+def api_notify_prefs_set(body: NotifyPrefsIn, request: Request):
+    if body.team is True:
+        _epic_person(request, "the teammate notice is switched on by a signed-in person")          # issue #200: an agent (the hook token, an MCP or a node token) cannot switch it on
     return {"prefs": notify.set_prefs(body.model_dump(exclude_none=True)), "samples": notify.samples()}
 
 
@@ -4681,10 +4685,29 @@ def _team_projects() -> list[dict] | None:
 
 
 def _team_poller() -> "team_github.Poller":
-    return team_github.get_poller(db, _team_projects)
+    p = team_github.get_poller(db, _team_projects)
+    p.on_read = _team_watch
+    return p
 
 
-def _team_local(snap: dict) -> dict:
+def _team_watch(key: str, entry: dict) -> None:
+    """Issue #200: after a shared repository was read, look for a teammate who started on an issue this board's owner holds (app/team.py `Watch`: the change between two successive
+    reads) and tell the notification system, which sends only when the owner switched "a teammate started on an issue I hold" on (off by default). Reads the poll's own snapshot and
+    this board's own tasks: nothing is asked of GitHub. The baseline moves on whether or not the kind is on."""
+    p = team_github.poller
+    if p is None:
+        return
+    rd = p.snapshot().get(key)
+    owner, _, name = str(entry.get("slug") or "").partition("/")
+    if rd is None or not github.valid_slug(owner, name):
+        return
+    me = p.me if p.me[0] else team_github.identity_cached()
+    lc = team._local_clean(_team_local({key: rd}, files=False).get(key))
+    for ev in team.watch.step(key, rd, me[0], me[1], owner, name, time.time(), lc):
+        notify.notify_team_start(f"{owner}/{name}", ev["login"], ev["issue"])
+
+
+def _team_local(snap: dict, files: bool = True) -> dict:
     """This board's own open tasks per canonical repository key, for the warnings and the collision marks of the team view (issue #199): {key: [{id, title, issue_number, branch,
     files}]}. Only repositories the team poll has read are looked at, so a board with nothing shared reads no task here. The files of a task (its worktree's diff, cached a minute in
     app/overlap.py) are looked up only for a repository where a teammate's pull request has its changed files read. Local facts only: no gh call; the names go to the signed-in
@@ -4705,14 +4728,40 @@ def _team_local(snap: dict) -> dict:
             break
         left -= 1
         out.setdefault(k, []).append({"id": t["id"], "title": t.get("title"), "issue_number": t.get("issue_number"), "branch": t.get("branch"),
-                                      "files": overlap.task_files(t) if k in want_files else None})
+                                      "files": overlap.task_files(t) if files and k in want_files else None})
     return out
 
 
-def _team_body(poller: "team_github.Poller", entries: list[dict]) -> dict:
+TEAM_CACHE_S = 10.0                                 # a built team answer is reused this long when nothing new was read and no local task changed
+_team_cache: dict = {"poller": None, "sig": None, "at": 0.0, "body": None, "tag": None}
+
+
+def _team_sig(entries: list[dict], me, snap: dict, local: dict) -> tuple:
+    """What the team answer is made from, in a form that compares: who the owner is, the repositories, when each was read (REST, GraphQL, open issues, changed files) and
+    how it ended, and this board's own open tasks."""
+    reads = tuple(sorted((k, v.get("read_at"), v.get("gql_at"), v.get("open_at"), v.get("status"), v.get("reason"), v.get("wait_s"), v.get("graph_error"),
+                         tuple(sorted((n, f.get("checked")) for n, f in (v.get("pull_files") or {}).items() if isinstance(f, dict)))) for k, v in snap.items()))
+    ents = tuple((e.get("key"), e.get("slug"), bool(e.get("shared")), tuple((x.get("project"), x.get("repo")) for x in e.get("local") or [])) for e in entries)
+    tasks = tuple(sorted((k, tuple((t["id"], t.get("title"), t.get("issue_number"), t.get("branch"), tuple(t["files"]) if t.get("files") is not None else None) for t in v))
+                         for k, v in local.items()))
+    return (tuple(me), ents, reads, tasks)
+
+
+def _team_body(poller: "team_github.Poller", entries: list[dict]) -> tuple[dict, str]:
+    """(body, ETag) of the team answer. Built again only when a read landed, the owner, the repositories or a local task changed, or TEAM_CACHE_S passed (the age and the stale flag move
+    with the clock); the page polls on every screen, so most calls reuse the last build and its ETag."""
     me = poller.me if poller.me[0] else team_github.identity_cached()
     snap = poller.snapshot()
-    return team.build(entries, snap, me[0], me[1], time.time(), _team_local(snap))
+    local = _team_local(snap)
+    sig = _team_sig(entries, me, snap, local)
+    now = time.time()
+    c = _team_cache
+    if c["poller"] is poller and c["sig"] == sig and c["body"] is not None and 0 <= now - c["at"] < TEAM_CACHE_S:
+        return c["body"], c["tag"]
+    body = team.build(entries, snap, me[0], me[1], now, local)
+    tag = team.etag(body)
+    _team_cache.update(poller=poller, sig=sig, at=now, body=body, tag=tag)
+    return body, tag
 
 
 class TeamShareIn(BaseModel):
@@ -4729,8 +4778,7 @@ def api_team_state(request: Request):
     A weak ETag over the body without `at` and `age_s`; a matching `If-None-Match` answers 304."""
     _epic_person(request, "the team view is for a signed-in person")
     poller = _team_poller()
-    body = _team_body(poller, team_github.own_repos(_team_projects(), db.team_shared()))
-    tag = team.etag(body)
+    body, tag = _team_body(poller, team_github.own_repos(_team_projects(), db.team_shared()))
     headers = {"ETag": tag, "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}
     if node_state.matches(request.headers.get("if-none-match"), tag):
         return Response(status_code=304, headers=headers)

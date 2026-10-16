@@ -1290,7 +1290,7 @@ def test_demo_team_fixture_has_the_shape_of_the_real_team_state_and_every_state_
     for name, b in [("base", fx["base"]["repos"][0])] + [(n, {**fx["base"]["repos"][0], **(v.get("repo") or {})}) for n, v in fx["variants"].items()]:
         assert set(b) == set(real), (name, set(b) ^ set(real))
         assert b["state"] in team.STATES, (name, b["state"])
-    assert set(fx["base"]) == {"api", "enabled", "me", "at", "repos"} == set(team.build([], {}, None, None, 0.0))
+    assert set(fx["base"]) == {"api", "enabled", "me", "at", "repos", "overview"} == set(team.build([], {}, None, None, 0.0))     # issue #200: the cross-repository list
     reached = {(v.get("repo") or {}).get("state") for v in fx["variants"].values()} | {r["state"] for r in fx["base"]["repos"]}
     assert set(team.STATES) <= reached, sorted(set(team.STATES) - reached)
     people = [p for r in fx["base"]["repos"] for p in r["people"]]

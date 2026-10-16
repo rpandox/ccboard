@@ -241,9 +241,29 @@ def test_the_team_view_is_a_lazy_bundle_with_its_own_sheet_and_stays_out_of_the_
     m = _manifest()
     assert m["team"]["js"] == ["/static/team.js"] and m["team"]["css"] == ["/static/pages/team.css"] and m["team"]["needs"] == []
     assert m["team"]["ranks"][0] > m["epic"]["ranks"][0]
-    assert all("team" not in b["needs"] for b in m.values()), "no bundle needs the team view up front"
+    assert [n for n, b in m.items() if "team" in b["needs"]] == ["teamview"], "only the Team page (issue #200) builds on the team view, and it is lazy too"
     assert "/static/team.js" not in [a["src"] for t, a in tags("index.html") if t == "script"]
     index = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "team.js" not in index and "team.css" not in index
     assert "demoTeam" in _code("core.js"), "core.js hands /api/team to demoTeam, which is defined in team.js"
     assert "demoTeam" in _code("team.js") and "demoTeam" not in "".join(_code(n) for n in ("router.js", "shell.js", "main.js"))
+
+
+def test_the_team_page_is_a_lazy_bundle_and_the_eager_part_is_a_few_bytes():
+    """Issue #200: #/team, the sidebar group, the Home line and the palette rows are pages/team.js and pages/team-view.css, the lazy 'teamview' bundle (it needs 'team'), reached by the
+    route and by core.js teamUse() only while the board says a repository is shared. The eager part is three small functions of core.js and the three hook lines of shell.js, home.js and
+    palette.js; none of them loads anything with nothing shared."""
+    m = _manifest()
+    assert m["teamview"]["js"] == ["/static/pages/team.js"] and m["teamview"]["css"] == ["/static/pages/team-view.css"] and m["teamview"]["needs"] == ["team"]
+    assert m["teamview"]["ranks"][0] > m["team"]["ranks"][0]
+    assert re.search(r"team: 'teamview'", LAZY_SRC.read_text(encoding="utf-8")), "the route #/team waits for the bundle"
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "pages/team" not in index and "team-view" not in index
+    core = _code("core.js")
+    assert "function teamUse" in core and "Lazy.load('teamview')" in core and "s.team.shared === true" in core
+    for name in ("router.js", "main.js", "nodes.js"):
+        assert "TeamView" not in _code(name), name
+    assert "teamSync" in _code("shell.js") and "TeamView.sbItems" in _code("shell.js")
+    eager = len(core.split("let teamViewBad")[1].split("function teamSync")[0]) + 400
+    assert eager < 1400, "the eager hook stays tiny"
+

@@ -31,6 +31,9 @@ const NODE_ROUTES = [
 /* An epic (issue #147): #/epic/<owner>/<repo>/<n>, the GitHub names (app/github.py OWNER_RE, REPO_RE, NUM_RE: a repository may hold a dot, never lead with one). Its page is pages/epic.js, a lazy bundle. */
 const EPIC_ROUTE = { id: 'epic', re: /^\/epic\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/((?![-.])[A-Za-z0-9_.-]{1,100})\/([1-9][0-9]{0,8})$/, params: ['owner', 'repo', 'n'] };
 
+/* The Team page (issue #200): #/team[?by=repo&person=&repo=&state=]. Like the epic address it is kept apart from ROUTES (the twelve pages of the shell); its page is pages/team.js, a lazy bundle. */
+const TEAM_ROUTE = { id: 'team', re: /^\/team$/ };
+
 const ROUTE_PARAM_RE = /^[A-Za-z0-9_-]+$/;
 const NODE_HANDLE_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const LEGACY_HASH_RE = /^#s=([A-Za-z0-9_-]+)$/;
@@ -44,7 +47,7 @@ function parseHash(hash) {
   const path = q >= 0 ? h.slice(0, q) : h;
   const query = {};
   if (q >= 0) for (const [k, v] of new URLSearchParams(h.slice(q + 1))) query[k] = v;
-  for (const r of ROUTES.concat(NODE_ROUTES, [EPIC_ROUTE])) {
+  for (const r of ROUTES.concat(NODE_ROUTES, [EPIC_ROUTE, TEAM_ROUTE])) {
     const m = r.re.exec(path);
     if (!m) continue;
     const params = {};

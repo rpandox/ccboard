@@ -7,7 +7,8 @@ exist on the repository is a 422), label creation. Faults: one-shot overrides (`
 answer was lost; `hang` is a gh that never answers), between-call mutations that add or delete a comment (another node's comment interleaved), and a comment that stays
 hidden from reads until a server time (`hidden_until`, eventual consistency).
 
-Team reads (issue #197, Team P1): the open issues that have an assignee (`assignee=*`, user ids included, a pull request listed among the issues when it has assignees), the open pull
+Team reads (issue #197, Team P1): the open issues that have an assignee (`assignee=*`, user ids included, a pull request listed among the issues when it has assignees; issue #200 adds
+`assignee=none`: the open issues with nobody assigned, bodies included, and the pull requests with nobody assigned), the open pull
 requests (world["pulls"]: `repo#n` -> title, draft, user, head_ref, head_repo, updated_at, closes), the repository record (`full_name` for a rename, `fork` and `parent`, `default_branch`),
 the access faults of an organisation (world["sso"]: 403 with X-GitHub-SSO and the SAML text; world["forbidden"]: 403; world["hidden"]: 404), a gh that prints only `gh: HTTP 304`
 and exits 1 on a conditional hit (world["bare_304"]), and `gh api graphql` (world["tips"], world["linked"], world["gql_cost"], world["gql_rate"]): the one query of app/github.py answered from the
@@ -294,12 +295,22 @@ def read(world: dict, path: str) -> Resp:
         chunk, extra = paged(world, items, query)
         return Resp(200, extra, chunk)
     tl = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/(issues|pulls)\?(.*)", path or "")
-    if tl and (tl.group(3) == "pulls" or "assignee=*" in tl.group(4)):
+    if tl and (tl.group(3) == "pulls" or "assignee=*" in tl.group(4) or "assignee=none" in tl.group(4)):
         o, r, what, query = tl.groups()
         slug = "%s/%s" % (o, r)
         fault = access_fault(world, slug)
         if fault is not None:
             return fault
+        if what == "issues" and "assignee=none" in query:           # issue #200: the open issues nobody is assigned to, with their bodies (the reader drops them), a pull request among them
+            ks = [k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and not it.get("assignees")]
+            ks.sort(key=lambda k: int(k.split("#")[1]))
+            items = [issue_obj(world, k) for k in ks]
+            for pk, pr in sorted((world.get("pulls") or {}).items()):
+                if pk.startswith(slug + "#") and not pr.get("assignees"):
+                    items.append({"number": int(pk.split("#")[1]), "title": pr.get("title", ""), "state": "open", "body": "pull request body", "labels": [], "pull_request": {"url": "x"},
+                                  "assignees": [], "updated_at": pr.get("updated_at", "2026-10-01T09:00:00Z")})
+            chunk, extra = paged(world, items, query)
+            return Resp(200, extra, chunk)
         if what == "issues":
             ks = [k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and it.get("assignees")]
             ks.sort(key=lambda k: int(k.split("#")[1]))

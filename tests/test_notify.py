@@ -43,6 +43,7 @@ def capture(monkeypatch):
     notify._rl_mem.clear()
     notify._rl_last.clear()
     notify._login_told.clear()
+    notify._team_told.clear()
     clock = [1000.0]
     monkeypatch.setattr(notify, "_clock", lambda: clock[0])
     sent.clock = clock
@@ -552,6 +553,7 @@ def test_prefs_survive_a_dead_db_and_a_damaged_row(capture, db, monkeypatch):
     ("limit", lambda: notify.notify_session(TMUX, "errored", "You have hit your limit", "rate_limit")),
     ("limit", lambda: notify.notify_rate_limit(TMUX, "You have hit your limit", resets_at=99)),
     ("login", lambda: notify.notify_login_problem("work", "work", TMUX, "Please run /login")),
+    ("team", lambda: notify.notify_team_start("acme/shop", "bob", 5)),                    # issue #200: the one toggle that starts off
 ])
 def test_a_switched_off_kind_sends_nothing_on_either_channel(capture, db, monkeypatch, toggle, fire):
     web = _web(monkeypatch)
@@ -715,3 +717,88 @@ def test_notify_prefs_api_reads_and_writes_the_toggles(lite_client, capture):
     assert lite_client.put("/api/notify/prefs", headers={"Tailscale-User-Login": "alice@example.com"}, json={"done": True}).status_code == 403   # no X-CCBoard
     assert lite_client.post("/api/notify/test", headers=H).json()["ok"] is True          # the test notice ignores the toggles
     assert capture[-1][1]["title"] == "ccboard test"
+
+
+# ---------------------------------------------------------------- a teammate started on an issue I hold (issue #200): off by default, once per person and issue
+
+SHOP_KEY = "github.com/acme/shop"
+
+
+def test_the_team_kind_is_off_until_switched_on_and_silent_while_off(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    assert notify.team_enabled() is False and notify.kind_enabled("team_started") is False
+    assert notify.prefs() == {"needs": True, "done": True, "limit": True, "error": True, "login": True}, "a board that shares nothing lists the five it always listed"
+    assert not notify.notify_team_start("acme/shop", "bob", 5)
+    assert not notify.send(notify._team_notice("acme/shop", "bob", 5)), "the one gate every notice passes"
+    assert capture == [] and web == [] and notify._team_told == {}, "silent on both channels, and nothing remembered"
+    for odd in ({"team": "yes"}, {"team": 1}, {"team": None}, {"team": "true"}):
+        db.kv_set("notify_prefs", odd)
+        assert notify.team_enabled() is False, odd
+    db.kv_set("notify_prefs", ["not", "a", "dict"])
+    assert notify.team_enabled() is False
+    monkeypatch.setattr(db, "kv_get", lambda k: (_ for _ in ()).throw(RuntimeError("db closed")))
+    assert notify.team_enabled() is False and notify.kind_enabled("team_started") is False
+    monkeypatch.setattr(notify, "_db", None)
+    assert notify.team_enabled() is False
+
+
+def test_the_team_toggle_is_listed_only_while_a_repository_is_shared_and_defaults_off(capture, db):
+    assert "team" not in notify.prefs() and "team" not in notify.samples()
+    db.team_share_set(SHOP_KEY, True)
+    assert notify.prefs()["team"] is False and notify.team_visible() is True
+    smp = notify.samples()
+    assert list(smp) == ["needs", "done", "limit", "error", "login", "team"] and smp["team"]["kind"] == "team_started" and smp["team"]["title"] == "bob started on #12"
+    assert set(smp["team"]) == {"title", "body", "priority", "kind", "buttons"} and smp["team"]["buttons"] == []
+    assert notify.set_prefs({"team": True})["team"] is True and notify.team_enabled() is True
+    assert notify.set_prefs({"done": False})["team"] is True, "another toggle leaves it alone"
+    assert notify.set_prefs({"team": "no"})["team"] is True, "not a boolean: ignored"
+    assert notify.set_prefs({"team": False})["team"] is False
+    db.team_share_set(SHOP_KEY, False)
+    assert "team" not in notify.prefs(), "hidden again once nothing is shared"
+
+
+def test_switched_on_one_notice_per_repository_person_and_issue_and_never_a_repeat(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    notify.set_prefs({"team": True})
+    assert notify.notify_team_start("acme/shop", "bob", 5)
+    assert len(capture) == 1 and len(web) == 1
+    n = capture[0][1]
+    assert n["title"] == "bob started on #5" and n["message"] == "acme/shop\nbob started on issue #5, which you hold.\nOpen Team to see who is working on what."
+    assert n["click"] == f"{PUB}/#/team" and n["tags"] == ["busts_in_silhouette"] and n["priority"] == 3
+    assert web[0]["url"] == "/#/team" and web[0]["tag"] == "team-acme/shop-bob-5" and web[0]["extra"] is not None
+    assert not notify.notify_team_start("acme/shop", "bob", 5), "the same pair, again"
+    assert not notify.notify_team_start("Acme/Shop", "BOB", 5), "the same pair in other letter case"
+    assert len(capture) == 1 and len(web) == 1
+    assert notify.notify_team_start("acme/shop", "bob", 6) and notify.notify_team_start("acme/shop", "carol", 5) and notify.notify_team_start("acme/tools", "bob", 5)
+    assert len(capture) == 4 and len({w["tag"] for w in web}) == 4, "another issue, another person, another repository: each its own notice and its own tag"
+
+
+def test_the_team_notice_carries_only_a_clean_login_an_issue_number_and_the_repository(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    notify.set_prefs({"team": True})
+    for login, slug, issue in (("bob\n<script>x</script>", "acme/shop", 5), ("x" * 80, "acme/shop", 5), ("dependabot[bot]", "acme/shop", 5), ("", "acme/shop", 5), (None, "acme/shop", 5),
+                               ("bob", "acme/shop; rm -rf /", 5), ("bob", "..", 5), ("bob", "acme", 5), ("bob", None, 5), ("bob", "acme/shop", 0), ("bob", "acme/shop", -1),
+                               ("bob", "acme/shop", True), ("bob", "acme/shop", "5"), ("bob", "acme/shop", 10 ** 12)):
+        assert not notify.notify_team_start(slug, login, issue), (login, slug, issue)
+    assert capture == [] and web == [] and notify._team_told == {}
+    assert notify.notify_team_start("acme/shop", "bob-2", 77)
+    text = json.dumps(capture[0][1]) + json.dumps(web[0])
+    assert set(text.replace("\\n", " ").split()) >= {"bob-2"} and "77" in text
+
+
+def test_no_channel_means_no_notice_and_nothing_is_remembered(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    notify.set_prefs({"team": True})
+    monkeypatch.setattr(settings, "ntfy_url", "")
+    monkeypatch.setattr(db, "push_subs", lambda: [])
+    assert not notify.notify_team_start("acme/shop", "bob", 5) and capture == [] and web == [] and notify._team_told == {}
+    monkeypatch.setattr(settings, "ntfy_url", "http://127.0.0.1:2586")
+    assert notify.notify_team_start("acme/shop", "bob", 5), "a channel appeared: the pair was never used up"
+
+
+def test_the_team_notice_names_the_node_when_one_is_paired(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    notify.set_prefs({"team": True})
+    monkeypatch.setattr(notify, "_node_name", lambda: "node-a")
+    assert notify.notify_team_start("acme/shop", "bob", 5)
+    assert capture[0][1]["title"] == "node-a \u00b7 bob started on #5" and web[0]["tag"] == "node-a:team-acme/shop-bob-5"

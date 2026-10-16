@@ -649,6 +649,7 @@ Shell.patchTree = function (tree, model) {
   let items = model.main.slice();
   if (model.older.length) items.push({ key: 'older', kind: 'older', projects: model.older });
   if (typeof Nodes.sbItems === 'function') items = Nodes.sbItems(items);                // the hub view (nodes-hub.js): a "This node" label before, a collapsed group per paired node after; items it adds carry their own make / patch
+  if (typeof TeamView !== 'undefined' && TeamView.ready && teamShared()) items = TeamView.sbItems(items);      // the Team group after them (pages/team.js), only while a repository is shared
   Shell.sync(tree, items, (it) => (it.make ? it.make(it) : it.kind === 'older' ? Shell.olderNode() : Shell.projNode()),
     (n, it) => (it.patch ? it.patch(n, it) : it.kind === 'older' ? Shell.patchOlder(n, it) : Shell.patchProj(n, it, 1)));
   tree._empty.classList.toggle('hidden', !model.empty);
@@ -1575,6 +1576,7 @@ function renderShell(st) {
   Shell.patchUsage(st);
   Shell.patchCounts(model);
   Nodes.sync(st);                                                                       // the hub view's poll starts (or stops) with state.nodes_enabled
+  teamSync(st);                                                                         // the Team view's watch starts (or stops) with state.team.shared (pages/team.js, lazy)
   Shell.patchTrees();
   Shell.syncNav();
   Shell.syncCrumbs();

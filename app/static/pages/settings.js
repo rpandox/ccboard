@@ -52,6 +52,10 @@ const NOTIFY_KINDS = [
   { key: 'error', label: 'Error or crash', pick: 'Error', note: 'A turn failed for some other reason.' },
   { key: 'login', label: 'Login problem', pick: 'Login', note: 'A saved login stopped working.' },
 ];
+/* Issue #200: the sixth kind, listed only while a repository is shared (the board answers prefs.team only then) and OFF until the person switches it on, unlike the five above. */
+const NOTIFY_TEAM = { key: 'team', label: 'A teammate started on an issue I hold', pick: 'Team', note: 'Off until you switch it on. One notice per teammate and issue, with their login and the issue number.', off: true };
+function settingsNotifyKinds() { return Object.prototype.hasOwnProperty.call(settingsNotifyState.prefs, 'team') && teamShared() ? [...NOTIFY_KINDS, NOTIFY_TEAM] : NOTIFY_KINDS; }
+function settingsNotifyOn(key) { const v = settingsNotifyState.prefs[key]; return key === 'team' ? v === true : v !== false; }
 /* The same five examples GET /api/notify/prefs answers, for ?demo=1 (the demo layer has no fixture file for this route). With paired nodes (the demo has them) each title starts with this board's name, as a paired board sends it (settingsNotifyDemo). */
 const SETTINGS_NOTIFY_DEMO = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {
   needs: { title: '◆ shop/api · s1: needs you', body: 'Fix login redirect\n› fix the login redirect\n? Bash: npm test', buttons: ['Allow', 'Deny'] },
@@ -60,18 +64,23 @@ const SETTINGS_NOTIFY_DEMO = { prefs: { needs: true, done: true, limit: true, er
   error: { title: '◆ shop/api · s1: error', body: 'Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error', buttons: ['Terminal', 'Ack'] },
   login: { title: 'Claude login not valid: work', body: '◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.', buttons: [] },
 } };
+/* The team example, as app/notify.py samples() makes it (a teammate called bob); the demo lists it while the demo board shares a repository (state.team.shared). */
+const SETTINGS_NOTIFY_DEMO_TEAM = { title: 'bob started on #12', body: 'acme/shop\nbob started on issue #12, which you hold.\nOpen Team to see who is working on what.', buttons: [] };
 function settingsNotifyDemo() {
-  if (!Nodes.enabled()) return SETTINGS_NOTIFY_DEMO;
+  const team = teamShared();
+  const prefs = team ? { ...SETTINGS_NOTIFY_DEMO.prefs, team: false } : SETTINGS_NOTIFY_DEMO.prefs;
+  const base = team ? { ...SETTINGS_NOTIFY_DEMO.samples, team: SETTINGS_NOTIFY_DEMO_TEAM } : SETTINGS_NOTIFY_DEMO.samples;
+  if (!Nodes.enabled()) return { prefs, samples: base };
   const name = (state && typeof state.node_name === 'string' && state.node_name) || 'this node';
   const samples = {};
-  for (const [k, v] of Object.entries(SETTINGS_NOTIFY_DEMO.samples)) samples[k] = { ...v, title: `${name} · ${v.title}` };
-  return { prefs: SETTINGS_NOTIFY_DEMO.prefs, samples };
+  for (const [k, v] of Object.entries(base)) samples[k] = { ...v, title: `${name} · ${v.title}` };
+  return { prefs, samples };
 }
 const settingsNotifyState = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {}, kind: 'needs', at: 0, repaint: null };
 
 function settingsNotifyAdopt(r) {
   const st = settingsNotifyState;
-  if (r && r.prefs && typeof r.prefs === 'object') st.prefs = Object.assign({}, st.prefs, r.prefs);
+  if (r && r.prefs && typeof r.prefs === 'object') { st.prefs = Object.assign({}, st.prefs, r.prefs); if (!Object.prototype.hasOwnProperty.call(r.prefs, 'team')) delete st.prefs.team; }      // team is listed by the board only while a repository is shared
   if (r && r.samples && typeof r.samples === 'object') st.samples = r.samples;
 }
 
@@ -91,7 +100,7 @@ async function settingsNotifySet(key, on, box) {
   if (st.repaint) st.repaint();
   try { if (!(typeof demoOn === 'function' && demoOn())) settingsNotifyAdopt(await api('PUT', '/api/notify/prefs', { [key]: on })); setError(null); } catch (e) {
     st.prefs[key] = before;
-    if (box) box.checked = before !== false;
+    if (box) box.checked = key === 'team' ? before === true : before !== false;
     setError(e.message);
   }
   if (st.repaint) st.repaint();
@@ -99,47 +108,58 @@ async function settingsNotifySet(key, on, box) {
 
 function settingsNotifyBlock() {
   const st = settingsNotifyState;
-  const boxes = {};
-  const list = el('div', { class: 'set-prefs', role: 'group', 'aria-label': 'What to notify' });
-  for (const k of NOTIFY_KINDS) {
-    const box = el('input', { type: 'checkbox' });
-    box.checked = st.prefs[k.key] !== false;
-    box.addEventListener('change', () => settingsNotifySet(k.key, box.checked, box));
-    boxes[k.key] = box;
-    list.append(el('label', { class: 'set-check set-pref' }, box, el('span', { class: 'set-pref-t' }, el('b', { text: k.label }), el('span', { class: 'dim', text: k.note }))));
-  }
-  const seg = el('div', { class: 'seg-ctl set-kind-seg', role: 'group', 'aria-label': 'Example for' });
-  const btns = {};
-  const pick = (key, focus) => { st.kind = key; paint(); if (focus) btns[key].focus(); };
-  for (const k of NOTIFY_KINDS) {
-    btns[k.key] = el('button', { class: 'seg-btn', type: 'button', 'data-kind': k.key, 'aria-pressed': 'false', text: k.pick, onclick: () => pick(k.key), onkeydown: (e) => {
-      const i = NOTIFY_KINDS.findIndex((x) => x.key === st.kind);
-      const to = e.key === 'ArrowRight' ? NOTIFY_KINDS[(i + 1) % NOTIFY_KINDS.length] : e.key === 'ArrowLeft' ? NOTIFY_KINDS[(i + NOTIFY_KINDS.length - 1) % NOTIFY_KINDS.length] : null;
-      if (!to) return;
-      e.preventDefault();
-      pick(to.key, true);
-    } });
-    seg.append(btns[k.key]);
-  }
-  const card = el('div', { class: 'set-notif', role: 'group', 'aria-label': 'Example notification' });
-  const cap = el('div', { class: 'dim set-note set-notif-cap' });
-  function paint() {
-    for (const k of NOTIFY_KINDS) {
-      btns[k.key].setAttribute('aria-pressed', k.key === st.kind ? 'true' : 'false');
-      if (boxes[k.key].checked !== (st.prefs[k.key] !== false)) boxes[k.key].checked = st.prefs[k.key] !== false;
+  const wrap = el('div', { class: 'set-notify-kinds' });
+  let built = '';
+  let paint = () => {};
+  function build() {
+    const kinds = settingsNotifyKinds();
+    built = kinds.map((k) => k.key).join();
+    const boxes = {};
+    const list = el('div', { class: 'set-prefs', role: 'group', 'aria-label': 'What to notify' });
+    for (const k of kinds) {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = settingsNotifyOn(k.key);
+      box.addEventListener('change', () => settingsNotifySet(k.key, box.checked, box));
+      boxes[k.key] = box;
+      list.append(el('label', { class: 'set-check set-pref' }, box, el('span', { class: 'set-pref-t' }, el('b', { text: k.label }), el('span', { class: 'dim', text: k.note }))));
     }
-    card.textContent = '';
-    const smp = st.samples[st.kind];
-    if (!smp) { card.append(el('div', { class: 'dim', text: 'The example is not available right now.' })); cap.textContent = ''; return; }
-    card.append(el('div', { class: 'set-notif-app dim', text: 'ccboard · now' }), el('div', { class: 'set-notif-title', text: smp.title }),
-      ...String(smp.body || '').split('\n').map((line) => el('div', { class: 'set-notif-line' + (line.startsWith('?') ? ' mono' : ''), text: line })));
-    if (smp.buttons && smp.buttons.length) card.append(el('div', { class: 'set-notif-btns' }, ...smp.buttons.map((b) => el('span', { class: 'set-notif-btn', text: b }))));
-    cap.textContent = (st.prefs[st.kind] === false ? 'This kind is switched off: nothing like it is sent. ' : '')
-      + (smp.buttons && smp.buttons.length ? 'Android shows the buttons under the text. An iPhone shows the text only; a tap opens the session, where Allow, Deny and Ack are one tap away.' : 'A tap opens the board where this needs attention.');
+    if (!kinds.some((k) => k.key === st.kind)) st.kind = kinds[0].key;
+    const seg = el('div', { class: 'seg-ctl set-kind-seg', role: 'group', 'aria-label': 'Example for' });
+    const btns = {};
+    const pick = (key, focus) => { st.kind = key; paint(); if (focus) btns[key].focus(); };
+    for (const k of kinds) {
+      btns[k.key] = el('button', { class: 'seg-btn', type: 'button', 'data-kind': k.key, 'aria-pressed': 'false', text: k.pick, onclick: () => pick(k.key), onkeydown: (e) => {
+        const i = kinds.findIndex((x) => x.key === st.kind);
+        const to = e.key === 'ArrowRight' ? kinds[(i + 1) % kinds.length] : e.key === 'ArrowLeft' ? kinds[(i + kinds.length - 1) % kinds.length] : null;
+        if (!to) return;
+        e.preventDefault();
+        pick(to.key, true);
+      } });
+      seg.append(btns[k.key]);
+    }
+    const card = el('div', { class: 'set-notif', role: 'group', 'aria-label': 'Example notification' });
+    const cap = el('div', { class: 'dim set-note set-notif-cap' });
+    paint = () => {
+      for (const k of kinds) {
+        btns[k.key].setAttribute('aria-pressed', k.key === st.kind ? 'true' : 'false');
+        if (boxes[k.key].checked !== settingsNotifyOn(k.key)) boxes[k.key].checked = settingsNotifyOn(k.key);
+      }
+      card.textContent = '';
+      const smp = st.samples[st.kind];
+      if (!smp) { card.append(el('div', { class: 'dim', text: 'The example is not available right now.' })); cap.textContent = ''; return; }
+      card.append(el('div', { class: 'set-notif-app dim', text: 'ccboard · now' }), el('div', { class: 'set-notif-title', text: smp.title }),
+        ...String(smp.body || '').split('\n').map((line) => el('div', { class: 'set-notif-line' + (line.startsWith('?') ? ' mono' : ''), text: line })));
+      if (smp.buttons && smp.buttons.length) card.append(el('div', { class: 'set-notif-btns' }, ...smp.buttons.map((b) => el('span', { class: 'set-notif-btn', text: b }))));
+      cap.textContent = (!settingsNotifyOn(st.kind) ? 'This kind is switched off: nothing like it is sent. ' : '')
+        + (smp.buttons && smp.buttons.length ? 'Android shows the buttons under the text. An iPhone shows the text only; a tap opens the session, where Allow, Deny and Ack are one tap away.' : 'A tap opens the board where this needs attention.');
+    };
+    wrap.textContent = '';
+    wrap.append(settingsHead('What to notify'), list, settingsHead('What it looks like'), seg, card, cap);
+    paint();
   }
-  st.repaint = paint;
-  paint();
-  return el('div', { class: 'set-notify-kinds' }, settingsHead('What to notify'), list, settingsHead('What it looks like'), seg, card, cap);
+  st.repaint = () => { if (settingsNotifyKinds().map((k) => k.key).join() !== built) build(); else paint(); };
+  build();
+  return wrap;
 }
 
 function settingsNotify(p) {

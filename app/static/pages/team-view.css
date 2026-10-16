@@ -1,0 +1,86 @@
+/* The Team page, the sidebar group and the Home line of issue #200, loaded with pages/team.js (lazy.js 'teamview'). The pieces shared with the Team block (.tm-note, .tm-state, .tm-sg,
+   .tm-lv, .tm-collide) come from pages/team.css, which loads first. State is a glyph plus words, never colour alone; amber and rose only mean attention; agents keep their hues.
+   28 px controls with a mouse, --tap (44 px) on touch; nothing wider than 390 px; no inline styles. */
+
+/* sidebar: one collapsed group, behind a label of its own */
+#sidebar .tm-grp .tn-name, #drawer .tm-grp .tn-name { font-weight:500; }
+#sidebar .tm-group .tn-cnt, #drawer .tm-group .tn-cnt { color:var(--mute-green); }
+#sidebar .tm-prow .tm-pg, #drawer .tm-prow .tm-pg { font-family:var(--font-glyph); color:var(--mute-green); }
+#sidebar .tm-group .nd-more, #drawer .tm-group .nd-more { color:var(--dim); font-size:12px; }
+#sidebar .tm-sbh, #drawer .tm-sbh { margin-top:12px; }
+
+/* Home: one quiet line */
+#page .tm-homeline { margin:0; padding:2px 0 6px; font-size:13px; line-height:1.5; }
+#page .tm-homeline[data-kind=warn] .tm-sg { color:var(--warn-fg); }
+#page .tm-homeline[data-kind=ok] .tm-sg { color:var(--mute-green); }
+#page a.tm-homeline-a { display:inline-flex; align-items:center; min-height:var(--row-btn); gap:2px; color:var(--fg-2); text-decoration:none; overflow-wrap:anywhere; }
+@media (hover:hover) { #page a.tm-homeline-a:hover { color:var(--fg); text-decoration:underline; text-underline-offset:2px; } }
+
+/* the page */
+#page .tv { max-width:1100px; }
+#page .tv-lede { margin:0 0 8px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tv-filters { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px 12px; margin:6px 0 10px; padding:8px 0; border-top:1px solid var(--line-soft); border-bottom:1px solid var(--line-soft); }
+#page .tv-f { display:flex; flex-direction:column; gap:2px; min-width:0; }
+#page .tv-fl { font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+#page .tv-f select { min-width:0; max-width:100%; width:180px; }
+#page .tv-clear { min-height:var(--row-btn); padding:0 10px; border:1px solid var(--line-strong); border-radius:3px; background:transparent; color:var(--fg); font-size:12px; cursor:pointer; }
+#page .tv-count { flex:1 1 12em; font-size:12px; overflow-wrap:anywhere; }
+#page .tv-go { display:inline-flex; align-items:center; justify-content:center; min-height:var(--tap); padding:0 14px; text-decoration:none; }
+#page button.tv-go { border:1px solid var(--line-strong); border-radius:3px; background:transparent; color:var(--fg); font-size:13px; cursor:pointer; }
+
+#page .tv-h { margin:18px 0 6px; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .tv-notes { margin:0; }
+#page .tv-repo-note { margin:0 0 4px; min-width:0; }
+#page .tv-rn { display:block; font-size:12px; color:var(--fg-2); overflow-wrap:anywhere; }
+
+#page .tv-group, #page .tv-free { margin:10px 0 0; min-width:0; }
+#page .tv-gh { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:8px 0 4px; min-width:0; border-top:1px solid var(--line-soft); }
+#page .tv-gname { margin:0; font-size:14px; font-weight:600; line-height:1.4; min-width:0; overflow-wrap:anywhere; }
+#page .tv-gname.mono { font-size:13px; }
+#page .tv-you { padding:0 6px; border:1px solid var(--line-strong); border-radius:10px; font-size:11px; }
+#page .tv-live { font-size:12px; }
+#page .tv-gsum { font-size:12px; }
+
+#page .tv-rows, #page .tv-issues { list-style:none; margin:0; padding:0; }
+#page .tv-row { padding:6px 0 8px 8px; border-top:1px solid var(--line-soft); min-width:0; }
+#page .tv-row:first-child { border-top:0; }
+#page .tv-main { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; font-size:13px; line-height:1.5; }
+#page .tv-state { display:inline-flex; align-items:baseline; gap:2px; flex:none; min-width:8.5em; padding:1px 8px; border:1px solid var(--line-strong); border-radius:12px; font-size:12px; line-height:1.5; white-space:nowrap; color:var(--fg-2); }
+#page .tv-state[data-state=working] { border-color:var(--sig); }
+#page .tv-state[data-state=working] .tm-sg { color:var(--sig); }
+#page .tv-state[data-state=waiting], #page .tv-state[data-state=stale] { border-color:var(--warn); color:var(--warn-fg); }
+#page .tv-state[data-state=idle] .tm-sg { color:var(--mute-slate); }
+#page .tv-state[data-state=ended], #page .tv-state[data-state=github] { color:var(--dim); }
+#page .tv-state[data-state=unconfirmed], #page .tv-state[data-state=unknown], #page .tv-state[data-state=github] { border-style:dashed; }
+#page .tv-ref { flex:none; font-size:12px; }
+#page .tv-title { flex:1 1 220px; min-width:0; font-weight:500; overflow-wrap:anywhere; }
+#page a.tv-a { color:var(--fg); text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere; }
+#page a.tv-a:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+#page .tv-meta { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; gap:2px 14px; margin:3px 0 0; padding-left:2px; font-size:12px; line-height:1.5; color:var(--fg-2); min-width:0; }
+#page .tv-c { display:inline-flex; align-items:center; gap:4px; min-width:0; overflow-wrap:anywhere; }   /* a label and its value stay together, also when a touch link is taller */
+#page .tv-cl { font-size:11px; letter-spacing:.04em; text-transform:uppercase; }
+#page .tv-ag[data-agent=claude] .tm-sg { color:var(--mute-violet); }
+#page .tv-ag[data-agent=codex] .tm-sg { color:var(--mute-teal); }
+#page .tv-ag[data-agent=shell] .tm-sg { color:var(--mute-slate); }
+#page .tv-meta .tm-collide { color:var(--warn-fg); }
+
+#page .tv-fnote { margin:2px 0; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tv-held, #page .tv-next { margin:2px 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tv-issue { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; padding:5px 0 5px 8px; min-width:0; font-size:13px; line-height:1.5; border-top:1px solid var(--line-soft); }
+#page .tv-issue:first-child { border-top:0; }
+#page .tv-labels, #page .tv-when { font-size:12px; min-width:0; overflow-wrap:anywhere; }
+#page .tv-foot { margin:16px 0 0; font-size:12px; line-height:1.5; }
+
+@media (pointer:coarse) {
+  #page a.tv-a, #page a.tm-homeline-a { min-height:var(--row-btn); }
+  #page a.tv-a { display:inline-flex; align-items:center; }
+  #page .tv-f select { height:var(--tap); width:min(100%, 220px); }
+}
+html.force-coarse #page a.tv-a { display:inline-flex; align-items:center; min-height:var(--row-btn); }
+html.force-coarse #page .tv-f select { height:var(--tap); width:min(100%, 220px); }
+@media (max-width:600px) {
+  #page .tv-filters { align-items:stretch; }
+  #page .tv-f { flex:1 1 100%; }
+  #page .tv-f select { width:100%; }
+  #page .tv-state { min-width:0; }
+}

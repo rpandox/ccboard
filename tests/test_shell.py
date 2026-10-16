@@ -349,10 +349,11 @@ def test_agents_route_is_the_plain_path_slash_agents():
 
 def _register_calls():
     """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js, except pages/node.js (its three ids are the NODE_ROUTES of router.js, see
-    test_the_node_pages_register_exactly_the_three_node_routes) and pages/epic.js (its one id is the EPIC_ROUTE of router.js, issue #147)."""
+    test_the_node_pages_register_exactly_the_three_node_routes), pages/epic.js (its one id is the EPIC_ROUTE of router.js, issue #147) and pages/team.js (its one id is
+    the TEAM_ROUTE of router.js, issue #200; see test_the_team_page_registers_exactly_the_team_route)."""
     calls = {}
     for js in sorted((STATIC_ROOT / "pages").glob("*.js")):
-        if js.name in ("node.js", "epic.js"):
+        if js.name in ("node.js", "epic.js", "team.js"):
             continue
         code = _blank_js(js.read_text())
         for m in re.finditer(r"\bregisterPage\(\s*'([A-Za-z0-9_-]+)'", code):
@@ -377,6 +378,15 @@ def test_the_node_pages_register_exactly_the_three_node_routes():
     code = _blank_js((STATIC_ROOT / "pages" / "node.js").read_text())
     assert re.findall(r"\bregisterPage\(\s*'([a-z-]+)'", code) == node_ids
     assert "registerPage(" not in _blank_js((STATIC_ROOT / "router.js").read_text()).replace("function registerPage(", "")
+
+
+def test_the_team_page_registers_exactly_the_team_route():
+    """Issue #200: #/team is the TEAM_ROUTE of router.js (kept out of ROUTES like the epic address) and pages/team.js, loaded only by the lazy 'teamview' bundle, registers it."""
+    router = (STATIC_ROOT / "router.js").read_text()
+    assert "const TEAM_ROUTE = { id: 'team', re: /^\\/team$/ };" in router
+    assert "TEAM_ROUTE" in re.search(r"for \(const r of ROUTES\.concat\((.*?)\)\)", router).group(1)
+    code = _blank_js((STATIC_ROOT / "pages" / "team.js").read_text())
+    assert re.findall(r"\bregisterPage\(\s*'([a-z-]+)'", code) == ["team"]
 
 
 def test_each_page_registers_in_its_own_file_or_the_placeholders():
