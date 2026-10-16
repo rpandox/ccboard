@@ -259,7 +259,7 @@ def build(db, scan: dict) -> dict:
     if len(projs) > PROJECTS_MAX:
         truncated = True
     body = {"api": nodes.API_VERSION,
-            "node": {"id": nodes.node_id(), "name": nodes.display_name(), "url": nodes.public_url(), "version": settings.image_version or None,
+            "node": {"id": nodes.node_id(), "name": nodes.display_name(), "url": nodes.public_url(), "version": settings.version or None,
                      "now": datetime.now(timezone.utc).isoformat(timespec="milliseconds")},
             "etag_base": "0" * ETAG_LEN, "projects": plist, "sessions": sess, "tasks": tasks, "needs_you": needs, "usage": _usage(db),
             "lanes": nodes.lanes_view(db), "login_problems": _problems(db), "truncated": truncated}

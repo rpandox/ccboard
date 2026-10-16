@@ -272,6 +272,22 @@ ENV_FILE_KEYS = (
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
 
+_CHANGELOG_VERSION = re.compile(r"^## (v\d+\.\d+\.\d+[a-z]?)\b", re.M)
+
+
+def checkout_version(path=None) -> str:
+    """The newest `## vX.Y.Z` heading of the checkout's CHANGELOG.md: the version of a native board, which has no image tag (issue #233).
+    Reads the first 8 KB once; a missing or unreadable file, or no heading, gives ''."""
+    p = Path(path) if path else Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            head = f.read(8192)
+    except OSError:
+        return ""
+    m = _CHANGELOG_VERSION.search(head)
+    return m.group(1) if m else ""
+
+
 def env_file_problem(path) -> str | None:
     """Why the settings file at `path` may not be read, or None when it may (or does not exist). It holds the hub token, so it must be a
     regular file (not a link), owned by this user, with no group or world permission. Where the system has no uid (native Windows) the
@@ -379,6 +395,7 @@ class Settings:
         runtime, _detected = plat.resolve_runtime(env)
         self.runtime = runtime
         self.image_version = (env.get("CCBOARD_IMAGE_VERSION") or "").strip()   # baked into the image by CI
+        self.checkout_version = "" if self.image_version else checkout_version()   # a native board: the newest CHANGELOG heading (issue #233)
         # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID), launchd and inside the container.
         self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if plat.dev_bypass_allowed(env, runtime) else None
         if env.get("CCBOARD_DEV_BYPASS_USER") and self.dev_bypass_user is None:
@@ -539,6 +556,11 @@ class Settings:
             else:
                 self.mem_https_port = mp
         self.login_shell = plat.login_shell()
+
+    @property
+    def version(self) -> str:
+        """The image tag in the container, else the checkout's CHANGELOG version; '' when neither is known."""
+        return self.image_version or self.checkout_version
 
     def mem_viewer_url(self) -> str | None:
         """https://<the board's public host>:<CCBOARD_MEM_HTTPS_PORT>/ for the Memory page's viewer link, or None: not set, or no public URL to take the host from.

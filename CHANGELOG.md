@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.59 - 2026-10-16
+
+### Fixed
+- A native board (launchd on a Mac, systemd, a dev shell) now names its version on its node card and in the hub (#233). It is the newest heading of the checkout's `CHANGELOG.md`, read once at start. The container keeps its baked `CCBOARD_IMAGE_VERSION`. Found in the two-board check (#155): the box showed the Mac's version as unknown.
+
+Upgrade: nothing to do.
+
 ## v0.5.58 - 2026-10-16
 
 ### Added
