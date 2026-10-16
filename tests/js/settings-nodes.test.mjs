@@ -41,10 +41,10 @@ const chips = (r) => r.querySelectorAll('.nd-chips .badge').map(text);
 
 // ---------------------------------------------------------------- the three sections
 
-test('five labelled sections in order: This node, Paired nodes, Found on your tailnet, Who can control this node, Activity', async () => {
+test('six labelled sections in order: This node, Paired nodes, Found on your tailnet, Who can control this node, Device check, Activity', async () => {
   const w = nodesWorld();
   await tick();
-  assert.deepEqual(panel(w).querySelectorAll('h2.set-h').map(text), ['This node', 'Paired nodes', 'Found on your tailnet', 'Who can control this node', 'Activity']);
+  assert.deepEqual(panel(w).querySelectorAll('h2.set-h').map(text), ['This node', 'Paired nodes', 'Found on your tailnet', 'Who can control this node', 'Device check', 'Activity']);
 });
 
 test('This node: name, short node id with a Copy, system, agents and free lanes, all from state.node', async () => {
@@ -176,7 +176,7 @@ test('no timer: the page script has no setInterval, setTimeout or poll for the t
   const block = src.slice(start, end).replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(start > 0 && end > start);
   assert.doesNotMatch(block, /setInterval|setTimeout|requestAnimationFrame|visibilitychange/);
-  assert.equal((block.match(/api\('GET'/g) || []).length, 1, 'one place asks');
+  assert.equal((block.match(/api\('GET', '\/api\/nodes\/discover'/g) || []).length, 1, 'one place asks the tailnet');
 });
 
 // ---------------------------------------------------------------- the rows
@@ -542,7 +542,7 @@ const dlg = (w) => w.document.querySelector('dialog.nd-sheet');
 const btn = (root, label) => root.querySelectorAll('button').find((b) => text(b).trim() === label);
 const isFilled = (b) => b.classList.contains('primary') && !b.classList.contains('tinted');
 const filledIn = (root) => root.querySelectorAll('button').filter(isFilled).map((b) => text(b).trim());
-const nodeCalls = (w, method) => calls(w).filter((c) => /^\/api\/nodes(\/|$|\?)/.test(c.path) && !c.path.startsWith('/api/nodes/discover') && (!method || c.method === method));
+const nodeCalls = (w, method) => calls(w).filter((c) => /^\/api\/nodes(\/|$|\?)/.test(c.path) && !c.path.startsWith('/api/nodes/discover') && !c.path.startsWith('/api/nodes/auth') && (!method || c.method === method));
 const writes = (w) => nodeCalls(w).filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path}`);
 const pairedRows = (w) => panel(w).querySelectorAll('.nd-row[data-kind=out]');
 const incomingRows = (w) => panel(w).querySelectorAll('.nd-row[data-kind=in]');

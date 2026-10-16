@@ -1,0 +1,488 @@
+{
+ "snippet": {
+  "user": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"<owner login>\"\n      ],\n      \"dst\": [\n        \"autogroup:self\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+  "tag": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"tag:ccboard\"\n      ],\n      \"dst\": [\n        \"tag:ccboard\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+  "serve": "tailscale serve --bg --https=8443 --accept-app-caps=example.com/cap/ccboard http://127.0.0.1:8000",
+  "cap": "example.com/cap/ccboard",
+  "placeholder": true,
+  "version_min": "1.92",
+  "version_cmd": "tailscale version"
+ },
+ "states": {
+  "token": {
+   "mode": "token",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "the pair token alone (the default)",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": false,
+    "version": null,
+    "version_ok": null,
+    "serve_cap": null,
+    "whois": null
+   },
+   "banner": null,
+   "last_denial": null
+  },
+  "token-checked": {
+   "mode": "token",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "the pair token alone (the default)",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": true
+   },
+   "banner": null,
+   "last_denial": null
+  },
+  "whois": {
+   "mode": "whois",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": true
+   },
+   "banner": null,
+   "last_denial": null
+  },
+  "whois-cap": {
+   "mode": "whois+cap",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": "example.com/cap/ccboard",
+    "set": true,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": true
+   },
+   "banner": null,
+   "last_denial": {
+    "at": "2026-10-16T08:12:40+00:00",
+    "reason": "device_mismatch",
+    "node": "desk-pc"
+   },
+   "snippet": {
+    "user": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"<owner login>\"\n      ],\n      \"dst\": [\n        \"autogroup:self\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "tag": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"tag:ccboard\"\n      ],\n      \"dst\": [\n        \"tag:ccboard\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "serve": "tailscale serve --bg --https=8443 --accept-app-caps=example.com/cap/ccboard http://127.0.0.1:8000",
+    "cap": "example.com/cap/ccboard",
+    "placeholder": false,
+    "version_min": "1.92",
+    "version_cmd": "tailscale version"
+   }
+  },
+  "tagged": {
+   "mode": "whois",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard",
+    "tag:build"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": true
+   },
+   "banner": null,
+   "last_denial": null
+  },
+  "bind": {
+   "mode": "whois",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": false,
+   "reason": "board_bind",
+   "message": "the board listens beyond loopback, so forwarded addresses could be forged; the whois modes stay off and every call from a paired node is refused",
+   "bind": {
+    "ok": false,
+    "hosts": [
+     "0.0.0.0"
+    ],
+    "source": "settings",
+    "reason": "the board listens on 0.0.0.0, beyond loopback: anyone who reaches that address could forge the forwarded headers"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": true
+   },
+   "banner": "the board listens beyond loopback, so forwarded addresses could be forged; the whois modes stay off and every call from a paired node is refused",
+   "last_denial": null
+  },
+  "old": {
+   "mode": "whois+cap",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": "example.com/cap/ccboard",
+    "set": true,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.88.2",
+    "version_ok": false,
+    "serve_cap": false,
+    "whois": true
+   },
+   "banner": "Tailscale 1.88.2 is older than 1.92 and cannot pass the capability, so every call from a paired node is refused",
+   "last_denial": null,
+   "snippet": {
+    "user": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"<owner login>\"\n      ],\n      \"dst\": [\n        \"autogroup:self\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "tag": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"tag:ccboard\"\n      ],\n      \"dst\": [\n        \"tag:ccboard\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "serve": "tailscale serve --bg --https=8443 --accept-app-caps=example.com/cap/ccboard http://127.0.0.1:8000",
+    "cap": "example.com/cap/ccboard",
+    "placeholder": false,
+    "version_min": "1.92",
+    "version_cmd": "tailscale version"
+   }
+  },
+  "noserve": {
+   "mode": "whois+cap",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": "example.com/cap/ccboard",
+    "set": true,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": false,
+    "whois": true
+   },
+   "banner": "Serve does not pass the capability to the board (no --accept-app-caps), so every call from a paired node is refused",
+   "last_denial": null,
+   "snippet": {
+    "user": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"<owner login>\"\n      ],\n      \"dst\": [\n        \"autogroup:self\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "tag": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"tag:ccboard\"\n      ],\n      \"dst\": [\n        \"tag:ccboard\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "serve": "tailscale serve --bg --https=8443 --accept-app-caps=example.com/cap/ccboard http://127.0.0.1:8000",
+    "cap": "example.com/cap/ccboard",
+    "placeholder": false,
+    "version_min": "1.92",
+    "version_cmd": "tailscale version"
+   }
+  },
+  "down": {
+   "mode": "whois",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": "1.104.1",
+    "version_ok": true,
+    "serve_cap": true,
+    "whois": false
+   },
+   "banner": "Tailscale on this board does not answer who is calling, so every call from a paired node is refused",
+   "last_denial": {
+    "at": "2026-10-16T08:14:02+00:00",
+    "reason": "tailscale_unavailable",
+    "node": "desk-pc"
+   }
+  },
+  "nocap": {
+   "mode": "whois+cap",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": false,
+   "reason": "no_cap_name",
+   "message": "whois+cap needs CCBOARD_NODE_CAP (<a domain you control>/cap/ccboard); every call from a paired node is refused until it is set",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": false,
+    "version": null,
+    "version_ok": null,
+    "serve_cap": null,
+    "whois": null
+   },
+   "banner": "whois+cap needs CCBOARD_NODE_CAP (<a domain you control>/cap/ccboard); every call from a paired node is refused until it is set",
+   "last_denial": null
+  },
+  "badmode": {
+   "mode": "who is",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": false,
+   "reason": "bad_mode",
+   "message": "CCBOARD_NODE_AUTH is not token, whois or whois+cap, so every call from a paired node is refused until it is fixed",
+   "bind": {
+    "ok": true,
+    "hosts": [
+     "127.0.0.1"
+    ],
+    "source": "settings+socket",
+    "reason": "the board listens on 127.0.0.1 only"
+   },
+   "cap": {
+    "name": null,
+    "set": false,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": false,
+    "version": null,
+    "version_ok": null,
+    "serve_cap": null,
+    "whois": null
+   },
+   "banner": "CCBOARD_NODE_AUTH is not token, whois or whois+cap, so every call from a paired node is refused until it is fixed",
+   "last_denial": null
+  },
+  "unknown": {
+   "mode": "whois+cap",
+   "modes": [
+    "token",
+    "whois",
+    "whois+cap"
+   ],
+   "ready": true,
+   "reason": null,
+   "message": "on",
+   "bind": {
+    "ok": null,
+    "hosts": [],
+    "source": null,
+    "reason": "could not tell which address the board listens on (no uvicorn --host and no socket table to read); to verify on this runtime"
+   },
+   "cap": {
+    "name": "example.com/cap/ccboard",
+    "set": true,
+    "bad": false
+   },
+   "tags": [
+    "tag:ccboard"
+   ],
+   "host": {
+    "checked": true,
+    "version": null,
+    "version_ok": null,
+    "serve_cap": null,
+    "whois": null
+   },
+   "banner": "Could not confirm whois, the Tailscale version, the Serve flag on this host (to verify), so calls from paired nodes may be refused",
+   "last_denial": null,
+   "snippet": {
+    "user": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"<owner login>\"\n      ],\n      \"dst\": [\n        \"autogroup:self\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "tag": "{\n  \"grants\": [\n    {\n      \"src\": [\n        \"tag:ccboard\"\n      ],\n      \"dst\": [\n        \"tag:ccboard\"\n      ],\n      \"ip\": [\n        \"tcp:8443\"\n      ],\n      \"app\": {\n        \"example.com/cap/ccboard\": [\n          {\n            \"ops\": [\n              \"node.read\",\n              \"node.tasks\",\n              \"node.sessions\",\n              \"node.permissions\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}",
+    "serve": "tailscale serve --bg --https=8443 --accept-app-caps=example.com/cap/ccboard http://127.0.0.1:8000",
+    "cap": "example.com/cap/ccboard",
+    "placeholder": false,
+    "version_min": "1.92",
+    "version_cmd": "tailscale version"
+   }
+  }
+ }
+}

@@ -163,6 +163,7 @@ def reset() -> None:
         lim.clear()
     with _pending_lock:
         _pending.clear()
+        _pending_bind.clear()
     global _last_prune
     _last_prune = None
 
@@ -822,6 +823,7 @@ CONFIRM_TTL = 30.0                                            # seconds an in-fl
 CONFIRM_MAX = 16                                              # in-flight records kept at most; only add_node (a signed-in person's action) writes one
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
 _pending: dict[tuple[str, str], float] = {}                   # (this board's node id, proof) -> expiry: only add_node writes it, in memory only
+_pending_bind: dict[tuple[str, str], dict] = {}              # the same key -> the other board's device, seen at the confirm (issue #136, whois modes only)
 _pending_lock = threading.Lock()
 _code_lock = threading.Lock()                                 # one redeem at a time: two requests cannot both spend the code
 _reg_lock = threading.RLock()                                 # the registry is read, changed and written whole
@@ -849,7 +851,8 @@ def _db(db=None):
 class PairError(Exception):
     """A pairing that did not happen. `reason` is one word the page can switch on; str() is the sentence for a person; `status` the HTTP code."""
     STATUS = {"none": 403, "wrong": 403, "expired": 403, "burned": 403, "rate_limited": 429, "bad_request": 400, "bad_url": 400,
-              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500, "registry_full": 409}
+              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500, "registry_full": 409,
+              "tailscale_unavailable": 503, "device_refused": 403}
     MESSAGES = {
         "none": "There is no active pairing code on that node. Make a new one there.",
         "wrong": "That code is not right.",
@@ -863,6 +866,8 @@ class PairError(Exception):
         "unreachable": "The other node could not be reached.",
         "store": "The token could not be saved on this node; nothing was paired.",
         "registry_full": f"This board already has {MAX_PEERS} paired nodes, the most it keeps. Remove one in Settings > Nodes first; nothing was paired.",
+        "tailscale_unavailable": "That node could not ask Tailscale which device is calling, so it refused the pairing (its device check is on). The code still works; try again once Tailscale runs there.",
+        "device_refused": "That node's device check refused this device; nothing was paired.",
     }
 
     def __init__(self, reason: str, retry_after: int = 0, message: str | None = None):
@@ -1105,7 +1110,23 @@ def _in_view(r: dict) -> dict:
     return {"peer_id": r["peer_id"], "node_id": r["peer_node_id"] or None, "name": r["peer_name"] or None, "url": r["peer_url"],
             "scopes": _scopes_of(r["scopes"]), "created_at": r["created_at"], "last_seen": r["last_used_at"], "direction": "in",
             "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"],
-            "superseded_by": r.get("superseded_by") or None, "superseded_by_url": None}
+            "superseded_by": r.get("superseded_by") or None, "superseded_by_url": None,
+            "device_bound": bool(r.get("peer_ts_id")), "device_id": _device_short(r.get("peer_ts_id")), "device_tags": _device_tags(r.get("peer_tags"))}
+
+
+def _device_short(sid) -> str | None:
+    """The short form of a bound device's StableNodeID for the pair row (issue #136): the first 4 and the last 4 characters; None when the pair is not bound."""
+    s = sid if isinstance(sid, str) else ""
+    return None if not s else (s if len(s) <= 10 else f"{s[:4]}...{s[-4:]}")
+
+
+def _device_tags(raw) -> list[str]:
+    """The Tailscale tags a pair's device carried when it was bound (issue #136); [] when it was not bound or had none."""
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return []
+    return [x for x in v if isinstance(x, str)][:16] if isinstance(v, list) else []
 
 
 def peers(db=None) -> list[dict]:
@@ -1372,7 +1393,7 @@ def _clean_claim(node) -> dict:
             "url": url if isinstance(url, str) and 0 < len(url) <= 300 else None}
 
 
-def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, db=None) -> tuple[dict, str]:
+def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, binding: dict | None = None, db=None) -> tuple[dict, str]:
     """A new incoming pair: the row (digest only) and the token's plaintext, which this call returns and nothing keeps. It never touches another
     pair: the node id in `node` is only a claim until the caller's address has confirmed it (handle_pair), and only then does
     revoke_older_pairs retire the older pairs of that node."""
@@ -1381,7 +1402,8 @@ def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool 
     token = _new_token()
     pid = _new_peer_id()
     d.node_pair_add(peer_id=pid, peer_node_id=c["node_id"], peer_name=c["name"], peer_url=c["url"], token_sha256=_digest(token),
-                    scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), callback_unverified=1 if callback_unverified else 0)
+                    scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), callback_unverified=1 if callback_unverified else 0,
+                    **({"peer_ts_id": binding["peer_ts_id"], "peer_tags": binding["peer_tags"]} if binding else {}))      # issue #136: the device it was paired from
     return _in_view(d.node_pair_get(pid)), token
 
 
@@ -1552,10 +1574,12 @@ def _audit_refused(db, detail: str) -> None:
         audit("in", "", "pair_refused", False, detail, status="refused", db=db)
 
 
-def redeem_code(code, caller: str, *, node=None, db=None) -> dict:
+def redeem_code(code, caller: str, *, node=None, bind=None, db=None) -> dict:
     """Spend the pairing code. Returns {peer_id, token, scopes, expires_at} with the token's plaintext, once. `caller` is the source address (the
     20 attempts a minute are counted before the code is looked at). Raises PairError: rate_limited, none (no active code), expired, wrong, burned
-    (the 5th wrong try deletes the code). `node` is the caller's claimed card; its id, name and address fill the pair row."""
+    (the 5th wrong try deletes the code). `node` is the caller's claimed card; its id, name and address fill the pair row. `bind` (issue #136, the whois
+    modes only) is called once the code is found right and before it is spent: it returns the device binding for the row or raises PairError, which
+    leaves the code as it was (a Tailscale that could not answer does not cost the person a new code)."""
     d = _db(db)
     who = str(caller or "unknown")[:64]
     ok, wait = pair_limiter.allow(who)
@@ -1582,12 +1606,19 @@ def redeem_code(code, caller: str, *, node=None, db=None) -> dict:
             d.kv_set(KV_CODE, {**v, "attempts": tries}, at=_now())
             _audit_refused(d, f"wrong code, try {tries}")
             raise PairError("wrong")
+        binding = None
+        if bind is not None:
+            try:
+                binding = bind()
+            except PairError as e:
+                _audit_refused(d, f"device check: {e.reason}")
+                raise
         if incoming_full(d, node):                                 # issue #153: the code stays; nothing is minted (a re-pair that replaces a pair of the same node is let in)
             _audit_refused(d, f"pairs full ({MAX_PEERS} nodes)")
             raise PairError("registry_full")
         d.kv_del(KV_CODE)                                          # spent: a second use of the same code finds none
     scopes = _scopes_of(v.get("scopes")) or list(DEFAULT_SCOPES)
-    row, token = add_incoming(node, scopes, callback_unverified=True, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
+    row, token = add_incoming(node, scopes, callback_unverified=True, binding=binding, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
     audit("in", row["peer_id"], "code_used", True, f"scopes {','.join(scopes)}", node_name=row["name"], db=d)
     return {"peer_id": row["peer_id"], "token": token, "scopes": scopes, "expires_at": row["expires_at"]}
 
@@ -1910,6 +1941,8 @@ def begin_confirm(norm: str, nonce: str, target_url: str):
             _pending.pop(k, None)
         while len(_pending) >= CONFIRM_MAX:
             _pending.pop(min(_pending, key=_pending.get), None)
+        for k in [k for k in _pending_bind if k not in _pending]:
+            _pending_bind.pop(k, None)
         _pending[key] = now + CONFIRM_TTL
     return key
 
@@ -1918,22 +1951,49 @@ def end_confirm(key) -> None:
     if key is not None:
         with _pending_lock:
             _pending.pop(key, None)
+            _pending_bind.pop(key, None)
 
 
-def confirm_answer(proof) -> str | None:
+def confirm_binding(key) -> dict | None:
+    """The other board's device ({peer_ts_id, peer_tags}) seen when it called the confirm route for the in-flight add_node `key` (issue #136, whois
+    modes), or None: the mode is off, the confirm never came, or the device check could not say who called."""
+    if key is None:
+        return None
+    with _pending_lock:
+        b = _pending_bind.get(key)
+    return dict(b) if b else None
+
+
+def confirm_answer(proof, bind=None) -> str | None:
     """This board's node id when `proof` belongs to an add_node that is in flight on this board right now, else None (the route answers 404 for an
     unknown and for a stale proof alike, so it says nothing about what is pending). Only a caller that knows the code and the nonce can make a
-    proof that matches; every record is compared in constant time and the loop never stops early."""
+    proof that matches; every record is compared in constant time and the loop never stops early. `bind` (issue #136, the whois modes) is called
+    only for a matching proof: the device of the board calling back, kept for add_node to write on the reverse pair. A device check that fails
+    leaves that pair unbound (its calls are then refused as not_bound) and does not change the answer."""
     if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
         return None
     me = node_id()
     now = _now()
-    found = False
+    found = None
     with _pending_lock:
         for (nid, pr), exp in _pending.items():
             same = hmac.compare_digest(pr.encode("ascii"), proof.encode("ascii"))
-            found = found or (same and nid == me and exp > now)
-    return me if found else None
+            if same and nid == me and exp > now:
+                found = (nid, pr)
+        need_bind = bind is not None and found is not None and found not in _pending_bind
+    if found is None:
+        return None
+    if need_bind:
+        try:
+            b = bind()
+        except Exception as e:                                       # PairError, or anything else: unbound, never a broken confirm
+            log.warning("pair confirm: the reverse pair stays unbound (%s)", getattr(e, "reason", e.__class__.__name__))
+            b = None
+        if b:
+            with _pending_lock:
+                if found in _pending:
+                    _pending_bind[found] = {"peer_ts_id": b["peer_ts_id"], "peer_tags": b["peer_tags"]}
+    return me
 
 
 def _same_address(a, b) -> bool:
@@ -1982,7 +2042,7 @@ def _check_pair_body(body) -> tuple[str, dict, dict | None, str | None]:
     return body["code"], node, rev, confirm
 
 
-def handle_pair(body, caller: str, db=None) -> dict:
+def handle_pair(body, caller: str, db=None, bind=None) -> dict:
     """The accepting side of the handshake: everything POST /api/nodes/pair does after the route has checked its headers. Nothing happens before the
     code is right (only the shape of the request is read). Then: the code is spent and the pair row (digest only) is written as
     `callback_unverified`. B then proves that the board at the caller's address is the one redeeming this code right now: it POSTs
@@ -1994,7 +2054,7 @@ def handle_pair(body, caller: str, db=None) -> dict:
     d = _db(db)
     code, node, rev, confirm = _check_pair_body(body)
     norm = normalize_code(code)
-    r = redeem_code(code, caller, node=node, db=d)
+    r = redeem_code(code, caller, node=node, bind=bind, db=d)
     pid = r["peer_id"]
     unverified = True
     try:
@@ -2154,7 +2214,10 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         if back is not None:
             # The id is the other board's own word, from an answer at the address the person typed; it counts as confirmed only for that address (the
             # gates in unpair_incoming and remove_node also ask for the same address).
-            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0)
+            # Issue #136: in a whois mode, the device the other board called the confirm route from is the one the reverse token is bound to; no
+            # confirm (or a device check that could not answer) leaves the pair unbound, and its calls are refused as not_bound.
+            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0,
+                               **(confirm_binding(pending) or {}))
     except BaseException:
         if back is not None:
             revoke(back["peer_id"], db=d, why="pairing did not finish")

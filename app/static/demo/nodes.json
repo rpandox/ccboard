@@ -60,7 +60,10 @@
       ],
       "created_at": "2026-09-25T12:00:00+00:00",
       "last_seen": "2026-10-03T02:58:10+00:00",
-      "direction": "in"
+      "direction": "in",
+      "device_bound": true,
+      "device_id": "nWIN...TRL4",
+      "device_tags": []
     },
     {
       "peer_id": "p-phone-board",
@@ -87,6 +90,11 @@
       "created_at": "2026-10-03T02:30:00+00:00",
       "last_seen": "2026-10-03T02:55:00+00:00",
       "direction": "in",
+      "device_bound": true,
+      "device_id": "nBOX...TRL1",
+      "device_tags": [
+        "tag:ccboard"
+      ],
       "superseded_by": null,
       "superseded_by_url": null
     },

@@ -164,7 +164,7 @@ test('off: one sentence on what it would do, the risk in plain words, the env ke
 test('without nodes-worker.js nothing about the worker is in the page and nothing breaks', async () => {
   const w = settingsWorld({ worker: view(), load: false });
   await tick();
-  assert.deepEqual(heads(w), ['This node', 'Paired nodes', 'Found on your tailnet', 'Who can control this node', 'Activity']);
+  assert.deepEqual(heads(w), ['This node', 'Paired nodes', 'Found on your tailnet', 'Who can control this node', 'Device check', 'Activity']);
 });
 
 test('a worker that refused to start says why, lists nothing as allowed and offers no button', async () => {

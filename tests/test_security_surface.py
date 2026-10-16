@@ -176,6 +176,7 @@ EXPECTED = {
     ("GET", "/api/nodes"): "identity",              # the nodes this board calls and the pairs that call it (issue #135); never a token or a hash
     ("POST", "/api/nodes"): "identity+csrf",        # pair with another board: its address and its code
     ("GET", "/api/nodes/pairs"): "identity",
+    ("GET", "/api/nodes/auth"): "identity",                     # issue #136: the device-check mode, readings and grant text for Settings > Nodes
     ("GET", "/api/nodes/audit"): "identity",
     ("POST", "/api/nodes/pair-code"): "identity+csrf",
     ("DELETE", "/api/nodes/pair-code"): "identity+csrf",

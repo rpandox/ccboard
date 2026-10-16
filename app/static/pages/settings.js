@@ -741,7 +741,7 @@ function settingsNdAddSheet(opener, prefill) {
    only when a person opens this tab (a plain GET: the board answers from its last look) or presses Refresh (?refresh=1: the board looks again). No timer, no poll: the
    page script never asks while this tab is closed or the page is hidden, and a board with no tailnet answers once with a plain reason. Everything the board's answer
    says about a device is shown through textContent (NodeView in nodes.js) and nothing in it is ever opened or followed. */
-const settingsNd = { data: null, at: 0, err: '', busy: false, seq: 0, rev: 0, ui: null };
+const settingsNd = { data: null, at: 0, err: '', busy: false, seq: 0, rev: 0, ui: null, auth: null, authAt: 0, authErr: '', authBusy: false, authSeq: 0, authKind: 'user' };
 
 /* The short lines under a Mac or WSL2 node's platform (issue #154); the same words as Nodes.platNotes in nodes-hub.js, which a single board's Settings page does not load. */
 function settingsNdPlatNotes(card, name) {
@@ -899,8 +899,9 @@ function settingsNdPaintIncoming(nu) {
   const now = settingsNdNow();
   const minute = Math.floor(Date.now() / 60000);
   const items = settingsNdIn();
-  settingsNdPatch(nu.inList, items, (rec) => NodeView.peer(rec).key, (rec) => JSON.stringify([rec, minute, P.act[NodeView.peer(rec).id] || '', settingsNdArmed(NodeView.peer(rec).id)]),
-    (rec) => NodeView.peerRow(rec, { nowMs: now, incoming: true, actions: settingsNdPeerActions(rec, true) }));
+  const deviceCheck = NodeView.authView(settingsNd.auth).deviceOn;                                  // issue #136: a pair that is not bound says so while the device check is on
+  settingsNdPatch(nu.inList, items, (rec) => NodeView.peer(rec).key, (rec) => JSON.stringify([rec, minute, P.act[NodeView.peer(rec).id] || '', settingsNdArmed(NodeView.peer(rec).id), deviceCheck]),
+    (rec) => NodeView.peerRow(rec, { nowMs: now, incoming: true, actions: settingsNdPeerActions(rec, true), deviceCheck }));
   settingsNdEmpty(nu.inEmpty, !items.length && !(P.pairs === null && P.nodes === null), 'No node can control this board. Press Create pairing code, then type the code on the other board.');
 }
 
@@ -1015,6 +1016,119 @@ function settingsNdPaintFound(ui, st) {
   for (const gone of old.values()) gone.remove();
 }
 
+/* Settings > Nodes > Device check (issue #136, GET /api/nodes/auth; the words are NodeView.authView in nodes-pair.js). It says which mode checks the calls of paired nodes (token, whois or
+   whois+cap), whether this host can really run it (a banner when the mode is stronger than the host), what the host reads (the board's address, the Tailscale version, whether Tailscale
+   answers, whether Serve passes the capability on) and the two texts the owner applies by hand: the grant for the tailnet policy (user-owned or tagged devices) and the tailscale serve
+   command. Nothing on this page switches the mode or applies a text: the mode is CCBOARD_NODE_AUTH in the settings file. The board asks Tailscale nothing in token mode until Check is
+   pressed (?check=1). The frame is built once and the top part is repainted only when the answer changed, so a poll never recreates a Copy button under a finger. */
+const SETTINGS_AUTH_SWITCH = 'To change the mode, set CCBOARD_NODE_AUTH to token, whois or whois+cap in the settings file and restart the board; whois+cap also needs CCBOARD_NODE_CAP. Nothing on this page switches it. Both device modes need the board to listen on loopback only (the installers do) and each node to be paired again.';
+
+function settingsNdAuthKv(row) {
+  const glyph = row.glyph ? el('span', { class: 'nd-glyph', 'aria-hidden': 'true', text: row.glyph }) : null;
+  return settingsKv(row.label, el('span', { class: row.tone === 'bad' ? 'v bad' : row.tone === 'warn' ? 'v warn' : 'v', 'data-auth': row.key }, glyph, glyph ? ' ' : null, row.text),
+    row.note ? el('span', { class: 'dim', text: row.note }) : null);
+}
+
+function settingsNdPaintAuthTop(ui) {
+  const S = settingsNd;
+  const host = ui.authTop;
+  const sig = JSON.stringify([S.auth, S.authErr, S.authBusy]);
+  ui.authCheck.textContent = S.authBusy ? 'Checking' : 'Check';
+  ui.authCheck.setAttribute('aria-busy', S.authBusy ? 'true' : 'false');
+  ui.authCheck.classList.toggle('busy', S.authBusy);
+  if (host.ccSig === sig) return;
+  host.ccSig = sig;
+  host.textContent = '';
+  if (S.authErr) host.append(el('div', { class: 'dim nd-status bad', role: 'status', text: `Could not read the device check: ${S.authErr}.${S.auth ? ' What is shown is the last answer.' : ''}` }));
+  if (!S.auth) {
+    if (!S.authErr) host.append(el('div', { class: 'dim nd-pempty', role: 'status', text: 'Reading the device check…' }));
+    return;
+  }
+  const v = NodeView.authView(S.auth);
+  const word = v.known ? v.mode : (typeof S.auth.mode === 'string' && S.auth.mode ? S.auth.mode.slice(0, 24) : 'unknown');
+  host.append(settingsKv('Mode', el('span', { class: 'v', 'data-auth': 'mode', text: word }), NodeView.chip(v.state.word, v.state.tone, v.state.glyph, 'Whether the board can run this mode now'),
+    el('span', { class: 'dim', text: `${v.title}. ${v.what}` })));
+  if (v.banner) host.append(el('div', { class: 'set-err nd-auth-banner', role: 'status' }, el('span', { class: 'nd-glyph', 'aria-hidden': 'true', text: '!' }), ' ', el('span', { 'data-auth': 'banner', text: v.banner })));
+  for (const row of v.rows) host.append(settingsNdAuthKv(row));
+  if (v.mode === 'token' && !v.checked) host.append(el('div', { class: 'dim set-note', text: 'The board asks Tailscale nothing in this mode. Press Check to read the Tailscale version, whether Tailscale answers and whether Serve passes the capability on.' }));
+}
+
+/* The grant and the Serve command: static frame, texts and Copy buttons repainted only when the answer or the choice changed. */
+function settingsNdPaintAuthText(ui) {
+  const S = settingsNd;
+  const v = NodeView.authView(S.auth);
+  const sn = v.snippet;
+  const sig = JSON.stringify([sn, S.authKind]);
+  ui.authKind.paint(S.authKind);
+  if (ui.authTextSig === sig) return;
+  ui.authTextSig = sig;
+  const grant = S.authKind === 'tag' ? sn.tag : sn.user;
+  ui.authGrant.textContent = grant || 'The board did not send the grant yet.';
+  ui.authGrantCopy.textContent = '';
+  if (grant && typeof copyButton === 'function') ui.authGrantCopy.append(copyButton(grant, 'the grant'));
+  ui.authGrantNote.textContent = (sn.placeholder ? `${sn.cap || 'example.com/cap/ccboard'} stands for a domain you control; use your own and set it as CCBOARD_NODE_CAP. ` : '')
+    + (S.authKind === 'tag' ? 'The tag is the one in CCBOARD_NODE_TAGS, or tag:ccboard when none is set. ' : '<owner login> stands for your Tailscale login. ')
+    + 'The ip line gives the network access: a grant with only app gives none.';
+  ui.authServe.textContent = sn.serve || '';
+  ui.authServeCopy.textContent = '';
+  if (sn.serve && typeof copyButton === 'function') ui.authServeCopy.append(copyButton(sn.serve, 'the command'));
+  ui.authVerCmd.textContent = sn.cmd;
+  ui.authVerCopy.textContent = '';
+  if (typeof copyButton === 'function') ui.authVerCopy.append(copyButton(sn.cmd, 'the command'));
+  ui.authVerNote.textContent = `whois+cap needs Tailscale ${sn.min} or newer. Check yours with `;
+}
+
+function settingsNdPaintAuth(ui) {
+  settingsNdPaintAuthTop(ui);
+  settingsNdPaintAuthText(ui);
+}
+
+function settingsNdAuthFrame(ui) {
+  ui.authCheck = el('button', { class: 'minimal', type: 'button', 'aria-busy': 'false', title: 'Read the Tailscale version, whether Tailscale answers and whether Serve passes the capability on', text: 'Check', onclick: () => settingsNdAuthLoad(true) });
+  ui.authTop = el('div', { class: 'nd-auth-top' });
+  ui.authKind = settingsNdSeg('Grant for', [['user', 'Your devices', 'For devices you own: the grant names your login and autogroup:self'], ['tag', 'Tagged devices', 'For tagged devices: the grant names the ccboard tag']],
+    (k) => { settingsNd.authKind = k; settingsNdPaintAuthText(ui); });
+  ui.authGrant = el('pre', { class: 'cmd-readout nd-auth-pre', tabindex: '0', 'aria-label': 'Grant for the tailnet policy' });
+  ui.authGrantCopy = el('span', { class: 'nd-auth-copy' });
+  ui.authGrantNote = el('div', { class: 'dim set-note' });
+  ui.authServe = el('code', { class: 'doc-cmd' });
+  ui.authServeCopy = el('span', { class: 'nd-auth-copy' });
+  ui.authVerCmd = el('code', { class: 'doc-cmd nd-auth-ver' });
+  ui.authVerCopy = el('span', { class: 'nd-auth-copy' });
+  ui.authVerNote = el('span', { class: 'dim' });
+  return el('div', { class: 'nd-auth' }, ui.authTop,
+    el('h3', { class: 'nd-auth-h', text: 'Grant for the tailnet policy' }),
+    el('div', { class: 'nd-auth-tools' }, ui.authKind.node, ui.authGrantCopy), ui.authGrant, ui.authGrantNote,
+    el('h3', { class: 'nd-auth-h', text: 'Command for tailscale serve' }),
+    el('div', { class: 'doc-cmdline' }, ui.authServe, ui.authServeCopy),
+    el('div', { class: 'dim set-note', text: 'Only whois+cap needs it. Run it once on this device after the grant is in place.' }),
+    el('div', { class: 'nd-auth-ver-row' }, ui.authVerNote, el('span', { class: 'doc-cmdline' }, ui.authVerCmd, ui.authVerCopy)),
+    el('div', { class: 'dim set-note', text: 'Both texts are shown, never applied: ccboard does not change the tailnet policy and does not run tailscale serve.' }),
+    el('h3', { class: 'nd-auth-h', text: 'How to switch the mode' }),
+    el('div', { class: 'dim set-note nd-auth-switch', text: SETTINGS_AUTH_SWITCH }));
+}
+
+/* GET /api/nodes/auth (check: ?check=1, which lets the board read Tailscale in token mode too). A newer ask makes an older answer stale; a failed ask keeps the last answer and says so. */
+async function settingsNdAuthLoad(check) {
+  const S = settingsNd;
+  if (S.authBusy) return false;
+  const mine = ++S.authSeq;
+  S.authBusy = true;
+  S.authErr = '';
+  S.rev++;
+  settingsFill('nodes', true);
+  let a = null;
+  let err = '';
+  try { a = await api('GET', '/api/nodes/auth' + (check ? '?check=1' : '')); } catch (e) { err = (e && e.message) || 'the board did not answer'; }
+  if (mine !== S.authSeq) return false;
+  S.authBusy = false;
+  if (!err && a && typeof a === 'object' && typeof a.mode === 'string') { S.auth = a; S.authAt = Date.now(); } else if (!err) err = 'the board answered without a mode';
+  S.authErr = err;
+  S.rev++;
+  settingsFill('nodes', true);
+  return !err;
+}
+
 function settingsNdUi() {
   if (settingsNd.ui) return settingsNd.ui;
   const ui = {
@@ -1048,6 +1162,7 @@ function settingsNdUi() {
   ui.codeBtn = el('button', { type: 'button', title: 'Make a one-time code to type on another board', text: 'Create pairing code' });
   ui.codeBtn.addEventListener('click', () => settingsNdCodeSheet(ui.codeBtn));
   ui.reload = el('button', { class: 'minimal', type: 'button', title: 'Read the paired nodes and the activity again', text: 'Reload', onclick: () => settingsNdLoadPeers() });
+  ui.authRoot = settingsNdAuthFrame(ui);                                                                       // issue #136: the Device check section (also makes ui.authCheck)
   ui.workerSlot = el('div', { class: 'nd-worker' });                                                            // issue #157: the Worker section joins this slot once nodes-worker.js (its lazy bundle) is here
   ui.root = el('div', { class: 'nd-panel' },
     settingsHead('This node'), ui.thisHost, ui.workerSlot,
@@ -1059,6 +1174,8 @@ function settingsNdUi() {
     el('div', { class: 'nd-sec-head' }, settingsHead('Who can control this node'), ui.codeBtn),
     el('div', { class: 'dim set-note', text: 'Nodes that hold a token for this board, and what each may do. Revoke cuts one off at once.' }),
     ui.inList, ui.inEmpty,
+    el('div', { class: 'nd-sec-head' }, settingsHead('Device check'), ui.authCheck),
+    ui.authRoot,
     el('div', { class: 'nd-sec-head' }, settingsHead('Activity'), ui.reload),
     ui.auditBar, ui.auditList, ui.auditEmpty);
   settingsNd.ui = ui;
@@ -1073,6 +1190,7 @@ function settingsNodes(p) {
   settingsNdPaintPaired(ui, state);
   settingsNdPaintFound(ui, state);
   settingsNdPaintIncoming(ui);
+  settingsNdPaintAuth(ui);
   settingsNdPaintAudit(ui);
 }
 
@@ -1109,6 +1227,7 @@ async function settingsNdLoad(refresh) {
 function settingsNdOpen() {
   settingsNdOpenPeers();
   settingsNdWorkerOpen();
+  if (!settingsNd.authBusy && (!settingsNd.auth || Date.now() - settingsNd.authAt >= NodeView.STALE_S * 1000)) settingsNdAuthLoad(false);
   if (settingsNd.busy) return;
   if (settingsNd.data && Date.now() - settingsNd.at < NodeView.STALE_S * 1000) return;
   settingsNdLoad(false);
@@ -1135,6 +1254,11 @@ function settingsNdDispose() {
   settingsNd.data = null;
   settingsNd.at = 0;
   settingsNd.err = '';
+  settingsNd.authSeq++;
+  settingsNd.authBusy = false;
+  settingsNd.auth = null;
+  settingsNd.authAt = 0;
+  settingsNd.authErr = '';
 }
 
 /* Settings > Team (issue #197): team.js draws the panel. It is a lazy bundle, so the first visit shows a line and asks for it; the panel then watches the board's team view while it is the open

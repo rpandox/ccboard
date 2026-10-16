@@ -200,6 +200,20 @@ html.force-coarse #page .settings-page .nd-fsel { font-size:16px; }
 @media (pointer:coarse) { #page .settings-page .nd-row .nd-act .bp5-button, #page .settings-page .nd-sec-head > button { min-height:var(--tap); } }
 @media (max-width:599px) { #page .settings-page .nd-row .nd-act { width:100%; justify-content:flex-start; } }
 
+/* Device check (issue #136, settings.js settingsNdPaintAuth): the mode and what the host reads are .kv rows; the grant is a mono readout under a two-cell segmented control with its Copy;
+   the serve command and the version command are .doc-cmdline (pages.css). Texts wrap and the readout scrolls inside its own box, so nothing is wider than a 390 px screen. */
+#page .settings-page .nd-auth { min-width:0; }
+#page .settings-page .nd-auth-h { margin:14px 0 4px; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .settings-page .nd-auth-banner { margin:8px 0 4px; }
+#page .settings-page .nd-auth-banner .nd-glyph { font-family:var(--font-mono); font-weight:600; }
+#page .settings-page .nd-auth .kv-main .nd-glyph { font-family:var(--font-mono); }
+#page .settings-page .nd-auth-tools { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin:0 0 6px; min-width:0; }
+#page .settings-page .nd-auth-tools .seg-ctl { flex:none; max-width:100%; }
+#page .settings-page .nd-auth-pre { max-height:260px; }
+#page .settings-page .nd-auth-copy { display:inline-flex; flex:none; }
+#page .settings-page .nd-auth-ver-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin:8px 0 0; font-size:13px; min-width:0; }
+#page .settings-page .nd-auth-ver { flex:0 1 auto; }
+
 /* The two sheets are <dialog>s on the body (dialog.qr-editor.readout, style.css), so the form rules above that are scoped to the page are repeated for them here. The code is
    large mono type that selects whole with one tap; the countdown is quiet text (role timer, never announced), and nothing in the sheet is wider than a 390 px screen. */
 dialog.nd-sheet .qr-box { overflow-y:auto; overscroll-behavior:contain; }

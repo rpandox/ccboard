@@ -30,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -195,6 +195,10 @@ async def lifespan(app: FastAPI):
         push.ensure_keys()
     except Exception as e:  # pywebpush missing or unwritable data dir: the board still works
         log.warning("web push disabled: %s", e)
+    try:                                                  # issue #136: say once whether CCBOARD_NODE_AUTH can run (nothing in token mode)
+        nodes_whois.startup_check()
+    except Exception as e:
+        log.warning("node auth check failed: %s", e.__class__.__name__)
     try:                                                  # the node id is settled at the first start, not by the first poll that happens to ask (nodes epic, #133)
         nodes.node_id()
     except Exception as e:
@@ -386,6 +390,20 @@ def _node_refused(status: int, message: str, **headers) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status, headers={**NODE_SECURITY_HEADERS, **headers})
 
 
+def _whois_refused(den: "nodes_whois.Denial") -> JSONResponse:
+    """A refusal of the device or capability check (issue #136): {error, reason}; reason is one word the calling board can show (device_mismatch,
+    not_bound, tailscale_unavailable, cap_op_missing, ...)."""
+    headers = {**NODE_SECURITY_HEADERS, **({"Retry-After": str(den.retry_after)} if den.retry_after else {})}
+    return JSONResponse({"error": den.message, "reason": den.reason}, status_code=den.status, headers=headers)
+
+
+def _conn(request: Request) -> tuple[str | None, str | None]:
+    """(peer, local address) of a request for the device check (issue #136): request.client, which uvicorn's default proxy headers have already set
+    to the hop Serve added, and the ASGI `server`, the address the connection arrived on, which nothing rewrites."""
+    server = request.scope.get("server")
+    return (request.client.host if request.client else None), (str(server[0]) if server else None)
+
+
 def _clean_text(v, n: int) -> str:
     """Header text for the audit: control characters out, at most n characters."""
     return "".join(c for c in str(v or "") if c.isprintable())[:n].strip()
@@ -410,6 +428,12 @@ async def _node_auth(request: Request, call_next):
         return _node_refused(403, "requests from a web page (an Origin header) are refused")
     if request.headers.get("x-ccboard") != "1":
         return _node_refused(403, "missing X-CCBoard header")
+    whois_on = nodes_whois.enabled()                             # issue #136: False in token mode (the default), and then nothing below reads more than before
+    target = f"{request.method} {request.url.path}"[:120]
+    if whois_on:                                                 # the mode can run and the call came through Serve, before the token is looked up
+        den = nodes_whois.pre_check(*_conn(request), request.headers, target=target, db=db)
+        if den is not None:
+            return _whois_refused(den)
     addr = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
     peer = nodes.verify_token(mcp_tokens.bearer(request.headers.get("authorization")), ip=addr, db=db)
     if peer is None:
@@ -428,6 +452,11 @@ async def _node_auth(request: Request, call_next):
         nodes.audit("in", pid, "route_refused" if scope is None else "scope_refused", False, (f"scope {scope} not granted " if scope else "") + note,
                     node_name=peer.get("name"), target=f"{request.method} {request.url.path}"[:120], status="refused", db=db)
         return _node_refused(403, "this node token does not open that route" if scope is None else f"this node token does not hold the {scope} scope")
+    if whois_on:                                                 # the device it comes from, and in whois+cap the granted operation (whois may start a process)
+        den = await asyncio.to_thread(nodes_whois.check_call, *_conn(request), request.headers, peer, scope,
+                                      target=target, db=db)
+        if den is not None:
+            return _whois_refused(den)
     if request.headers.get("transfer-encoding"):
         return _node_refused(411, "send a Content-Length")
     try:
@@ -5450,6 +5479,11 @@ async def api_nodes_pair(request: Request):
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     if request.headers.get("origin") is not None:
         return JSONResponse({"error": "requests from a web page (an Origin header) are refused"}, status_code=403)
+    conn = _conn(request)
+    if nodes_whois.enabled():                                    # issue #136: the mode can run and the call came through Serve from a tailnet caller
+        den = nodes_whois.pre_check(*conn, request.headers, target="POST /api/nodes/pair", db=db)
+        if den is not None:
+            return JSONResponse({"error": den.message, "reason": den.reason}, status_code=den.status, headers={"Cache-Control": "no-store"})
     if request.headers.get("tailscale-user-login") is not None and identify(request.headers, settings) is None:
         return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
     raw = await _read_capped(request, PAIR_BODY_MAX)
@@ -5461,7 +5495,8 @@ async def api_nodes_pair(request: Request):
         body = None
     caller = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
     try:
-        out = await asyncio.to_thread(nodes.handle_pair, body, caller, db=db)
+        bind = (lambda: nodes_whois.bind_pair(*conn, request.headers)) if nodes_whois.enabled() else None      # whois once the code is right
+        out = await asyncio.to_thread(nodes.handle_pair, body, caller, db=db, bind=bind)
     except nodes.PairError as e:
         return _pair_failed(e)
     doctor.invalidate()
@@ -5493,7 +5528,12 @@ async def api_nodes_pair_confirm(request: Request):
         body = json.loads(raw or b"{}")
     except ValueError:
         body = None
-    got = nodes.confirm_answer(body.get("proof")) if isinstance(body, dict) and set(body) == {"proof"} else None
+    proof = body.get("proof") if isinstance(body, dict) and set(body) == {"proof"} else None
+    if nodes_whois.enabled():                  # issue #136: the other board's device, for the reverse pair of a both-ways pairing (only for a matching proof)
+        conn = _conn(request)
+        got = await asyncio.to_thread(nodes.confirm_answer, proof, bind=lambda: nodes_whois.bind_reverse(*conn, request.headers))
+    else:
+        got = nodes.confirm_answer(proof) if proof is not None else None
     if got is None:
         return JSONResponse({"error": "no pairing is in progress here"}, status_code=404, headers={"Cache-Control": "no-store"})
     return JSONResponse({"node_id": got}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
@@ -5552,6 +5592,17 @@ def api_nodes_state(request: Request, handle: str | None = None):
     if node_state.matches(request.headers.get("if-none-match"), tag):
         return Response(status_code=304, headers=headers)
     return JSONResponse({"nodes": recs, "at": db_now()}, headers=headers)
+
+
+@app.get("/api/nodes/auth")
+def api_nodes_auth(request: Request, check: int = 0):
+    """How calls from paired nodes are checked (issue #136), for Settings > Nodes: the mode (CCBOARD_NODE_AUTH), whether it can run now and why not,
+    the bind reading, the capability name, what this host can do (Tailscale version, the Serve flag, whois; read only and only in a whois mode or with
+    ?check=1), a banner sentence when the mode is stronger than the host can do, the last refusal, and the grant and Serve texts to copy (never applied)."""
+    _node_manager(request)
+    if check not in (0, 1):
+        raise projects.BadRequest("check is 0 or 1")
+    return JSONResponse(nodes_whois.settings_view(check=bool(check)), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/nodes/pairs")
