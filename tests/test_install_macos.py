@@ -465,10 +465,21 @@ def test_root_old_macos_and_a_non_mac_are_refused_before_any_change(mac):
 
 def test_a_mac_without_homebrew_is_refused_with_the_address(mac):
     (mac.bin / "brew").unlink()
+    # The installer falls back to /opt/homebrew/bin/brew and /usr/local/bin/brew when PATH has none, so on a Mac with a real Homebrew it would run that one (the fakes
+    # are only on PATH). The copy of the script this test runs looks for the fallback at paths that do not exist, so the refusal is the same on every host.
+    src = SCRIPT.read_text()
+    fallback = "for c in /opt/homebrew/bin/brew /usr/local/bin/brew; do"
+    assert fallback in src
+    scripts = mac.app / "scripts"
+    scripts.unlink()
+    scripts.mkdir()
+    for f in (ROOT / "scripts").iterdir():
+        if f.name != SCRIPT.name:
+            (scripts / f.name).symlink_to(f)
+    (scripts / SCRIPT.name).write_text(src.replace(fallback, "for c in /nonexistent/homebrew/bin/brew; do"))
+    (scripts / SCRIPT.name).chmod(0o755)
     r = mac.run()
-    # a real Homebrew in /opt/homebrew or /usr/local on the host running the test would be found by the fallback; only assert when there is none
-    if not any(Path(p).exists() for p in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")):
-        assert r.returncode == 1 and "Homebrew is not installed" in r.stderr and "brew.sh" in r.stderr
+    assert r.returncode == 1 and "Homebrew is not installed" in r.stderr and "brew.sh" in r.stderr
     assert mac.plists() == []
 
 

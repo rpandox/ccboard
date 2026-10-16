@@ -763,7 +763,8 @@ function settingsNdPaintThis(host, st) {
   const n = st.node && typeof st.node === 'object' ? st.node : null;
   if (!n) { host.append(el('div', { class: 'dim', text: 'This board has not sent its node card yet.' })); return; }
   host.append(settingsKv('Name', el('span', { class: 'v', text: String(n.name || st.node_name || 'this node') })));
-  if (n.node_id) host.append(settingsKv('Node id', el('span', { class: 'v', title: String(n.node_id), text: NodeView.shortId(String(n.node_id)) }), typeof copyButton === 'function' ? copyButton(String(n.node_id), 'node id') : null));
+  if (n.node_id) host.append(settingsKv('Node id', el('span', { class: 'v', title: String(n.node_id), text: NodeView.shortId(String(n.node_id)) }), typeof copyButton === 'function' ? copyButton(String(n.node_id), 'node id') : null,
+    /^n_/.test(String(n.node_id)) ? el('span', { class: 'dim', title: 'This board made a random id because Tailscale was not answering when it first started. It still works. The Doctor says how to move to the Tailscale id.', text: 'fallback id' }) : null));
   const os = n.os && typeof n.os === 'object' ? n.os : {};
   const osText = [NodeView.osName(os.tailscale_os || os.system), os.release].filter(Boolean).join(' ');
   if (osText) host.append(settingsKv('System', el('span', { class: 'v', text: osText })));

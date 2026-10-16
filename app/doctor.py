@@ -1158,6 +1158,25 @@ def _c_node(db) -> Outcome:
                  + (f"{cap} lanes advised" if cap else "no lane limit advised"))
 
 
+def _c_node_id_fallback(db) -> Outcome:
+    """Issue #229: a board first started while Tailscale was signed out keeps a random `n_` node id for good. Warns when the id is that fallback while
+    Tailscale now reports an id; the fix depends on whether the board has pairs (the id is the identity in every pair). Never changes the id."""
+    from . import nodes
+    try:
+        rep = nodes.id_report()
+    except Exception as e:
+        return _skip(f"unknown: the node id could not be read ({e.__class__.__name__})")
+    if rep["kind"] == "tailscale":
+        return _pass(f"the node id ({rep['id']}) is a Tailscale id")
+    if not rep["ts_id"]:
+        return _skip(f"Tailscale is not reachable, so whether the fallback node id ({rep['id']}) could be a Tailscale id is unknown")
+    if nodes.any_paired(db):
+        steps = "Remove every pair in Settings > Nodes, remove the node-id file in the data folder, restart the board, and pair again"
+    else:
+        steps = "Remove the node-id file in the data folder and restart the board"
+    return _warn(f"the node id ({rep['id']}) is a fallback id, made while Tailscale was not answering; Tailscale now reports an id ({rep['ts_id']})", fix(steps))
+
+
 def _c_tailscale_status(db) -> Outcome:
     """What finding other nodes needs from Tailscale (issue #134), read only, the same reading Settings > Nodes shows: signed in, a MagicDNS suffix
     (names under it are the only ones a probe may reach), HTTPS certificates for this device, and how many devices could be nodes. The `tailscale` row
@@ -2048,6 +2067,7 @@ register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpe
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
 register("devcontainer", "box", "Devcontainer prerequisites (host)", _c_devcontainer)   # issue #104
 register("node", "box", "This board as a node", _c_node)   # issue #133
+register("node-id-fallback", "box", "Node id is a Tailscale id", _c_node_id_fallback)   # issue #229
 register("tailscale-status", "box", "Tailnet for finding nodes", _c_tailscale_status)   # issue #134
 register("nodes-port", "box", "Node probe ports", _c_nodes_port)   # issue #134
 register("nodes-tagged-self", "box", "This device is tagged", _c_nodes_tagged_self)   # issue #134

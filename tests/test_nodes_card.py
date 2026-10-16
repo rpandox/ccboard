@@ -129,6 +129,51 @@ def test_the_doctor_passes_for_a_steady_id_and_names_it(projects_dir, ts):
     assert out.status == "pass" and "ts:nDEMO1CNTRL" in out.detail and "node-a" in out.detail and out.fix is None
 
 
+@pytest.fixture
+def own_db(projects_dir):
+    from app.db import DB
+    d = DB(settings.db_path)
+    yield d
+    d.conn.close()
+
+
+def _fallback_id(ts):
+    """A board that was first started while Tailscale was signed out: it made an n_ id; Tailscale answers now."""
+    ts["reading"] = None
+    nid = nodes.node_id()
+    assert nid.startswith("n_")
+    ts["reading"] = fake_ts()
+    nodes._ts_cache = None                                      # the failed reading is cached for a short while
+    return nid
+
+
+def test_doctor_row_warns_for_a_fallback_id_while_tailscale_answers_and_says_remove_the_file(projects_dir, ts, own_db):
+    nid = _fallback_id(ts)
+    out = doctor._c_node_id_fallback(own_db)
+    assert out.status == "warn" and nid in out.detail and "nDEMO1CNTRL" in out.detail
+    assert out.fix["text"] == "Remove the node-id file in the data folder and restart the board"
+    assert nodes.node_id() == nid, "the doctor never changes the id"
+    assert any(c[0] == "node-id-fallback" for c in doctor.CHECKS)
+
+
+def test_doctor_row_asks_for_the_pairs_to_go_too_when_the_board_has_pairs(projects_dir, ts, own_db):
+    _fallback_id(ts)
+    nodes.put_peer({"direction": "out", "url": "https://100.64.0.2", "name": "node-b", "scopes": ["read"], "node_id": "n_" + "b" * 16}, db=own_db)
+    out = doctor._c_node_id_fallback(own_db)
+    assert out.status == "warn"
+    assert out.fix["text"] == "Remove every pair in Settings > Nodes, remove the node-id file in the data folder, restart the board, and pair again"
+
+
+def test_doctor_row_passes_for_a_tailscale_id_and_skips_when_tailscale_is_not_reachable(projects_dir, ts, own_db):
+    assert doctor._c_node_id_fallback(own_db).status == "pass"      # the ts: id of the fixture
+    nodes.reset()
+    id_file().unlink()
+    ts["reading"] = None
+    nodes._ts_cache = None
+    out = doctor._c_node_id_fallback(own_db)                        # a fallback id and no Tailscale answer: nothing to compare with
+    assert out.status == "skip" and "not reachable" in out.detail
+
+
 def test_a_corrupt_id_file_is_replaced_and_logged_once(projects_dir, ts, caplog):
     id_file().parent.mkdir(parents=True, exist_ok=True)
     id_file().write_text("not an id at all\n")
@@ -322,7 +367,12 @@ def test_a_tagged_device_says_so(cardenv, ts):
     assert cardenv.get("/api/node", headers=ID).json()["tailscale"] == {"dns_name": "node-a.example.ts.net", "tags": ["tag:ccboard"], "user_owned": False}
 
 
-def test_session_counts_are_null_while_tmux_is_down(cardenv):
+def test_session_counts_are_null_while_tmux_is_down(cardenv, monkeypatch):
+    from app import tmux
+
+    def down():
+        raise tmux.TmuxDown("no server running")                     # the board's own answer for a tmux that is not up, whatever runs on the machine
+    monkeypatch.setattr(tmux, "list_sessions", down)
     c = cardenv.get("/api/node", headers=ID).json()
     assert c["sessions"] == {"live": None, "working": None, "needs_you": None}, "unknown is not zero"
     assert cardenv.get("/api/state", headers=ID).json()["node"]["sessions"] == c["sessions"]

@@ -1706,7 +1706,7 @@ class PeerClient:
         except PeerError as e:
             _note(d, self.peer_id, ok=False, error=e.reason)
             raise
-        if r.ok:
+        if r.ok or r.status == 304:                                   # a 304 to a conditional read is an answer, not a failure (issue #228)
             _note(d, self.peer_id, ok=True)
         else:
             _note(d, self.peer_id, ok=False, error=f"the peer answered {r.status}", repair=True if r.status == 401 else None)
@@ -1728,7 +1728,7 @@ class PeerClient:
         except PeerError as e:
             _note(d, self.peer_id, ok=False, error=e.reason)
             raise
-        if r.ok:
+        if r.ok or r.status == 304:                                   # a 304 to a conditional read is an answer, not a failure (issue #228)
             _note(d, self.peer_id, ok=True)
         else:
             _note(d, self.peer_id, ok=False, error=f"the peer answered {r.status}", repair=True if r.status == 401 else None)
