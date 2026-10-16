@@ -37,6 +37,7 @@ docker compose -f docker-compose.shadow.yml down
 ## Things to know
 
 - The compose file mounts `/tmp/tmux-<uid>`, `/var/run/tailscale`, `/etc/ccboard` and `~/.docker/config.json` with `create_host_path: false`: a missing source fails the start instead of Docker creating a root-owned directory. Create `~/.docker/config.json` (`echo '{}' > ~/.docker/config.json`) or drop that mount when no registry login is needed.
+- `resolv.conf` (written by `install.sh` next to the compose file) is mounted over the container's `/etc/resolv.conf`: Tailscale's `100.100.100.100` first, so the MagicDNS names of other nodes resolve (pairing and the hub need them), then public resolvers. Without it the container gets Docker's resolvers, which never include the host's `127.0.0.53` stub.
 - `/var/run/tailscale` is mounted as a directory so the container keeps working after `tailscaled` restarts.
 - Watchtower watches only containers labelled `com.centurylinklabs.watchtower.enable=true` in scope `ccboard`. It never updates itself or any other container on the box.
 - If `docker exec ccboard ss -ltnp` lists no `pid=` for dev servers started in sessions (preview links need it), the AppArmor `docker-default` profile is blocking reads of other processes' `/proc/<pid>/fd`; add `security_opt: ["apparmor=unconfined"]` to the `ccboard` service.

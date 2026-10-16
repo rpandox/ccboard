@@ -407,6 +407,14 @@ docker_write_compose() { # the template is variable-driven; the .env carries thi
   if [ ! -f "$COMPOSE_DIR/.env" ] || [ "$(cat "$COMPOSE_DIR/.env")" != "$want" ]; then
     printf '%s\n' "$want" > "$COMPOSE_DIR/.env"; note "wrote $COMPOSE_DIR/.env"
   fi
+  # the container's resolver (compose mounts it over /etc/resolv.conf): 100.100.100.100 answers MagicDNS names and forwards the rest;
+  # the public resolvers are only asked when it does not answer. The search line lets a short node name resolve as on the host.
+  local search=""
+  if [[ "${TS_FQDN:-}" =~ ^[A-Za-z0-9-]+\.([A-Za-z0-9.-]+)$ ]]; then search="search ${BASH_REMATCH[1]}"$'\n'; fi
+  want=$(printf '# managed by ccboard (install.sh): Tailscale first, so the MagicDNS names of other nodes resolve\nnameserver 100.100.100.100\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n%soptions edns0 timeout:2' "$search")
+  if [ ! -f "$COMPOSE_DIR/resolv.conf" ] || [ "$(cat "$COMPOSE_DIR/resolv.conf")" != "$want" ]; then
+    printf '%s\n' "$want" > "$COMPOSE_DIR/resolv.conf"; chmod 0644 "$COMPOSE_DIR/resolv.conf"; note "wrote $COMPOSE_DIR/resolv.conf"
+  fi
 }
 
 docker_seed_app() { # once: ttyd and the Claude hooks need valid targets before the first container start

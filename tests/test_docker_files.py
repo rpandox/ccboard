@@ -554,3 +554,36 @@ def test_docker_compose_config_without_a_home_fails_with_a_readable_message():
             cmd += ["-f", str(f)]
         r = subprocess.run(cmd + ["config", "--format", "json"], capture_output=True, text=True, env=env, timeout=60)
         assert r.returncode != 0 and "set CCBOARD_HOME (install.sh writes it to the compose .env)" in r.stderr
+
+
+def test_compose_mounts_the_tailnet_resolver_and_install_writes_it():
+    # a container gets Docker's resolvers (a daemon "dns" setting, or public defaults), never the host's 127.0.0.53 stub, so the
+    # MagicDNS names of other nodes do not resolve there unless the board's own resolv.conf puts Tailscale's resolver first
+    assert re.search(r"- type: bind\n\s+source: \./resolv\.conf\n\s+target: /etc/resolv\.conf\n\s+read_only: true\n\s+bind:\n\s+create_host_path: false",
+                     COMPOSE.read_text())
+    text = (ROOT / "install.sh").read_text()
+    body = text[text.index("docker_write_compose() {"):text.index("docker_seed_app() {")]
+    assert '"$COMPOSE_DIR/resolv.conf"' in body
+    ns = re.findall(r"nameserver ([0-9.]+)", body)
+    assert ns and ns[0] == "100.100.100.100", "Tailscale's resolver must come first"
+    assert len(ns) <= 3, "glibc reads at most three nameservers"
+    assert "TS_FQDN" in body and "search " in body
+
+
+@pytest.mark.parametrize("fqdn,search", [("box.tail1234.ts.net", "search tail1234.ts.net"), ("", None), ("-", None), ("bad name.ts.net", None)])
+def test_install_writes_the_resolver_file(tmp_path, fqdn, search):
+    text = (ROOT / "install.sh").read_text()
+    fn = text[text.index("docker_write_compose() {"):text.index("docker_seed_app() {")]
+    script = "set -euo pipefail\nnote() { :; }\ndie() { echo \"die: $*\" >&2; exit 1; }\n" + fn + "\ndocker_write_compose\n"
+    app = tmp_path / "app"
+    (app / "deploy").mkdir(parents=True)
+    for f in ("docker-compose.yml", "docker-compose.shadow.yml"):
+        (app / "deploy" / f).write_text("x\n")
+    env = {**os.environ, "APP_DIR": str(app), "COMPOSE_DIR": str(tmp_path / "c"), "COMPOSE_FILE": str(tmp_path / "c" / "docker-compose.yml"),
+           "HOME_DIR": "/home/u", "PROJECTS_DIR": "/srv/projects", "TS_FQDN": fqdn, "CCBOARD_IMAGE_TAG": "latest"}
+    for _ in range(2):          # a rerun leaves the file as it is
+        subprocess.run(["bash", "-c", script], env=env, check=True)
+    lines = (tmp_path / "c" / "resolv.conf").read_text().splitlines()
+    assert [ln for ln in lines if ln.startswith("nameserver")] == ["nameserver 100.100.100.100", "nameserver 1.1.1.1", "nameserver 8.8.8.8"]
+    assert [ln for ln in lines if ln.startswith("search")] == ([search] if search else [])
+    assert lines[-1] == "options edns0 timeout:2"
