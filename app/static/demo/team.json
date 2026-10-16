@@ -1,5 +1,5 @@
 {
- "_note": "Demo answers for /api/team/state (issues #197, #198). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off; bob has two boards that publish a live line. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block, lines sets the presence of a person by login (null: no line). Names: off, loading, warnnone, warnnoid, warnempty, warnfiles, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile, lineneeds, lineended, lineunconfirmed, linestale, lineunknown, linegone, linenone, lineclosed, lineerror, linecut. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page. Issue #199: every block carries warnings (null: not shared or not read yet); the base block warns about issues 152, 154, 156, 160, 162 and 164 (taken with every kind of sign, recent, stale, a login GitHub text hid, two people), about bob's branches, and about the changed files of bob's pull requests against tasks 4 and 7 of state.json. Open the launcher on phasezero/website (+ task), pick one of those issues, or start task 7. state.json has team.shared, which is what makes the launcher read this view.",
+ "_note": "Demo answers for /api/team/state (issues #197, #198). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off; bob has two boards that publish a live line. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block, lines sets the presence of a person by login (null: no line). Names: off, loading, warnnone, warnnoid, warnempty, warnfiles, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile, lineneeds, lineended, lineunconfirmed, linestale, lineunknown, linegone, linenone, lineclosed, lineerror, linecut. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page. Issue #199: every block carries warnings (null: not shared or not read yet); the base block warns about issues 152, 154, 156, 160, 162 and 164 (taken with every kind of sign, recent, stale, a login GitHub text hid, two people), about bob's branches, and about the changed files of bob's pull requests against tasks 4 and 7 of state.json. Open the launcher on phasezero/website (+ task), pick one of those issues, or start task 7. state.json has team.shared, which is what makes the launcher read this view. Issue #200 (Team P4): every shared block carries free (the open issues nobody holds; a live board lists the first page of open issues nobody is assigned to once it has read them and answers unread with the held numbers until then; the variants show the other states in words) and the answer carries overview, the one list of the whole team: base.overview is team.overview(base.repos), and for a variant or a repository the visitor switched, team.js (demoOverview) makes it from the blocks the same way. Names added: freeok, freeempty, freecut, twoshared (a variant's others lays a patch over another repository by repo_slug: example/api is shared with bob and alice). #/team shows all of it.",
  "demo": {
   "epoch": 1790996400
  },
@@ -757,6 +757,23 @@
       "pending": 1,
       "capped": false
      }
+    },
+    "free": {
+     "state": "unread",
+     "reason": "unread",
+     "message": "The open issues of this repository have not been read yet, so free issues are not listed.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    },
    {
@@ -796,7 +813,8 @@
     },
     "graph_failed": false,
     "presence": null,
-    "warnings": null
+    "warnings": null,
+    "free": null
    },
    {
     "repo_slug": "github.com/example/ccboard",
@@ -835,9 +853,277 @@
     },
     "graph_failed": false,
     "presence": null,
-    "warnings": null
+    "warnings": null,
+    "free": null
    }
-  ]
+  ],
+  "overview": {
+   "api": 1,
+   "counts": {
+    "shared": 1,
+    "ok": 1,
+    "loading": 0,
+    "problem": 0,
+    "teammates": 1,
+    "live": 1,
+    "active_repos": 1,
+    "rows": 8,
+    "free": {
+     "count": 0,
+     "ok": 0,
+     "unread": 1,
+     "unknown": 0
+    },
+    "truncated": false
+   },
+   "people": [
+    {
+     "key": "id:1001",
+     "id": 1001,
+     "login": "alice",
+     "you": true,
+     "live": "live",
+     "last_seen_s": 180,
+     "repos": [
+      "example/website"
+     ],
+     "rows": 1
+    },
+    {
+     "key": "id:1002",
+     "id": 1002,
+     "login": "bob",
+     "you": false,
+     "live": "live",
+     "last_seen_s": 240,
+     "repos": [
+      "example/website"
+     ],
+     "rows": 7
+    }
+   ],
+   "rows": [
+    {
+     "person": "id:1001",
+     "login": "alice",
+     "you": true,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "presence",
+     "issue": 148,
+     "issue_url": "https://github.com/example/website/issues/148",
+     "title": "Checkout: show the shipping total before payment",
+     "branch": "alice/shipping-total",
+     "branch_url": "https://github.com/example/website/tree/alice/shipping-total",
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": "claude",
+     "state": "working",
+     "live": "live",
+     "since": "2026-10-03T00:50:00Z",
+     "last": "2026-10-03T02:45:00Z",
+     "last_seen_s": 180,
+     "claim": null,
+     "collides": false
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "presence",
+     "issue": 152,
+     "issue_url": "https://github.com/example/website/issues/152",
+     "title": "Coupon codes are not applied to the cart total",
+     "branch": "bob/coupon-total",
+     "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+     "pr": 158,
+     "pr_url": "https://github.com/example/website/pull/158",
+     "draft": true,
+     "agent": "claude",
+     "state": "working",
+     "live": "live",
+     "since": "2026-10-03T01:30:00Z",
+     "last": "2026-10-03T02:45:00Z",
+     "last_seen_s": 240,
+     "claim": null,
+     "collides": true
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "presence",
+     "issue": null,
+     "issue_url": null,
+     "title": null,
+     "branch": null,
+     "branch_url": null,
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": "codex",
+     "state": "idle",
+     "live": "idle",
+     "since": "2026-10-03T02:10:00Z",
+     "last": "2026-10-03T02:30:00Z",
+     "last_seen_s": 600,
+     "claim": null,
+     "collides": false
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "branch",
+     "issue": null,
+     "issue_url": null,
+     "title": null,
+     "branch": "worktree-154-add-a-gift-wrap-option",
+     "branch_url": "https://github.com/example/website/tree/worktree-154-add-a-gift-wrap-option",
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": null,
+     "state": "github",
+     "live": null,
+     "since": null,
+     "last": "2026-10-03T02:20:00Z",
+     "last_seen_s": null,
+     "claim": null,
+     "collides": false
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "branch",
+     "issue": null,
+     "issue_url": null,
+     "title": null,
+     "branch": "worktree-checkout-redesign",
+     "branch_url": "https://github.com/example/website/tree/worktree-checkout-redesign",
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": null,
+     "state": "github",
+     "live": null,
+     "since": null,
+     "last": "2026-10-03T02:05:00Z",
+     "last_seen_s": null,
+     "claim": null,
+     "collides": true
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "pr",
+     "issue": null,
+     "issue_url": null,
+     "title": "Fix the cart badge count on mobile",
+     "branch": "bob/cart-badge",
+     "branch_url": "https://github.com/example/website/tree/bob/cart-badge",
+     "pr": 151,
+     "pr_url": "https://github.com/example/website/pull/151",
+     "draft": false,
+     "agent": null,
+     "state": "github",
+     "live": null,
+     "since": null,
+     "last": "2026-10-02T02:00:00Z",
+     "last_seen_s": null,
+     "claim": null,
+     "collides": false
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "issue",
+     "issue": 154,
+     "issue_url": "https://github.com/example/website/issues/154",
+     "title": "Add a gift wrap option",
+     "branch": null,
+     "branch_url": null,
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": null,
+     "state": "github",
+     "live": null,
+     "since": null,
+     "last": "2026-10-02T00:00:00Z",
+     "last_seen_s": null,
+     "claim": {
+      "status": "claimed",
+      "live": true
+     },
+     "collides": false
+    },
+    {
+     "person": "id:1002",
+     "login": "bob",
+     "you": false,
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "repo_url": "https://github.com/example/website",
+     "read_at": "2026-10-03T02:59:20Z",
+     "stale": false,
+     "kind": "branch",
+     "issue": null,
+     "issue_url": null,
+     "title": null,
+     "branch": "bob/wrap-spike",
+     "branch_url": "https://github.com/example/website/tree/bob/wrap-spike",
+     "pr": null,
+     "pr_url": null,
+     "draft": null,
+     "agent": null,
+     "state": "github",
+     "live": null,
+     "since": null,
+     "last": "2026-09-30T03:00:00Z",
+     "last_seen_s": null,
+     "claim": null,
+     "collides": false
+    }
+   ]
+  }
  },
  "variants": {
   "off": {
@@ -863,7 +1149,8 @@
      "live": 0
     },
     "presence": null,
-    "warnings": null
+    "warnings": null,
+    "free": null
    }
   },
   "loading": {
@@ -885,7 +1172,16 @@
      "live": 0
     },
     "presence": null,
-    "warnings": null
+    "warnings": null,
+    "free": {
+     "state": "unknown",
+     "reason": "loading",
+     "message": "Reading GitHub for the first time.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "empty": {
@@ -899,6 +1195,22 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unread",
+     "reason": "unread",
+     "message": "The open issues of this repository have not been read yet, so free issues are not listed.",
+     "held": [
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -987,6 +1299,15 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "sso",
+     "message": "GitHub needs this token authorised for the organization. Authorise it there, then check again.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1007,6 +1328,15 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "no_access",
+     "message": "This GitHub login cannot read this repository.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1027,6 +1357,15 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "not_found",
+     "message": "GitHub says there is no such repository, or this login cannot see it.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1037,7 +1376,24 @@
     "wait_s": 540,
     "stale": true,
     "read_at": "2026-10-03T02:48:00Z",
-    "age_s": 720
+    "age_s": 720,
+    "free": {
+     "state": "unknown",
+     "reason": "rate_limited",
+     "message": "GitHub asked this board to wait.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "low": {
@@ -1046,7 +1402,24 @@
     "message": "This login has few GitHub requests left, so team reads wait.",
     "stale": true,
     "read_at": "2026-10-03T02:39:00Z",
-    "age_s": 1260
+    "age_s": 1260,
+    "free": {
+     "state": "unknown",
+     "reason": "low_budget",
+     "message": "This login has few GitHub requests left, so team reads wait.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "stale": {
@@ -1054,7 +1427,24 @@
     "stale": true,
     "read_at": "2026-10-03T02:13:00Z",
     "age_s": 2820,
-    "gql_at": "2026-10-03T02:13:00Z"
+    "gql_at": "2026-10-03T02:13:00Z",
+    "free": {
+     "state": "unknown",
+     "reason": "stale",
+     "message": "The last read of GitHub is old, so nobody can say which issues are free.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "nologin": {
@@ -1077,6 +1467,15 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "no_login",
+     "message": "gh is not logged in on this board. Log gh in there, then check again.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1100,6 +1499,15 @@
      "prs": 0,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "no_gh",
+     "message": "gh is not installed on this board, so GitHub cannot be read.",
+     "held": [],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1109,13 +1517,47 @@
     "message": "GitHub could not be read just now.",
     "stale": true,
     "read_at": "2026-10-03T02:27:00Z",
-    "age_s": 1980
+    "age_s": 1980,
+    "free": {
+     "state": "unknown",
+     "reason": "error",
+     "message": "GitHub could not be read just now.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "pending": {
    "repo": {
     "graph_pending": true,
-    "gql_at": null
+    "gql_at": null,
+    "free": {
+     "state": "unknown",
+     "reason": "graph_pending",
+     "message": "Linked branches and pull request links are not read yet, so nobody can say which issues are free.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "cut": {
@@ -1133,6 +1575,23 @@
      "prs": 2,
      "unattributed_branches": 3,
      "live": 0
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "truncated",
+     "message": "This repository has more issues, pull requests or branches than the read keeps, so nobody can say which issues are free.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1191,6 +1650,22 @@
      "prs": 2,
      "unattributed_branches": 0,
      "live": 0
+    },
+    "free": {
+     "state": "unread",
+     "reason": "unread",
+     "message": "The open issues of this repository have not been read yet, so free issues are not listed.",
+     "held": [
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1374,6 +1849,23 @@
      "truncated": false,
      "editor_check": "none",
      "message": "The presence comments could not be read just now."
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "presence",
+     "message": "The presence comments could not be read, so nobody can say which issues are free.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1389,12 +1881,40 @@
      "truncated": true,
      "editor_check": "failed",
      "message": ""
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "presence",
+     "message": "The presence comments could not be read, so nobody can say which issues are free.",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
   "warnnone": {
    "repo": {
-    "warnings": null
+    "warnings": null,
+    "free": {
+     "state": "unknown",
+     "reason": "identity",
+     "message": "This board does not know its GitHub login yet, so it cannot tell your work from a teammate's.",
+     "held": [
+      148
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
    }
   },
   "warnnoid": {
@@ -1410,6 +1930,17 @@
       "pending": 0,
       "capped": false
      }
+    },
+    "free": {
+     "state": "unknown",
+     "reason": "identity",
+     "message": "This board does not know its GitHub login yet, so it cannot tell your work from a teammate's.",
+     "held": [
+      148
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1426,6 +1957,17 @@
       "pending": 0,
       "capped": false
      }
+    },
+    "free": {
+     "state": "unread",
+     "reason": "unread",
+     "message": "The open issues of this repository have not been read yet, so free issues are not listed.",
+     "held": [
+      148
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
     }
    }
   },
@@ -1804,6 +2346,322 @@
       "checked": 2,
       "pending": 0,
       "capped": false
+     }
+    }
+   }
+  },
+  "freeok": {
+   "repo": {
+    "free": {
+     "state": "ok",
+     "reason": null,
+     "message": "",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [
+      {
+       "number": 140,
+       "title": "Footer links open in the same tab",
+       "url": "https://github.com/example/website/issues/140",
+       "labels": [],
+       "updated_at": "2026-10-02T21:00:00Z"
+      },
+      {
+       "number": 141,
+       "title": "Empty cart shows a broken image",
+       "url": "https://github.com/example/website/issues/141",
+       "labels": [
+        "bug"
+       ],
+       "updated_at": "2026-10-02T18:00:00Z"
+      },
+      {
+       "number": 143,
+       "title": "Add the size guide to the product page",
+       "url": "https://github.com/example/website/issues/143",
+       "labels": [
+        "enhancement"
+       ],
+       "updated_at": "2026-10-01T12:00:00Z"
+      },
+      {
+       "number": 146,
+       "title": "Search ignores accents",
+       "url": "https://github.com/example/website/issues/146",
+       "labels": [
+        "bug"
+       ],
+       "updated_at": "2026-09-29T09:00:00Z"
+      }
+     ],
+     "count": 4,
+     "truncated": false
+    }
+   }
+  },
+  "freeempty": {
+   "repo": {
+    "free": {
+     "state": "ok",
+     "reason": null,
+     "message": "",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [],
+     "count": 0,
+     "truncated": false
+    }
+   }
+  },
+  "freecut": {
+   "repo": {
+    "free": {
+     "state": "ok",
+     "reason": null,
+     "message": "",
+     "held": [
+      148,
+      152,
+      154,
+      156,
+      160,
+      162,
+      164
+     ],
+     "issues": [
+      {
+       "number": 140,
+       "title": "Footer links open in the same tab",
+       "url": "https://github.com/example/website/issues/140",
+       "labels": [],
+       "updated_at": "2026-10-02T21:00:00Z"
+      },
+      {
+       "number": 141,
+       "title": "Empty cart shows a broken image",
+       "url": "https://github.com/example/website/issues/141",
+       "labels": [
+        "bug"
+       ],
+       "updated_at": "2026-10-02T18:00:00Z"
+      },
+      {
+       "number": 143,
+       "title": "Add the size guide to the product page",
+       "url": "https://github.com/example/website/issues/143",
+       "labels": [
+        "enhancement"
+       ],
+       "updated_at": "2026-10-01T12:00:00Z"
+      },
+      {
+       "number": 146,
+       "title": "Search ignores accents",
+       "url": "https://github.com/example/website/issues/146",
+       "labels": [
+        "bug"
+       ],
+       "updated_at": "2026-09-29T09:00:00Z"
+      }
+     ],
+     "count": 63,
+     "truncated": true
+    }
+   }
+  },
+  "twoshared": {
+   "others": {
+    "github.com/example/api": {
+     "repo_slug": "github.com/example/api",
+     "slug": "example/api",
+     "url": "https://github.com/example/api",
+     "local": [
+      {
+       "project": "phasezero",
+       "repo": "NestJs-Ecommerce-Backend"
+      }
+     ],
+     "shared": true,
+     "state": "ok",
+     "message": "",
+     "wait_s": null,
+     "stale": false,
+     "read_at": "2026-10-03T02:58:40Z",
+     "age_s": 80,
+     "gql_at": "2026-10-03T02:55:00Z",
+     "graph_pending": false,
+     "private": true,
+     "people": [
+      {
+       "id": 1001,
+       "login": "alice",
+       "you": true,
+       "last_active": "2026-10-02T20:00:00Z",
+       "issues": [],
+       "branches": [
+        {
+         "name": "alice/openapi-docs",
+         "url": "https://github.com/example/api/tree/alice/openapi-docs",
+         "at": "2026-10-02T20:00:00Z",
+         "source": "pushed",
+         "issue": null
+        }
+       ],
+       "prs": [],
+       "presence": null
+      },
+      {
+       "id": 1002,
+       "login": "bob",
+       "you": false,
+       "last_active": "2026-10-03T02:40:00Z",
+       "issues": [
+        {
+         "number": 31,
+         "title": "Rate limit the login endpoint",
+         "url": "https://github.com/example/api/issues/31",
+         "updated_at": "2026-10-03T00:30:00Z",
+         "labels": [
+          "security"
+         ],
+         "branches": [
+          "bob/login-rate-limit"
+         ],
+         "claim": null
+        }
+       ],
+       "branches": [
+        {
+         "name": "bob/login-rate-limit",
+         "url": "https://github.com/example/api/tree/bob/login-rate-limit",
+         "at": "2026-10-03T02:40:00Z",
+         "source": "linked",
+         "issue": 31
+        }
+       ],
+       "prs": [],
+       "presence": {
+        "live": "live",
+        "last_seen_s": 300,
+        "boards": [
+         {
+          "node": "ash-91",
+          "live": "live",
+          "last_seen_s": 300,
+          "seq": 12,
+          "state": "running",
+          "agent": "codex",
+          "issue": 31,
+          "issue_url": "https://github.com/example/api/issues/31",
+          "branch": "bob/login-rate-limit",
+          "branch_url": "https://github.com/example/api/tree/bob/login-rate-limit",
+          "phase": "running",
+          "since": "2026-10-03T02:00:00Z",
+          "last": "2026-10-03T02:40:00Z",
+          "updated_at": "2026-10-03T02:55:00Z"
+         }
+        ]
+       }
+      }
+     ],
+     "counts": {
+      "people": 2,
+      "teammates": 1,
+      "issues": 1,
+      "branches": 2,
+      "prs": 0,
+      "unattributed_branches": 1,
+      "live": 1
+     },
+     "truncated": {
+      "issues": false,
+      "pulls": false,
+      "tips": false
+     },
+     "graph_failed": false,
+     "presence": {
+      "state": "ok",
+      "issue": 3,
+      "issue_url": "https://github.com/example/api/issues/3",
+      "truncated": false,
+      "editor_check": "ok",
+      "message": ""
+     },
+     "warnings": {
+      "api": 1,
+      "identity_known": true,
+      "issues": {
+       "31": [
+        {
+         "issue": 31,
+         "url": "https://github.com/example/api/issues/31",
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "status": "taken",
+         "signals": [
+          {
+           "kind": "assigned"
+          },
+          {
+           "kind": "presence",
+           "live": "live",
+           "last_seen_s": 300,
+           "state": "running",
+           "agent": "codex",
+           "since": "2026-10-03T02:00:00Z",
+           "last": "2026-10-03T02:40:00Z",
+           "branch": "bob/login-rate-limit",
+           "at": "2026-10-03T02:55:00Z"
+          },
+          {
+           "kind": "branch",
+           "name": "bob/login-rate-limit",
+           "url": "https://github.com/example/api/tree/bob/login-rate-limit",
+           "at": "2026-10-03T02:40:00Z"
+          }
+         ],
+         "since": "2026-10-03T02:00:00Z",
+         "since_from": "presence",
+         "age_s": 300,
+         "stale_age_s": null,
+         "advice": true
+        }
+       ]
+      },
+      "branches": {},
+      "tasks": {},
+      "files": {
+       "checked": 0,
+       "pending": 0,
+       "capped": false
+      }
+     },
+     "free": {
+      "state": "unread",
+      "reason": "unread",
+      "message": "The open issues of this repository have not been read yet, so free issues are not listed.",
+      "held": [
+       31
+      ],
+      "issues": [],
+      "count": 0,
+      "truncated": false
      }
     }
    }

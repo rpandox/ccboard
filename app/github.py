@@ -173,13 +173,19 @@ def labeled_path(owner, repo, label, state: str = "open", page: int = 1, per_pag
 
 RATE_PATH = "/rate_limit"
 
-# The lists the team reader asks for (issue #197): the open issues somebody is assigned to, and the open pull requests. Both are plain GETs and both can be revalidated with an ETag.
-_TEAM_LIST = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/(?:issues\?state=open&assignee=\*|pulls\?state=open)&per_page=[0-9]{1,3}&page=[0-9]{1,3}")
+# The lists the team reader asks for (issue #197): the open issues somebody is assigned to, and the open pull requests. Issue #200 adds the open issues nobody is assigned to (the free
+# issues of the Team view). All are plain GETs and all can be revalidated with an ETag.
+_TEAM_LIST = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/(?:issues\?state=open&assignee=(?:\*|none)|pulls\?state=open)&per_page=[0-9]{1,3}&page=[0-9]{1,3}")
 
 
 def assigned_issues_path(owner, repo, page: int = 1, per_page: int | None = None) -> str:
     """/repos/{owner}/{repo}/issues?state=open&assignee=*: the open issues (and pull requests, which GitHub lists as issues) that have an assignee."""
     return f"{_check(owner, repo)}?state=open&assignee=*&{_page(page, PER_PAGE if per_page is None else per_page)}"
+
+
+def unassigned_issues_path(owner, repo, page: int = 1, per_page: int | None = None) -> str:
+    """/repos/{owner}/{repo}/issues?state=open&assignee=none (issue #200): the open issues nobody is assigned to (GitHub lists pull requests among them; the reader drops those)."""
+    return f"{_check(owner, repo)}?state=open&assignee=none&{_page(page, PER_PAGE if per_page is None else per_page)}"
 
 
 def open_pulls_path(owner, repo, page: int = 1, per_page: int | None = None) -> str:
@@ -206,6 +212,32 @@ def slim_files(path: str, data):
     if not isinstance(data, list) or not _PULL_FILES.fullmatch(path):
         return data
     return [{k: f[k] for k in ("filename", "previous_filename") if isinstance(f.get(k), str)} for f in data[:PER_PAGE] if isinstance(f, dict)]
+
+
+_UNASSIGNED = re.compile(r"/repos/[^/?]{1,100}/[^/?]{1,100}/issues\?state=open&assignee=none&per_page=[0-9]{1,3}&page=[0-9]{1,3}")
+
+
+def slim_unassigned(path: str, data):
+    """The second answer of this module that is cut before it is kept (issue #200): a page of the open issues nobody is assigned to holds every issue's `body` (up to 65 KB each, 100 a
+    page), and only the number, title, label names and `updated_at` are ever read, so only those stay. A pull request GitHub lists among the issues stays as `{"pull_request": true}`
+    (so the page still counts as full) and is dropped by the reader. Any other path, and any other shape, is returned as it is."""
+    if not isinstance(data, list) or not _UNASSIGNED.fullmatch(path):
+        return data
+    out = []
+    for it in data[:PER_PAGE]:
+        if not isinstance(it, dict):
+            continue
+        if "pull_request" in it:
+            out.append({"pull_request": True})
+            continue
+        labels = []
+        for lb in (it.get("labels") or [])[:30] if isinstance(it.get("labels"), list) else []:
+            name = lb.get("name") if isinstance(lb, dict) else lb
+            if isinstance(name, str):
+                labels.append({"name": name[:200]})
+        out.append({"number": it.get("number") if isinstance(it.get("number"), int) else None, "title": it["title"][:1000] if isinstance(it.get("title"), str) else "",
+                    "labels": labels, "updated_at": it["updated_at"][:40] if isinstance(it.get("updated_at"), str) else None})
+    return out
 
 
 def repo_path(owner, repo) -> str:
@@ -682,6 +714,7 @@ class Reader:
                 return Reply(ent.data, ent.headers, ent.server_now, True, False, scopes, "revalidated")
             if 200 <= status < 300 and isinstance(data, (list, dict)):
                 data = slim_files(path, data)                                                                      # a files page is kept (and handed back) as names only, never as patch text
+                data = slim_unassigned(path, data)                                                                 # an unassigned-issues page is kept as number, title, labels and date, never as bodies
                 tag = headers.get("etag")
                 self.cache[path] = _Entry(tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None, data, headers, server_now, now, scopes)
                 self.cache.move_to_end(path)

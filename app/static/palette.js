@@ -458,6 +458,10 @@ Palette.catalog = function (ctx, query) {
   const epics = Palette.epicGroup(query, close);
   if (epics) groups.push(epics);
 
+  // Team (issue #200): "Team" and the Team block of each shared repository, only while a repository is shared (pages/team.js is lazy; the palette asks for it when it opens)
+  const team = typeof teamShared === 'function' && teamShared() && typeof TeamView !== 'undefined' && TeamView.ready ? TeamView.paletteGroup(query, close) : null;
+  if (team) groups.push(team);
+
   // Backlog cards: Move… is the keyboard route of the drag (the card's m key opens the same sheet). Three with nothing typed.
   if (typeof boardTasks === 'function' && typeof taskMoveable === 'function' && typeof taskMoveSheet === 'function' && typeof state !== 'undefined' && state) {
     let cards = [];
@@ -645,6 +649,7 @@ Palette.open = function (opts) {
   Palette.ui = u;
   u.ctx = Palette.context();
   Nodes.use(() => Palette.refresh());                                                  // paired nodes: their rows join once the hub bundle is here
+  if (typeof teamUse === 'function') teamUse(() => Palette.refresh());                 // a shared repository: the Team rows join once pages/team.js is here
   input.addEventListener('keydown', Palette.key);
   input.addEventListener('input', () => { if (u.mode === 'default') { u.selId = null; Palette.render(); } });
   list.addEventListener('mousedown', (e) => e.preventDefault());                       // a click on a row must not take the focus from the box

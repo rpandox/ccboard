@@ -57,6 +57,8 @@ RATE_LIMIT_EVERY = 15 * 60                                      # a limit notice
 _rl_last: dict[str, float] = {}                                 # agent -> clock of the last limit notice
 LOGIN_EVERY = 15 * 60                                           # one "login not valid" notice per account per this long
 _login_told: dict[str, float] = {}                              # '<agent>:<account>' -> clock of the last such notice
+_team_told: dict[tuple, float] = {}                             # (repository, login, issue) -> clock of the notice: a teammate is told about once per issue
+TEAM_TOLD_MAX = 500
 _lock = threading.Lock()
 
 TITLES = {"waiting": "needs you", "done": "done", "errored": "error"}
@@ -82,42 +84,75 @@ def any_channel() -> bool:
 
 # ---------------------------------------------------------------- per-kind toggles (Settings > Notifications)
 
-PREF_KEYS = ("needs", "done", "limit", "error", "login")        # needs-you, done, rate limit, error / crash, login problem
+PREF_KEYS = ("needs", "done", "limit", "error", "login")        # needs-you, done, rate limit, error / crash, login problem: all on until switched off
+TEAM_KEY = "team"                                               # issue #200: "a teammate started on an issue I hold". The one toggle that is OFF until the person switches it on
 PREF_KIND = {"permission": "needs", "idle": "needs", "elicitation": "needs", "waiting": "needs", "done": "done",
-             "rate_limit": "limit", "error": "error", "login": "login"}      # Notice.kind -> toggle
+             "rate_limit": "limit", "error": "error", "login": "login", "team_started": TEAM_KEY}      # Notice.kind -> toggle
 
 
-def prefs() -> dict:
-    """The five toggles, all on until the person switches one off (kv notify_prefs). Never raises: a dead DB means everything on."""
-    out = {k: True for k in PREF_KEYS}
+def _stored_prefs() -> dict:
+    """The raw kv notify_prefs value (a dict), or {} when there is none, it is damaged or the DB is dead. Never raises."""
     if _db is None:
-        return out
+        return {}
     try:
         rec = _db.kv_get("notify_prefs")
         v = rec.get("value") if isinstance(rec, dict) else None
-        if isinstance(v, dict):
-            for k in PREF_KEYS:
-                if isinstance(v.get(k), bool):
-                    out[k] = v[k]
+        return v if isinstance(v, dict) else {}
     except Exception as e:
         log.warning("notify prefs: %s", e)
+        return {}
+
+
+def team_enabled() -> bool:
+    """Did the person switch "a teammate started on an issue I hold" on? Off by default, and anything but a stored True (no row, a damaged row, a dead DB, a string) is off."""
+    return _stored_prefs().get(TEAM_KEY) is True
+
+
+def team_visible() -> bool:
+    """Is some repository shared with the team? The team toggle is listed (and sampled) only then: a board that shares nothing answers exactly what it always answered."""
+    if _db is None:
+        return False
+    try:
+        return bool(_db.team_shared())
+    except Exception:
+        return False
+
+
+def prefs() -> dict:
+    """The five toggles, all on until the person switches one off (kv notify_prefs), plus `team` (off until switched on) while some repository is shared. Never raises: a dead DB
+    means the five on and team off."""
+    out = {k: True for k in PREF_KEYS}
+    v = _stored_prefs()
+    for k in PREF_KEYS:
+        if isinstance(v.get(k), bool):
+            out[k] = v[k]
+    if team_visible():
+        out[TEAM_KEY] = v.get(TEAM_KEY) is True
     return out
 
 
 def set_prefs(patch: dict) -> dict:
     """Merge booleans for the known toggles into kv notify_prefs and return the full set. Unknown keys and non-booleans are ignored."""
     cur = prefs()
+    stored = _stored_prefs()
+    new = {k: cur[k] for k in PREF_KEYS}
     for k in PREF_KEYS:
         if isinstance(patch.get(k), bool):
-            cur[k] = patch[k]
+            new[k] = patch[k]
+    if isinstance(patch.get(TEAM_KEY), bool):
+        new[TEAM_KEY] = patch[TEAM_KEY]
+    elif TEAM_KEY in stored:
+        new[TEAM_KEY] = stored[TEAM_KEY] is True
     if _db is not None:
-        _db.kv_set("notify_prefs", cur)
-    return cur
+        _db.kv_set("notify_prefs", new)
+    return prefs() if _db is not None else new
 
 
 def kind_enabled(kind) -> bool:
-    """Is the toggle behind this Notice.kind on? A kind with no toggle (a test notice) is always on."""
+    """Is the toggle behind this Notice.kind on? A kind with no toggle (a test notice) is always on; the team kind is on only when the person switched it on."""
     key = PREF_KIND.get(str(kind or ""))
+    if key == TEAM_KEY:
+        return team_enabled()
     return True if key is None else prefs()[key]
 
 
@@ -609,6 +644,38 @@ def _login_notice(row: dict, account: str | None, label: str | None, name: str, 
                   tmux=name, agent=agent, path=path)
 
 
+# ---------------------------------------------------------------- a teammate started on an issue the owner holds (issue #200)
+
+def notify_team_start(repo_slug, login, issue) -> bool:
+    """"<login> started on #<issue>", for an issue the owner holds. Off until the person switches the kind on (Settings > Notifications); then ntfy and Web Push, once per repository,
+    person and issue (the same pair never twice, whatever calls this). Only a clean login, an issue number and the board's own repository slug reach the text: no title, no
+    comment and no branch name from GitHub. The caller (app/team.py `Watch`) has already left out the owner's own logins and boards. Returns True when a channel took the notice."""
+    from . import github, team
+    lg = team.login_of(login) if isinstance(login, str) else None
+    o, _, n = repo_slug.partition("/") if isinstance(repo_slug, str) else ("", "", "")
+    if lg is None or lg.lower().endswith("[bot]") or isinstance(issue, bool) or not isinstance(issue, int) or not 0 < issue < 10 ** 9 or not github.valid_slug(o, n):
+        return False
+    if not any_channel() or not kind_enabled("team_started"):
+        return False                                           # switched off (the default) or nowhere to send: nothing is remembered either
+    k = (f"{o}/{n}".lower(), lg.lower(), issue)
+    with _lock:
+        if k in _team_told:
+            return False
+        _team_told[k] = _clock()
+        while len(_team_told) > TEAM_TOLD_MAX:
+            _team_told.pop(next(iter(_team_told)))
+    return send(_team_notice(f"{o}/{n}", lg, issue))
+
+
+def _team_notice(slug: str, login: str, issue: int) -> Notice:
+    path = "/#/team"
+    pub = (settings.public_url or "").rstrip("/")
+    link = f"{pub}{path}" if pub else None
+    return Notice(title=titled(f"{login} started on #{issue}"), body=f"{slug}\n{login} started on issue #{issue}, which you hold.\nOpen Team to see who is working on what.",
+                  click=link, url=link or path, tag=tagged(f"team-{slug}-{login}-{issue}".lower()), priority=3, tags=["busts_in_silhouette"],
+                  actions=[{"action": "view", "label": "Open Team", "url": link}] if link else [], web_actions=[], kind="team_started", state="", agent="", path=path, renotify=False)
+
+
 # ---------------------------------------------------------------- Settings preview
 
 SAMPLE_ROW = {"tmux_name": "shop--api--s1", "project": "shop", "repo": "api", "name": "s1", "agent": "claude",
@@ -618,7 +685,7 @@ SAMPLE_TASK = {"title": "Fix login redirect", "phase": "running"}
 
 def samples() -> dict:
     """One example notice per toggle, built by the same code that builds the real ones, for the Settings preview card:
-    {needs|done|limit|error|login: {title, body, priority, buttons: [titles Web Push shows], kind}}."""
+    {needs|done|limit|error|login[|team]: {title, body, priority, buttons: [titles Web Push shows], kind}} (`team` only while a repository is shared)."""
     row, task, tmux = SAMPLE_ROW, SAMPLE_TASK, SAMPLE_ROW["tmux_name"]
     made = {
         "needs": build(row, task, "waiting", "permission_prompt", "Claude needs your permission to use Bash", {"id": 0, "summary": "Bash: npm test"}),
@@ -627,5 +694,7 @@ def samples() -> dict:
         "error": build(row, task, "errored", "error", "API Error: 500 Internal server error"),
         "login": _login_notice(row, "work", "work", tmux, "Please run /login", "claude"),
     }
+    if team_visible():                                           # issue #200: the team notice is sampled only while some repository is shared
+        made["team"] = _team_notice("acme/shop", "bob", 12)
     return {k: {"title": n.title, "body": n.body, "priority": n.priority, "kind": n.kind,
                 "buttons": [a["title"] for a in n.web_actions][:2]} for k, n in made.items()}

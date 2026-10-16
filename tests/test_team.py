@@ -292,9 +292,9 @@ def test_the_body_has_one_block_per_own_repository_with_shared_ones_first():
     assert [r["slug"] for r in body["repos"]] == ["acme/shop", "acme/tools"] and [r["state"] for r in body["repos"]] == ["ok", "off"]
     assert body["repos"][1]["people"] == [] and body["repos"][0]["local"] == [{"project": "shop", "repo": "api"}]
     assert team.build([other], {}, None, None, NOW)["enabled"] is False
-    assert set(body) == {"api", "enabled", "me", "repos", "at"}
+    assert set(body) == {"api", "enabled", "me", "repos", "overview", "at"}          # issue #200: overview
     assert set(body["repos"][0]) == {"repo_slug", "slug", "url", "local", "shared", "state", "message", "wait_s", "stale", "read_at", "age_s", "gql_at", "graph_pending", "graph_failed", "private", "people", "counts",
-                                     "truncated", "presence", "warnings"}
+                                     "truncated", "presence", "warnings", "free"}
     assert set(body["repos"][0]["people"][0]) == {"id", "login", "you", "issues", "branches", "prs", "last_active", "presence"}
 
 

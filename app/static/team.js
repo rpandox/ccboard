@@ -1026,8 +1026,9 @@ function demoTeamFlag() { try { const m = /[?&]team=([a-z]+)/.exec(location.sear
 function demoTeamBlock(r, on) {
   const zero = { people: 0, teammates: 0, issues: 0, branches: 0, prs: 0, unattributed_branches: 0, live: 0 };
   if (on === r.shared) return r;
-  if (!on) return { ...r, shared: false, state: 'off', message: 'Not shared with your team. Nothing is read from GitHub for this repository.', stale: false, read_at: null, age_s: null, gql_at: null, graph_pending: false, private: null, presence: null, warnings: null, people: [], counts: zero };
-  return { ...r, shared: true, state: 'ok', message: '', wait_s: null, stale: false, read_at: new Date().toISOString(), age_s: 0, gql_at: new Date().toISOString(), graph_pending: false, presence: null, warnings: { api: 1, identity_known: true, issues: {}, branches: {}, tasks: {}, files: { checked: 0, pending: 0, capped: false } }, people: [], counts: zero };
+  if (!on) return { ...r, shared: false, state: 'off', message: 'Not shared with your team. Nothing is read from GitHub for this repository.', stale: false, read_at: null, age_s: null, gql_at: null, graph_pending: false, private: null, presence: null, warnings: null, free: null, people: [], counts: zero };
+  return { ...r, shared: true, state: 'ok', message: '', wait_s: null, stale: false, read_at: new Date().toISOString(), age_s: 0, gql_at: new Date().toISOString(), graph_pending: false, presence: null, warnings: { api: 1, identity_known: true, issues: {}, branches: {}, tasks: {}, files: { checked: 0, pending: 0, capped: false } },
+    free: { state: 'unread', reason: 'unread', message: 'The open issues of this repository have not been read yet, so free issues are not listed.', held: [], issues: [], count: 0, truncated: false }, people: [], counts: zero };
 }
 
 const demoPresMade = { repos: {}, paused: null };              // repo_slug -> {publish, private, ok} as the visitor left it; the global pause
@@ -1078,6 +1079,118 @@ function demoPresBuild(fx) {
   return { ...pf.base, ...((v && v.body) || {}), paused, repos };
 }
 
+/* The one list of the whole team (issue #200) for the demo: what app/team.py overview() makes of the blocks, so a variant (?team=sso, a repository switched on or off) shows the screens of
+   that state. A port of the model, held to it by tests (tests/test_team_overview.py makes the answers from the real model for every variant, tests/js/team-view.test.mjs compares). */
+const DEMO_ROW_STATES = ['working', 'waiting', 'idle', 'unconfirmed', 'stale', 'ended', 'unknown', 'github'];
+function demoRowState(word, pstate) {
+  if (word === null || word === undefined) return 'github';
+  if (pstate === 'ended' && ['live', 'idle', 'unconfirmed', 'stale'].includes(word)) return 'ended';
+  if (word === 'live') return pstate === 'running' ? 'working' : 'waiting';
+  return ['idle', 'unconfirmed', 'stale', 'unknown'].includes(word) ? word : 'stale';
+}
+function demoRowsOf(b, p, pk) {
+  const [so, sn] = b.slug.split('/');
+  const stale = !!b.stale;
+  const base = { person: pk, login: p.login, you: !!p.you, repo_slug: b.repo_slug, slug: b.slug, repo_url: b.url, read_at: b.read_at, stale };
+  const blank = (kind, kw) => ({ ...base, kind, issue: null, issue_url: null, title: null, branch: null, branch_url: null, pr: null, pr_url: null, draft: null, agent: null, state: 'github', live: null, since: null,
+    last: null, last_seen_s: null, claim: null, collides: false, ...kw });
+  const gh = `https://github.com/${so}/${sn}`;
+  const issues = new Map(p.issues.map((i) => [i.number, i]));
+  const prsFor = new Map();
+  for (const pr of p.prs) for (const c of pr.closes || []) if (!prsFor.has(c)) prsFor.set(c, pr);
+  const usedIssue = new Set(); const usedBranch = new Set(); const usedPr = new Set();
+  const out = [];
+  const attach = (row, n) => {
+    const pr = n ? prsFor.get(n) : null;
+    if (!pr) return;
+    Object.assign(row, { pr: pr.number, pr_url: pr.url, draft: pr.draft });
+    row.collides = row.collides || !!pr.collides;
+    usedPr.add(pr.number);
+    if (pr.head) usedBranch.add(pr.head);
+  };
+  const claimOf = (it) => (it && it.claim ? { status: it.claim.status, live: it.claim.live } : null);
+  const rank = { live: 0, idle: 1, unconfirmed: 2, stale: 3, unknown: 4, gone: 5 };
+  const seenBoard = new Set();
+  const boards = [...((p.presence && p.presence.boards) || [])].sort((x, y) => (rank[x.live] ?? 9) - (rank[y.live] ?? 9) || (x.last_seen_s ?? 1e9) - (y.last_seen_s ?? 1e9));
+  for (const bd of boards) {
+    const k = `${bd.issue}|${bd.branch}`;
+    if (seenBoard.has(k)) continue;
+    seenBoard.add(k);
+    const word = stale && ['live', 'idle', 'unconfirmed'].includes(bd.live) ? 'stale' : bd.live;
+    const it = bd.issue ? issues.get(bd.issue) : null;
+    const row = blank('presence', { issue: bd.issue, issue_url: bd.issue_url, title: it ? it.title : null, branch: bd.branch, branch_url: bd.branch_url, agent: bd.agent, state: demoRowState(word, bd.state), live: word,
+      since: bd.since, last: bd.last, last_seen_s: bd.last_seen_s, claim: claimOf(it), collides: !!(it && it.collides && it.collides.length) });
+    if (it) { usedIssue.add(it.number); for (const x of it.branches) usedBranch.add(x); }
+    if (bd.branch) usedBranch.add(bd.branch);
+    attach(row, bd.issue);
+    out.push(row);
+  }
+  for (const it of p.issues) {
+    if (usedIssue.has(it.number)) continue;
+    const br = it.branches.length ? it.branches[0] : null;
+    const row = blank('issue', { issue: it.number, issue_url: it.url, title: it.title, branch: br, branch_url: br ? `${gh}/tree/${br}` : null, last: it.updated_at, claim: claimOf(it), collides: !!(it.collides && it.collides.length) });
+    usedIssue.add(it.number);
+    for (const x of it.branches) usedBranch.add(x);
+    attach(row, it.number);
+    out.push(row);
+  }
+  for (const pr of p.prs) {
+    if (usedPr.has(pr.number)) continue;
+    const n = pr.closes && pr.closes.length ? pr.closes[0] : null;
+    out.push(blank('pr', { issue: n, issue_url: n ? `${gh}/issues/${n}` : null, branch: pr.head, branch_url: pr.head ? `${gh}/tree/${pr.head}` : null, pr: pr.number, pr_url: pr.url, title: pr.title, draft: pr.draft,
+      last: pr.updated_at, collides: !!(pr.collides && pr.collides.length) }));
+    usedPr.add(pr.number);
+    if (pr.head) usedBranch.add(pr.head);
+  }
+  for (const br of p.branches) {
+    if (usedBranch.has(br.name)) continue;
+    usedBranch.add(br.name);
+    out.push(blank('branch', { issue: br.issue, issue_url: br.issue ? `${gh}/issues/${br.issue}` : null, branch: br.name, branch_url: br.url, last: br.at, collides: !!(br.collides && br.collides.length) }));
+  }
+  if (!out.length) out.push(blank('seen', { last: p.last_active }));
+  return out;
+}
+function demoOverview(repos) {
+  const rank = { live: 0, idle: 1, unconfirmed: 2, stale: 3, unknown: 4, gone: 5 };
+  const shared = repos.filter((b) => b.shared);
+  const ids = new Map();
+  for (const b of shared) for (const p of b.people || []) if (p.id !== null && p.id !== undefined && p.login) ids.set(p.login.toLowerCase(), p.id);
+  const rows = []; const people = new Map(); const livePeople = new Set();
+  let activeRepos = 0;
+  for (const b of shared) {
+    const counted = b.state === 'ok' && !b.stale;
+    let repoLive = false;
+    for (const p of b.people || []) {
+      const uid = p.id !== null && p.id !== undefined ? p.id : (p.login ? ids.get(p.login.toLowerCase()) : undefined);
+      const pk = uid !== null && uid !== undefined ? `id:${uid}` : `login:${(p.login || '').toLowerCase()}`;
+      const mine = demoRowsOf(b, p, pk);
+      rows.push(...mine);
+      if (!people.has(pk)) people.set(pk, { key: pk, id: uid === undefined ? null : uid, login: p.login, you: false, live: 'none', last_seen_s: null, repos: [], rows: 0 });
+      const ent = people.get(pk);
+      ent.you = ent.you || !!p.you;
+      ent.rows += mine.length;
+      if (!ent.repos.includes(b.slug)) ent.repos.push(b.slug);
+      let best = null;
+      const better = (r, o) => o === null || ((rank[r.live] ?? 9) - (rank[o.live] ?? 9) || (r.last_seen_s ?? 1e9) - (o.last_seen_s ?? 1e9)) < 0;
+      for (const r of mine) if (r.live !== null && better(r, best)) best = r;
+      if (best && (rank[best.live] ?? 9) < (rank[ent.live] ?? 9)) { ent.live = best.live; ent.last_seen_s = best.last_seen_s; }
+      if (counted && !p.you && mine.some((r) => r.live === 'live' || r.live === 'idle')) { livePeople.add(pk); repoLive = true; }
+    }
+    if (repoLive) activeRepos += 1;
+  }
+  const secs = (v) => { const t = Date.parse(v || ''); return Number.isNaN(t) ? 0 : t / 1000; };
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  rows.sort((a, b) => cmp(!a.you, !b.you) || DEMO_ROW_STATES.indexOf(a.state) - DEMO_ROW_STATES.indexOf(b.state) || secs(b.last) - secs(a.last) || cmp((a.login || '').toLowerCase(), (b.login || '').toLowerCase())
+    || cmp(a.slug.toLowerCase(), b.slug.toLowerCase()) || (a.issue || 0) - (b.issue || 0) || cmp(a.branch || '', b.branch || '') || (a.pr || 0) - (b.pr || 0));
+  const plist = [...people.values()].sort((a, b) => cmp(!a.you, !b.you) || (rank[a.live] ?? 9) - (rank[b.live] ?? 9) || cmp((a.login || '').toLowerCase(), (b.login || '').toLowerCase()) || (a.id || 0) - (b.id || 0));
+  const frees = shared.map((b) => b.free).filter((f) => f && typeof f === 'object');
+  const count = (s) => frees.filter((f) => f.state === s).length;
+  return { api: 1, counts: { shared: shared.length, ok: shared.filter((b) => b.state === 'ok').length, loading: shared.filter((b) => b.state === 'loading').length,
+    problem: shared.filter((b) => b.state !== 'ok' && b.state !== 'loading').length, teammates: [...people.values()].filter((e) => !e.you).length, live: livePeople.size, active_repos: activeRepos, rows: rows.length,
+    free: { count: frees.filter((f) => f.state === 'ok').reduce((a, f) => a + f.count, 0), ok: count('ok'), unread: count('unread'), unknown: count('unknown') }, truncated: rows.length > 600 || plist.length > 200 },
+  people: plist.slice(0, 200), rows: rows.slice(0, 600) };
+}
+
 async function demoTeam(method, path, body) {
   const bare = path.split('?')[0];
   await new Promise((resolve) => setTimeout(resolve, 60));
@@ -1094,10 +1207,12 @@ async function demoTeam(method, path, body) {
   const build = () => {
     const now = Date.now();
     const repos = fx.base.repos.map((b) => (v && v.repo && b.repo_slug === 'github.com/example/website' ? { ...b, ...v.repo } : b))
+      .map((b) => (v && v.others && ownKey(v.others, b.repo_slug) ? { ...b, ...v.others[b.repo_slug] } : b))
       .map((b) => (b.repo_slug === 'github.com/example/website' ? lines(b) : b))
       .map((b) => (ownKey(demoTeamMade, b.repo_slug) ? demoTeamBlock(b, demoTeamMade[b.repo_slug]) : b))
       .map((b) => (b.read_at ? { ...b, age_s: Math.max(0, Math.floor((now - Date.parse(b.read_at)) / 1000)) } : b));
-    return { ...fx.base, ...((v && v.body) || {}), repos, enabled: repos.some((b) => b.shared === true), at: new Date(now).toISOString() };
+    const overview = !v && !Object.keys(demoTeamMade).length && fx.base.overview ? fx.base.overview : demoOverview(repos);          // the fixture's own list while nothing is laid over it
+    return { ...fx.base, ...((v && v.body) || {}), repos, overview, enabled: repos.some((b) => b.shared === true), at: new Date(now).toISOString() };
   };
   if (method === 'GET' && bare === '/api/team/state') return build();
   if (method === 'POST' && bare === '/api/team/refresh') return { queued: build().enabled };

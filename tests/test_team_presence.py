@@ -456,6 +456,18 @@ def test_the_editor_check_failing_drops_edited_lines(env):
     assert all(not (p["login"] == "bob" and p["presence"]) for p in blk["people"]) and blk["presence"]["editor_check"] == "failed"
 
 
+def test_a_read_that_cleared_its_verdict_memory_says_the_editor_check_failed(env, monkeypatch):
+    a, b = env.board(), env.board("bob", "node-b")
+    b.publish()
+    run([b], 1000)                                                         # bob's comment has been edited (by bob) by a heartbeat
+    monkeypatch.setattr(team_github, "PRESENCE_MEM_MAX", 0)                # the memory is cleared in this very read, so the edited line is left out
+    blk = a.block()
+    assert blk["presence"]["editor_check"] == "failed" and all(not (p["login"] == "bob" and p["presence"]) for p in blk["people"])
+    monkeypatch.setattr(team_github, "PRESENCE_MEM_MAX", 2000)
+    blk = a.block()
+    assert blk["presence"]["editor_check"] == "ok" and any(p["login"] == "bob" and p["presence"] for p in blk["people"]), "the next read has its verdicts again"
+
+
 @pytest.mark.parametrize("seen_ago,moved,upd_ago,active,want", [
     (60, True, 60, True, "live"), (60, True, 60, False, "idle"), (60, False, 60, True, "unconfirmed"), (31 * 60, True, 60, True, "stale"),
     (31 * 60, False, 31 * 60, True, "stale"), (2 * 3600, True, 2 * 3600, True, "stale"), (25 * 3600, True, 25 * 3600, True, "gone"),
