@@ -64,6 +64,16 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Tailscale's resolver first, so the MagicDNS names of other nodes resolve (pairing calls back the other board, the hub
+      # polls it); public resolvers after it. Docker never hands a container the host's 127.0.0.53 stub, and a daemon-wide
+      # "dns" setting (common on boxes that run other containers) points it at public servers that know no tailnet name.
+      # install.sh writes the file next to this one.
+      - type: bind
+        source: ./resolv.conf
+        target: /etc/resolv.conf
+        read_only: true
+        bind:
+          create_host_path: false
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: ccboard
