@@ -2,6 +2,28 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.56 - 2026-10-16
+
+### Added
+- Nodes P18, start an epic from the board (#158). **New epic** is a sheet (a native dialog) reached from **Tasks > Epics** (its one filled button), a project's **More** menu and the command palette (`new epic`, or `epic`). You pick one of the GitHub repositories of your projects, type an epic title and a goal, and add up to 20 issue rows (title, a short description, tier **A, B, C or Check**, size **S, M or L**, and optionally one earlier row it depends on). Rows add with a button, move with the arrow buttons or **Alt+Up** and **Alt+Down**, and remove with a button that has an Undo. **Preview** (secondary) shows the exact titles, labels, bodies (collapsed), the number of GitHub calls and whether the repository is public; **Create** (the one filled primary) is enabled only after a Preview of exactly what is on screen, and any change disables it again.
+- Create writes the two labels (once), the epic issue, each issue, each issue attached as a sub-issue and one edit that fills the epic's `- [ ] #N` list, **one write at a time, at least 1.1 s apart**, through the same queue as claims and **only with `CCBOARD_EPIC_WRITES=1`**. Next to Create the sheet says how many issues it writes, where, whether the repository is public, and that the board cannot delete them. With writes off, Preview works and Create says why. The issues follow the repository's issue template (nine sections, a `Size:` line, the tier's "Who should do it" block from a fixed table that never names a bypass, an empty checklist for you to complete); what you type is data, shown inside the template and never a heading, marker, label or command.
+- A stop midway lists the issues that exist and offers **Resume**. Every issue carries a hidden marker line, and a Resume (or a Create typed again) first looks for them by the board's own `gh` login and writes only what is missing, so there is never a duplicate, and a write whose outcome is unknown is never repeated blindly. The form is locked while it writes or waits for Resume, because a changed title would be a different epic. On success the sheet closes and the epic's page opens, where **Run** is.
+- `POST /api/epics/preview`, `POST /api/epics` and `GET /api/epics/new` (a signed-in person only: the hook, MCP, node and device tokens get 403; no MCP tool and no node route reaches them), the repositories only from your own projects' remotes. The write queue's closed list grew from 9 to 11 shapes (create a sub-issue link, edit an issue's body), each locked to this purpose and a validated body. Text that names a bypass or holds a secret, an email, a personal path or a host name is refused beside its field, never edited.
+- `?demo=1` shows it all: **New epic** on `#/tasks?tab=epics` (or `#/tasks?tab=epics&new=1`, which opens the sheet), then `&newepic=writesoff|fail|unknown|private|norepo|down` (the default creates the epic; `fail` stops at issue 2 and Resume finishes it; `unknown` stops with an unknown outcome and Resume finds the issue by its marker). README: **Starting an epic from the board**; ROADMAP as-built note.
+
+### Changed
+- First paint is 540,748 bytes of script (+358 for one demo line in `core.js`); the sheet is `pages/epic-new.js` in the lazy `epic` bundle (styles in `pages/epic.css`), loaded on first use.
+- Known limits, UNVERIFIED until #155: the sub-issue and issue-edit requests against real GitHub, `gh` on a real three-child epic, and whether GitHub's issue list returns bodies for the label reads that Resume depends on. A 20-issue epic is 44 writes, about 74 s in one request (the sheet says so and keeps every value if the connection breaks). Resume reads at most 500 issues per label. Screenshots at 1280, 1024 and 390 pixels are for the orchestrator.
+
+### Fixed
+- A description or goal with a line such as `## Who should do it` passed Preview and then failed in the middle of Create with a server error. The board now finds the real heading only, Preview runs the same check on every title and body that Create does and names the field, and a request the writer refuses is a failed step that lists the issues that exist, never a 500.
+- A Resume no longer adopts an issue from an earlier try whose text is not what would be written now (same titles, another tier, size, goal or dependency). It writes and attaches nothing and says which issue differs: edit it there or start a new epic. A ticked list and the web editor's line breaks do not count as a difference.
+- The text check also refuses private keys, npm, GitLab, Google and Stripe live keys, JSON web tokens, Authorization values and long runs of letters and digits, and it reads full-width, look-alike Cyrillic or Greek and unusual hyphen spellings of a bypass as the bypass. The refusal never repeats the text.
+- Attaching a sub-issue or editing the epic body only works for issues the same run created or found; the writer refuses any other number or id before a command exists.
+- `POST /api/epics` and `POST /api/epics/preview` refuse a body over 1 MB with 413 before reading it as an epic, and a body that is not an epic gets a plain 422 that does not repeat what was sent.
+
+Upgrade: nothing to do.
+
 ## v0.5.55 - 2026-10-16
 
 ### Added

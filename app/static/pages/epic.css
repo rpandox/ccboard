@@ -144,3 +144,88 @@ html.force-coarse #page .ep-check-node { min-height:var(--tap); }
 #page .ep-check { display:inline-flex; align-items:center; min-height:var(--row-btn); vertical-align:middle; color:inherit; text-decoration:underline; }
 @media (pointer:coarse) { #page .ep-check { min-height:var(--tap); } }
 html.force-coarse #page .ep-check { min-height:var(--tap); }
+
+/* The New epic sheet (issue #158), loaded with pages/epic.js and epic-new.js: a native <dialog id=sheet>, so every rule starts with #sheet (or dialog#sheet). Headings are small caps with a hairline
+   above, one filled primary (Create), segmented controls on one full-width track, 28 px controls with a mouse and --tap (44 px) on touch, 16 px inputs on touch, nothing wider than 390 px.
+   State is a glyph and words, never colour alone; no inline styles. */
+dialog#sheet.right.epn-wide { width:min(560px, 100vw); }
+dialog#sheet.bottom.epn-wide { max-width:680px; }
+#sheet .epn-form { display:flex; flex-direction:column; gap:10px; min-width:0; }
+#sheet .epn-lead { margin:0; font-size:13px; line-height:1.5; }
+#sheet .epn-fields { display:flex; flex-direction:column; gap:10px; margin:0; min-width:0; }
+#sheet .epn-fields > * + * { margin-top:0; }
+#sheet .epn-sec { margin:10px 0 0; padding-top:12px; border-top:1px solid var(--line-soft); font:600 11px/1.4 var(--font-ui); letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#sheet .epn-fields > .epn-sec:first-child { margin-top:0; padding-top:0; border-top:0; }
+#sheet .epn-n { font-weight:400; letter-spacing:0; text-transform:none; }
+#sheet .epn-loading, #sheet .epn-hint, #sheet .epn-addnote { margin:0; font-size:12px; line-height:1.5; }
+#sheet .epn-empty { display:flex; flex-direction:column; gap:4px; padding:12px; border:1px solid var(--line); border-radius:3px; background:var(--card); }
+#sheet .epn-empty p { margin:0; font-size:13px; line-height:1.5; }
+#sheet .epn-failed { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--line); border-left:3px solid var(--bad); border-radius:3px; background:var(--card); font-size:13px; }
+#sheet .epn-ft { flex:1 1 200px; min-width:0; overflow-wrap:anywhere; }
+#sheet .epn-writesoff { margin:0; padding:8px 10px; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:3px; background:var(--card); font-size:13px; line-height:1.5; }
+#sheet .epn-writesoff.warn, #sheet .epn-words.warn, #sheet .epn-vis.warn, #sheet .epn-stale-note { color:var(--warn-fg); }
+
+/* the issue rows */
+#sheet .epn-rows { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px; }
+#sheet .epn-row { display:flex; flex-direction:column; gap:8px; min-width:0; padding:8px 10px 10px; border:1px solid var(--line); border-radius:3px; background:var(--card); }
+#sheet .epn-row .field { margin:0; }
+#sheet .epn-rowhead { display:flex; align-items:center; gap:2px; min-width:0; }
+#sheet .epn-rowk { font:600 12px/1.4 var(--font-ui); color:var(--fg-2); }
+#sheet .epn-rowhead .spacer { flex:1 1 auto; }
+#sheet .epn-rowbtn { display:inline-flex; align-items:center; justify-content:center; min-width:var(--row-btn); min-height:var(--row-btn); }
+#sheet .epn-rowbtn[disabled], #sheet .epn-add[disabled] { opacity:.4; cursor:not-allowed; }
+#sheet .epn-pair { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:8px 12px; }
+#sheet .epn-pair .field { min-width:0; }
+#sheet .epn-seg { display:flex; width:100%; max-width:100%; }
+#sheet .epn-seg .seg-btn { flex:1 1 0; min-width:0; padding:0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
+#sheet .epn-seg .seg-btn[disabled] { opacity:.55; cursor:not-allowed; }
+#sheet .epn-tierhint { margin:0; line-height:1.4; overflow-wrap:anywhere; }
+#sheet .epn-desc, #sheet .epn-goal { display:block; width:100%; box-sizing:border-box; resize:vertical; line-height:1.4; }
+#sheet .epn-desc { min-height:56px; }
+#sheet .epn-goal { min-height:72px; }
+#sheet .epn-rownote { font-size:12px; line-height:1.4; }
+#sheet .epn-rownote:empty, #sheet .epn-undo:empty, #sheet .epn-addnote:empty, #sheet .epn-rowserr:empty, #sheet .epn-status:empty { display:none; }
+#sheet .epn-undo { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; font-size:12px; }
+#sheet .epn-undo-b { min-height:var(--row-btn); }
+#sheet .epn-addrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
+#sheet .epn-add { display:inline-flex; align-items:center; gap:6px; min-height:var(--row-btn); }
+#sheet .epn-status { margin:0; font-size:12px; color:var(--fg-2); }
+#sheet .epn-locked .epn-row { opacity:.8; }
+
+/* the preview */
+#sheet .epn-preview { display:flex; flex-direction:column; gap:8px; min-width:0; }
+#sheet .epn-preview.stale .epn-plist, #sheet .epn-preview.stale .epn-calls { opacity:.55; }
+#sheet .epn-stale-note { display:none; margin:0; font-size:13px; }
+#sheet .epn-preview.stale .epn-stale-note { display:block; }
+#sheet .epn-calls, #sheet .epn-vis { margin:0; font-size:13px; line-height:1.5; }
+#sheet .epn-glyph { display:inline-block; min-width:1.2em; font-family:var(--font-glyph); }
+#sheet .epn-plist { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+#sheet .epn-pitem { display:flex; flex-direction:column; gap:4px; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:3px; background:var(--card); }
+#sheet .epn-ptitle { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; min-width:0; }
+#sheet .epn-pk { font:600 11px/1.4 var(--font-ui); letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+#sheet .epn-pt { min-width:0; font-weight:600; overflow-wrap:anywhere; }
+#sheet .epn-chip { display:inline-block; padding:0 6px; border:1px solid var(--line-strong); border-radius:9px; font-size:11px; line-height:16px; color:var(--fg-2); overflow-wrap:anywhere; }
+#sheet .epn-models { font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
+#sheet .epn-body > summary { display:inline-flex; align-items:center; min-height:var(--row-btn); cursor:pointer; font-size:12px; color:var(--fg-2); }
+#sheet .epn-pre { margin:4px 0 0; padding:8px; max-height:260px; overflow:auto; border:1px solid var(--line-soft); border-radius:2px; background:var(--bg-0); font-size:11px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+#sheet .epn-exlist { list-style:none; margin:0; padding:0; }
+#sheet .epn-ex { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; padding:4px 0; border-bottom:1px solid var(--line-soft); font-size:13px; }
+#sheet .epn-exk { min-width:5.5em; font:600 11px/1.4 var(--font-ui); letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+#sheet .epn-ex a { display:inline-flex; align-items:center; min-height:var(--row-btn); }
+
+/* the foot: the sentence beside Create, then Preview (secondary) and Create (the one filled primary) */
+#sheet .epn-actions { display:flex; flex-direction:column; gap:8px; flex:1 1 100%; min-width:0; }
+#sheet .epn-words { margin:0; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#sheet .epn-btns { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; }
+#sheet .epn-btns button { min-height:var(--row-btn); }
+#sheet .epn-create[disabled] { opacity:.55; cursor:not-allowed; }
+
+@media (max-width:480px) {
+  #sheet .epn-pair { grid-template-columns:minmax(0, 1fr); }
+}
+@media (pointer:coarse) {
+  #sheet .epn-desc, #sheet .epn-goal { font-size:16px; }
+  #sheet .epn-body > summary, #sheet .epn-ex a, #sheet .epn-undo-b, #sheet .epn-add, #sheet .epn-btns button, #sheet .epn-rowbtn { min-height:var(--tap); }
+}
+html.force-coarse #sheet .epn-desc, html.force-coarse #sheet .epn-goal { font-size:16px; }
+html.force-coarse #sheet .epn-body > summary, html.force-coarse #sheet .epn-ex a, html.force-coarse #sheet .epn-undo-b, html.force-coarse #sheet .epn-add, html.force-coarse #sheet .epn-btns button, html.force-coarse #sheet .epn-rowbtn { min-height:var(--tap); }

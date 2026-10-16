@@ -1395,10 +1395,18 @@ Epics.paintList = function (host) {
   document.addEventListener('visibilitychange', L.onVis);
   host.textContent = '';
   host.append(el('div', { class: 'page-head tk-head ep-lhead' }, el('h1', { text: 'Epics' }), el('span', { class: 'summary', text: 'issues with sub-issues on GitHub, shared out across your nodes' }),
-    el('div', { class: 'actions' }, el('button', { class: 'small', type: 'button', text: 'Refresh', onclick: () => epListLoad(L, true) }))), L.body);
+    el('div', { class: 'actions' }, el('button', { class: 'small', type: 'button', text: 'Refresh', onclick: () => epListLoad(L, true) }),
+      el('button', { class: 'small primary ep-new', type: 'button', onclick: () => epicNewOpen({}), title: 'Write a new epic and its issues to GitHub: you see a preview first' }, ic('plus'), 'New epic'))), L.body);
   Epics.host = L;
   epListPaint(L);
   epListLoad(L, false);
+  try {                                                         // #/tasks?tab=epics&new=1 opens the New epic sheet (a link to share, and for a screenshot); the address is then the plain one
+    const r = typeof currentRoute === 'function' ? currentRoute() : null;
+    if (r && r.query && r.query.new === '1' && typeof epicNewOpen === 'function' && typeof navigate === 'function') {
+      epicNewOpen({});
+      setTimeout(() => navigate('#/tasks?tab=epics', { replace: true }), 0);          // out of this route change, then the plain address (router.js owns the history)
+    }
+  } catch (_) { /* no route yet */ }
 };
 
 Epics.stopList = function () {
@@ -1476,7 +1484,7 @@ async function demoEpics(method, path, body) {
   const flag = demoEpicFlag();
   const v = flag && ownKey(fx.variants || {}, flag) ? fx.variants[flag] : null;
   if (v && v.status) throw demoError(v.status, v.error);
-  if (bare === '/api/epics') return { ...fx.list, ...((v && v.list) || {}) };
+  if (bare === '/api/epics') { const l = { ...fx.list, ...((v && v.list) || {}) }; return typeof demoNewListed === 'function' ? demoNewListed(l) : l; }          // epics the visitor made with New epic come first
   const cm = /^\/api\/nodes\/([^/]+)\/epics\/claim$/.exec(bare);
   if (cm) return demoEpicClaim(decodeURIComponent(cm[1]), body || {}, fx);
   const wm = /^\/api\/nodes\/([^/]+)\/epics\/work$/.exec(bare);
@@ -1484,7 +1492,7 @@ async function demoEpics(method, path, body) {
   const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings|\/run|\/pause|\/resume|\/route|\/issues\/[0-9]+\/run)?$/.exec(bare);
   if (!m) return {};
   const key = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}#${m[3]}`.toLowerCase();
-  const base = fx.details && ownKey(fx.details, key) ? fx.details[key] : null;
+  const base = (fx.details && ownKey(fx.details, key) ? fx.details[key] : null) || (typeof demoNewBase === 'function' ? demoNewBase(fx, key) : null);          // or an epic the visitor made with New epic (epic-new.js)
   const shell = (d) => (d.epic && d.epic.number ? d : { ...d, epic: { ...d.epic, repo: `${m[1]}/${m[2]}`, owner: m[1], name: m[2], number: Number(m[3]), url: `${EP_GH}${m[1]}/${m[2]}/issues/${m[3]}` } });
   if (!base && method === 'GET') return shell({ ...fx.blank, error: (((fx.variants || {}).notfound || {}).detail || {}).error || null });
   const eff = { ...(base || {}), ...((v && v.detail) || {}) };                     // the detail as the variant lays it over the base: what the visitor starts from

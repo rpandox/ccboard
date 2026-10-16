@@ -162,7 +162,7 @@ def write(world: dict, method: str, path: str, body) -> Resp:
                 c["editor"], c["last_edited_at"] = login, iso(now)         # GraphQL `editor` (issue #198)
             return Resp(200, {}, comment_obj(c, world))
         return Resp(405, {}, {"message": "method not allowed here: " + method})
-    m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues/([0-9]+)/(comments|assignees|labels)(?:/(.+))?", path)
+    m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues/([0-9]+)/(comments|assignees|labels|sub_issues)(?:/(.+))?", path)
     if m:
         o, r, n, what, rest = m.groups()
         k = key(o, r, n)
@@ -185,6 +185,18 @@ def write(world: dict, method: str, path: str, body) -> Resp:
             lst.append(c)
             _touch(world, k)
             return Resp(201, {}, comment_obj(c, world))
+        if what == "sub_issues" and method == "POST":           # issue #158: attach a child to the parent by the child's REST id (a duplicate or the parent itself is a 422)
+            if world.get("sub_issues_missing"):
+                return Resp(404, {}, {"message": "Not Found"})
+            sid = body.get("sub_issue_id") if isinstance(body, dict) else None
+            child = next((c for c in world["issues"] if isinstance(sid, int) and not isinstance(sid, bool) and issue_id(c) == sid), None)
+            if child is None:
+                return Resp(404, {}, {"message": "Not Found"})
+            if child == k or any(child in v for v in world.setdefault("subs", {}).values()):
+                return Resp(422, {}, {"message": "Validation Failed"})
+            world["subs"].setdefault(k, []).append(child)
+            _touch(world, k)
+            return Resp(201, {}, issue_obj(world, k))
         if what == "assignees" and method in ("POST", "DELETE"):
             names = body.get("assignees") if isinstance(body, dict) else None
             if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
@@ -221,6 +233,16 @@ def write(world: dict, method: str, path: str, body) -> Resp:
             _touch(world, k)
             return Resp(200, {}, _labels_of(world, k))
         return Resp(405, {}, {"message": "method not allowed here: " + method})
+    m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues/([0-9]+)", path)
+    if m and method == "PATCH":                                 # issue #158: edit an issue (the epic's parent body); only the title and the body change
+        k = key(*m.groups())
+        if k not in world["issues"]:
+            return Resp(404, {}, {"message": "Not Found"})
+        if not isinstance(body, dict) or not set(body) <= {"title", "body"} or not all(isinstance(v, str) for v in body.values()):
+            return Resp(422, {}, {"message": "Validation Failed"})
+        world["issues"][k].update(body)
+        _touch(world, k)
+        return Resp(200, {}, issue_obj(world, k))
     m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues", path)
     if m and method == "POST":                                  # a new issue (issue #198: the presence status issue); labels are dropped without push access, as GitHub does
         o, r = m.groups()

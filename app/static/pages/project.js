@@ -122,6 +122,7 @@ function pjMoreItems(P) {
   const items = [];
   if (p) items.push({ label: 'Add repo', icon: 'plus', onClick: () => pjAddRepo(p) });
   if (p && p.path && pjCodePort(st)) items.push({ label: 'Open the folder in code-server', icon: 'code', onClick: () => openPage(codeServerUrl(p.path)) });
+  items.push({ label: 'New epic', icon: 'git-branch', onClick: () => { if (typeof Lazy !== 'undefined') Lazy.run('epic', () => epicNewOpen({ project: P.project }), 'the New epic sheet'); } });          // issue #158: a sheet that writes an epic to one of this project's GitHub repositories
   items.push({ label: 'Repos and danger zone', icon: 'git-repo', onClick: () => { P.manage = !P.manage; pjUpdate(); } });
   items.push({ label: 'Delete project', icon: 'trash', onClick: () => { P.manage = true; ui.confirm = 'del:' + P.project; pjUpdate(); } });
   return items;
@@ -130,7 +131,7 @@ function pjMoreItems(P) {
 function pjHeader(P) {
   const name = el('h1', { class: 'pj-name' });
   const path = el('span', { class: 'pj-path mono dim' });
-  const more = el('button', { class: 'icon minimal pj-more', type: 'button', 'aria-label': 'More actions', title: 'More: add repo, code-server, repos, delete project' }, ic('more'));
+  const more = el('button', { class: 'icon minimal pj-more', type: 'button', 'aria-label': 'More actions', title: 'More: add repo, code-server, new epic, repos, delete project' }, ic('more'));
   menu(more, () => pjMoreItems(P));
   // the project's live sessions side by side (the quad scoped to it): a quiet bordered link beside the ... menu, on every width and on every tab
   const quad = el('a', { class: 'btn minimal small pj-quad', href: '#/quad', title: "This project's live sessions side by side (the quad)" }, ic('layout-grid'), 'Quad');

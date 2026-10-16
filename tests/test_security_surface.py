@@ -158,6 +158,9 @@ EXPECTED = {
     ("GET", "/api/epics"): "identity",              # the epics of the repos this board knows, read through gh (GET only; issue #147); a GitHub problem is an `error` in a 200 answer
     ("GET", "/api/epics/{owner}/{repo}/{n}"): "identity",       # one epic: children, claims, tasks, progress; owner, repo and number are checked against GitHub's rules before any gh command is built
     ("PUT", "/api/epics/{owner}/{repo}/{n}/settings"): "identity+csrf",   # pins and pause, kept on this board only; a signed-in person: the hook token, the hub and a node token get 403 from the handler
+    ("GET", "/api/epics/new"): "identity",              # what the New epic sheet starts from (issue #158): this board's own repositories and the writes switch; no GitHub call
+    ("POST", "/api/epics"): "identity+csrf",               # start an epic (issue #158): creates issues on GitHub through the write queue, behind CCBOARD_EPIC_WRITES; a signed-in person only (403 from the handler for the hook token, MCP, node and device tokens)
+    ("POST", "/api/epics/preview"): "identity+csrf",       # the same epic as a preview: reads one fact from GitHub, writes nothing; a signed-in person only
     ("POST", "/api/epics/{owner}/{repo}/{n}/run"): "identity+csrf",       # Run (issue #150): a signed-in person only (403 for the hook token, a node token and a device token); refused with writes off or no node paired
     ("POST", "/api/epics/{owner}/{repo}/{n}/pause"): "identity+csrf",     # Pause: no new assignment from that moment; a signed-in person only
     ("POST", "/api/epics/{owner}/{repo}/{n}/resume"): "identity+csrf",    # Resume; a signed-in person only
