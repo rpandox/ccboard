@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.60 - 2026-10-16
+
+### Fixed
+- A scheduled or headless agent run that times out now ends its whole process tree (#116, slice 8). The run starts in its own process group; on a timeout the board sends SIGTERM to the group, waits 5 seconds, then SIGKILL. Before, only the direct child was killed and its node grandchildren kept running (Linux too). The board never signals its own group. On Windows the child is started in a new process group and killed. Environment handling is unchanged.
+
+Upgrade: nothing to do.
+
 ## v0.5.58 - 2026-10-16
 
 ### Added

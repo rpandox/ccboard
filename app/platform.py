@@ -177,6 +177,61 @@ def spawn_detached(argv: list[str], log_file, **kw) -> subprocess.Popen:
     return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True, **kw)
 
 
+GROUP_GRACE = 5.0     # seconds a timed-out process group gets after SIGTERM before SIGKILL
+
+
+def run_group(argv, *, timeout=None, input=None, **kw) -> subprocess.CompletedProcess:
+    """subprocess.run, except that the child starts its own process group and a timeout ends the whole group, not only the direct child
+    (issue #116 slice 8: an agent's node grandchildren were orphaned on a scheduler timeout). POSIX: start_new_session, then SIGTERM to the
+    group, GROUP_GRACE seconds, SIGKILL. Windows: CREATE_NEW_PROCESS_GROUP and kill() of the child. Raises subprocess.TimeoutExpired as run does."""
+    kw.pop("start_new_session", None)
+    capture = kw.pop("capture_output", False)
+    if capture:
+        kw["stdout"] = kw["stderr"] = subprocess.PIPE
+    if input is not None:
+        kw["stdin"] = subprocess.PIPE
+    if IS_WINDOWS:
+        kw["creationflags"] = kw.get("creationflags", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kw["start_new_session"] = True
+    with subprocess.Popen(argv, **kw) as proc:
+        try:
+            out, err = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _end_group(proc)
+            out, err = proc.communicate()
+            raise subprocess.TimeoutExpired(proc.args, timeout, output=out, stderr=err) from None
+        except BaseException:
+            _end_group(proc)
+            raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def _end_group(proc: subprocess.Popen) -> None:
+    """Ends the child's process group: SIGTERM, a grace, then SIGKILL (POSIX); the child alone on Windows. Never raises."""
+    if IS_WINDOWS:
+        with contextlib.suppress(OSError):
+            proc.kill()
+        return
+    import signal
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = None
+    if pgid is None or pgid == os.getpgrp():          # never signal the board's own group
+        with contextlib.suppress(OSError):
+            proc.kill()
+        return
+    with contextlib.suppress(OSError):
+        os.killpg(pgid, signal.SIGTERM)
+    try:
+        proc.wait(GROUP_GRACE)
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(OSError):
+        os.killpg(pgid, signal.SIGKILL)              # also reaches grandchildren that outlived the child
+
+
 def o_nofollow() -> int:
     """os.O_NOFOLLOW, or 0 where the system lacks it (Windows); a caller given 0 must lstat-check for a link after the open."""
     return getattr(os, "O_NOFOLLOW", 0)
