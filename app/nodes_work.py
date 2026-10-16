@@ -34,6 +34,8 @@ REPORTING  (the task result hook in app/taskflow.py, the beat of the claim's ren
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import threading
@@ -68,6 +70,7 @@ WORK_TEXT = {
     "posture_refused": "The issue asks for a permission setting this node does not use for work from an issue. This node refused to run it and released the claim.",
     "lanes_full": "This node already runs as many tasks as its lane cap advises. Nothing was claimed; force it to start anyway.",
     "launch_failed": "This node could not start the task, so it released the claim.",
+    "changed": "The issue changed after this node's worker checked it, so nothing was started.",          # issue #157: the worker's check of the text that runs
 }
 REASONS = tuple(WORK_TEXT) + tuple(k for k in nodes_epics.CLAIM_TEXT if k not in ("won", "already_held"))     # every reason a refusal can carry
 FACTS = ("winner", "attempt", "wait_s", "unknown_reason", "unknown_outcome", "asked_person", "author")
@@ -244,7 +247,14 @@ def _read_issue(owner: str, name: str, n: int) -> dict:
         raise Refused("bad_request")
     body = d.get("body")
     return {"title": github.clean_text(d.get("title"), 200) or f"Issue {n}", "body": body[:ISSUE_BODY_MAX * 2] if isinstance(body, str) else "",
-            "state": "closed" if d.get("state") == "closed" else "open", "author": nodes_epics.author_of(d)}
+            "state": "closed" if d.get("state") == "closed" else "open", "author": nodes_epics.author_of(d), "digest": text_digest(d)}
+
+
+def text_digest(d) -> str:
+    """sha256 of the title and the body of an issue payload as GitHub sent it (issue #157): the worker checks that the text it judged is the text that runs."""
+    title = d.get("title") if isinstance(d, dict) and isinstance(d.get("title"), str) else ""
+    body = d.get("body") if isinstance(d, dict) and isinstance(d.get("body"), str) else ""
+    return hashlib.sha256(json.dumps([title, body]).encode("utf-8")).hexdigest()
 
 
 def _author_guard(issue: dict, allowed: set[str], epic: bool = False) -> None:
@@ -373,11 +383,14 @@ def _audit(actor, ok: bool, owner: str, repo: str, n: int, detail: str) -> None:
     nodes_epics._audit(actor, "epic-work", ok, owner, repo, n, detail)
 
 
-def work_issue(repo, issue, *, epic=None, report: str = "phase", auto_pr: bool = False, close: bool = False, force: bool = False, actor=None, repos=None) -> dict:
+def work_issue(repo, issue, *, epic=None, report: str = "phase", auto_pr: bool = False, close: bool = False, force: bool = False, actor=None, repos=None,
+               expect: str | None = None) -> dict:
     """Claim issue `issue` of `repo` ("owner/name"), start it as a task on this board and keep a work record. Returns {claimed: True, reason (won | already_held), id, task_ref, branch, tmux,
     repo, issue}; raises Refused (see the module text for the order of the checks). `epic` is the epic's number in the issue's repository, or "owner/name#number"; without it the board
     uses the one epic it has read that lists the issue. `report`, `auto_pr` and `close` are the epic's settings as the person who pressed Run has them; a caller that passes none gets the
-    defaults (phase comments, no pull request, no Closes). `force` starts past the advisory lane cap."""
+    defaults (phase comments, no pull request, no Closes). `force` starts past the advisory lane cap. `expect` (the worker, issue #157) is the `text_digest` of the issue the caller
+    checked: when the issue read here (before the claim, and again after it) is not that text any more, nothing starts (`changed`; a claim already made is released).
+    The peer route never passes it."""
     if not github_write.writes_enabled():
         raise Refused("writes_off")
     if report not in nodes_epics.REPORTS or not all(isinstance(x, bool) for x in (auto_pr, close, force)):
@@ -415,6 +428,8 @@ def work_issue(repo, issue, *, epic=None, report: str = "phase", auto_pr: bool =
         raise Refused("not_epic_child")
     first = _read_issue(owner, name, n)
     _author_guard(first, allowed)
+    if expect is not None and first["digest"] != expect:
+        raise Refused("changed")
     _author_guard(_read_issue(ep[0], ep[1], ep[2]), allowed, epic=True)
     if first["state"] == "closed":
         raise Refused("closed")
@@ -433,12 +448,13 @@ def work_issue(repo, issue, *, epic=None, report: str = "phase", auto_pr: bool =
         try:
             if not res.get("claimed"):
                 raise Refused(res.get("reason") or "error", **{k: res.get(k) for k in FACTS})
-            return _after_claim(actor, repos, owner, name, n, ep, here, res, origin, report, auto_pr, close)
+            return _after_claim(actor, repos, owner, name, n, ep, here, res, origin, report, auto_pr, close, expect)
         finally:
             _unreserve()
 
 
-def _after_claim(actor, repos, owner: str, name: str, n: int, ep: tuple, here: tuple, res: dict, origin, report: str, auto_pr: bool, close: bool) -> dict:
+def _after_claim(actor, repos, owner: str, name: str, n: int, ep: tuple, here: tuple, res: dict, origin, report: str, auto_pr: bool, close: bool,
+                 expect: str | None = None) -> dict:
     from . import main
     db, ref = actor.db, res["claim_ref"]
     prior = _load(db, owner, name, n)
@@ -452,6 +468,8 @@ def _after_claim(actor, repos, owner: str, name: str, n: int, ep: tuple, here: t
         _author_guard(second, allowed)
         if second["state"] == "closed":
             raise Refused("closed")
+        if expect is not None and second["digest"] != expect:
+            raise Refused("changed")
         agent, fields, kw = launch_of(second["body"])
     except Refused as e:
         _refuse(actor, repos, ref, e)

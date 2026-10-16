@@ -38,6 +38,8 @@ const LAZY_BUNDLES = {
   team: { js: ['/static/team.js'], css: [{ href: '/static/pages/team.css', rank: 16 }], probe: () => typeof Team !== 'undefined' },
   // the Team page (issue #200): #/team, and what the sidebar group, the Home line and the palette draw once the board shares a repository (core.js teamUse); never at first paint
   teamview: { needs: ['team'], js: ['/static/pages/team.js'], css: [{ href: '/static/pages/team-view.css', rank: 17 }], probe: () => typeof TeamView !== 'undefined' },
+  // the epic worker's panel (issue #157): Settings > Nodes and a paired node's page ask for it on first use (and the demo's answers for /api/epic-worker); never at first paint
+  worker: { js: ['/static/nodes-worker.js'], css: [{ href: '/static/pages/worker.css', rank: 18 }], probe: () => typeof EpicWorker !== 'undefined' },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
   quad: { needs: ['termkit'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 12 }], probe: () => typeof Quad !== 'undefined' },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 11 }], probe: () => typeof wizPage !== 'undefined' },

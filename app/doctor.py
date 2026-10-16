@@ -2056,6 +2056,21 @@ register("notify-public-url", "notify", "Notification links", _c_notify_public_u
 register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
 register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
 register("epic-claim", "box", "Claiming epic issues", _c_epic_claim)   # issue #148
+
+
+def _c_epic_worker(db) -> Outcome:
+    """Issue #157: the epic worker. Skip when off; warn whenever it is on (it lists the allowlists); fail when it is on and refuses to start (an empty allowlist, writes off)."""
+    from . import nodes_worker
+    status, detail = nodes_worker.doctor_row(db)
+    if status == "skip":
+        return _skip(detail)
+    if status == "fail":
+        return _fail(detail, fix("List the repositories (CCBOARD_EPIC_REPOS=owner/name) and the authors (CCBOARD_EPIC_AUTHORS, or log gh in), set CCBOARD_EPIC_WRITES=1, "
+                                 "then rerun ./install.sh, or set CCBOARD_EPIC_WORKER=0"))
+    return _warn(detail, fix("Use a private repository and a dedicated epic; set CCBOARD_EPIC_WORKER=0 and rerun ./install.sh to turn the worker off"))
+
+
+register("epic-worker", "box", "Epic worker (unattended starts)", _c_epic_worker)   # issue #157
 register("gh-login", "box", "GitHub login of this board", _c_gh_login)   # issue #197
 register("team-gh", "box", "Team GitHub access", _c_team_gh)   # issue #197
 register("team-presence", "box", "Team presence published", _c_team_presence)   # issue #198

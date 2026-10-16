@@ -331,6 +331,29 @@ class FakeGitHub:
         self.save()
         return cid
 
+    def event(self, issue: str, event: str = "labeled", label: str | None = "ccboard:ready", *, by: str | None = "alice", actor_type: str = "User", actor_id: int | None = None,
+              at: float | None = None, rename: dict | None = None) -> int:
+        """One event of an issue (issue #157): `labeled` / `unlabeled` with the label's name, `renamed`, ... by `by` (None: a deleted account), `actor_type` User or Bot. Ids grow;
+        `at` is the server time it happened (default: a minute before the clock). Nothing adds events by itself: an issue created with a label has no `labeled` event."""
+        self.reload()
+        lst = self.world.setdefault("events", {}).setdefault(issue, [])
+        eid = 7000 + sum(len(v) for v in self.world["events"].values())
+        lst.append({"id": eid, "event": event, "label": label if event in ("labeled", "unlabeled") else None, "actor": by, "actor_type": actor_type, "actor_id": actor_id,
+                    "created_at": iso(self.world["now"] - 60 if at is None else at), "rename": rename})
+        self.save()
+        return eid
+
+    def edit_issue(self, issue: str, body: str | None = None, *, by: str, title: str | None = None) -> None:
+        """Somebody (`by`) edits the issue in place: its body (or title) changes and GraphQL's `editor` of the issue names them (issue #157)."""
+        self.reload()
+        it = self.world["issues"][issue]
+        if body is not None:
+            it["body"] = body
+        if title is not None:
+            it["title"] = title
+        it["editor"], it["last_edited_at"], it["updated_at"] = by, iso(self.world["now"]), iso(self.world["now"])
+        self.save()
+
     def edit_as(self, issue: str, cid: int, body: str, by: str) -> None:
         """Somebody (`by`, e.g. a maintainer) edits comment `cid` in place: the body changes, `updated_at` moves and GraphQL's `editor` names them (issue #198)."""
         self.reload()

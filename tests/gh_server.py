@@ -69,12 +69,18 @@ def visible(world: dict, k: str) -> list[dict]:
     return [c for c in world.get("comments", {}).get(k, []) if c.get("hidden_until") is None or now >= c["hidden_until"]]
 
 
+def issue_id(k: str) -> int:
+    """The REST id of an issue in the fake world (stable, made from its key); its GraphQL node id is `I_kw<id>` (issue #157: the worker's editor check of an issue body)."""
+    return 10 ** 7 + int(hashlib.sha1(k.encode()).hexdigest()[:7], 16)
+
+
 def issue_obj(world: dict, k: str) -> dict:
     it = world["issues"][k]
     repo = k.split("#")[0]
     n = int(k.split("#")[1])
-    o = {"number": n, "title": it.get("title", "Issue %d" % n), "state": it.get("state", "open"), "body": it.get("body", ""),
-         "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": it.get("user", "alice"), "type": it.get("user_type", "User")},
+    login = it.get("user", "alice")
+    o = {"id": issue_id(k), "node_id": "I_kw%d" % issue_id(k), "number": n, "title": it.get("title", "Issue %d" % n), "state": it.get("state", "open"), "body": it.get("body", ""),
+         "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": login, "id": uid(world, login), "type": it.get("user_type", "User")},
          "assignees": [{"login": x, "type": "User"} for x in it.get("assignees", [])],
          "comments": len(visible(world, k)), "locked": bool(it.get("locked", False)),
          "repository_url": "https://api.github.com/repos/" + repo, "html_url": "https://github.com/%s/issues/%d" % (repo, n),
@@ -251,7 +257,7 @@ def write(world: dict, method: str, path: str, body) -> Resp:
 def read(world: dict, path: str) -> Resp:
     now = world["now"]
     rate = world.get("rate")
-    m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues/([0-9]+)(?:/(sub_issues|comments))?(?:\?(.*))?", path or "")
+    m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues/([0-9]+)(?:/(sub_issues|comments|events))?(?:\?(.*))?", path or "")
     rp = re.fullmatch(r"/repos/([^/]+)/([^/?]+)", path or "")
     if rp:
         slug = "%s/%s" % rp.groups()
@@ -354,6 +360,13 @@ def read(world: dict, path: str) -> Resp:
             items = [issue_obj(world, c) for c in world.get("subs", {}).get(k, [])]
             chunk, extra = paged(world, items, query or "")
             return Resp(200, extra, chunk)
+        if sub == "events":                                     # issue #157: the issue's events, oldest first (world["events"]["repo#n"]: event, label, actor, actor_type, created_at)
+            items = [{"id": e["id"], "event": e["event"], "created_at": e["created_at"],
+                      "actor": None if e.get("actor") is None else {"login": e["actor"], "id": e.get("actor_id") or uid(world, e["actor"]), "type": e.get("actor_type", "User")},
+                      **({"label": {"name": e["label"]}} if e.get("label") is not None else {}), **({"rename": e["rename"]} if e.get("rename") else {})}
+                     for e in (world.get("events") or {}).get(k, [])]
+            chunk, extra = paged(world, items, query or "")
+            return Resp(200, extra, chunk)
         items = [comment_obj(c, world) for c in visible(world, k)]
         chunk, extra = paged(world, items, query or "")
         return Resp(200, extra, chunk)
@@ -448,6 +461,9 @@ def handle_graphql_editor(world: dict, node_id: str) -> tuple[Resp, bool]:
     def user(login):
         return None if login is None else {"login": login, "databaseId": uid(world, login)}
     node = None
+    for k, it in world.get("issues", {}).items():                 # issue #157: an issue's own node id (its body's last editor: `editor` on the stored issue)
+        if "I_kw%d" % issue_id(k) == node_id:
+            node = {"databaseId": issue_id(k), "lastEditedAt": it.get("last_edited_at"), "author": user(it.get("user", "alice")), "editor": user(it.get("editor"))}
     for lst in world.get("comments", {}).values():
         for c in lst:
             if "IC_kw%d" % c["id"] == node_id:

@@ -91,20 +91,38 @@ EPIC_AUTHORS_MAX = 20
 _LOGIN_RE = re.compile(r"(?=.{1,39}\Z)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")      # GitHub's login rule (the same as app/github.py OWNER_RE)
 
 
-def parse_epic_authors(raw) -> tuple[tuple[str, ...], bool]:
+def parse_epic_author_entries(raw) -> tuple[tuple[str, ...], dict[str, int], bool]:
     """CCBOARD_EPIC_AUTHORS (issue #147): GitHub logins, separated by commas or spaces, lower-cased, at most 20, whose claim comments count on an epic (and only
-    when GitHub says the author can write to the repository). Items that are not a login are dropped and the second value is True. Empty: () and the board trusts the
-    gh login only; the repository owner is never trusted by being the owner."""
-    out, bad = [], False
+    when GitHub says the author can write to the repository). An entry is `login` or `login:id` (issue #157): with the numeric GitHub user id the entry pins that account,
+    so a stranger who takes the login later is not the same person. Returns (logins, {login: id}, bad). Items that are not a login, an id that is not a number, and a second
+    id for a login are dropped and bad is True. Empty: () and the board trusts the gh login only; the repository owner is never trusted by being the owner."""
+    out, ids, bad = [], {}, False
     for item in re.split(r"[,\s]+", (raw or "").strip()):
         if not item:
             continue
-        if _LOGIN_RE.fullmatch(item) and len(out) < EPIC_AUTHORS_MAX:
-            if item.lower() not in out:
-                out.append(item.lower())
-        else:
+        login, sep, num = item.partition(":")
+        uid = int(num) if sep and num.isascii() and num.isdigit() and 0 < int(num) < 10 ** 12 else None
+        if not _LOGIN_RE.fullmatch(login) or (sep and uid is None):
             bad = True
-    return tuple(out), bad
+            continue
+        key = login.lower()
+        if uid is not None and ids.get(key, uid) != uid:
+            bad = True                                                      # two ids for one login: the first stays
+            continue
+        if key not in out and len(out) >= EPIC_AUTHORS_MAX:
+            bad = True
+            continue
+        if key not in out:
+            out.append(key)
+        if uid is not None:
+            ids[key] = uid
+    return tuple(out), ids, bad
+
+
+def parse_epic_authors(raw) -> tuple[tuple[str, ...], bool]:
+    """The logins of CCBOARD_EPIC_AUTHORS and whether an item was dropped (see parse_epic_author_entries; the ids are `Settings.epic_author_ids`)."""
+    logins, _ids, bad = parse_epic_author_entries(raw)
+    return logins, bad
 
 
 EPIC_LEASE_MIN, EPIC_LEASE_MAX, EPIC_LEASE_DEFAULT = 10, 120, 30
@@ -135,6 +153,39 @@ def parse_epic_max_window(raw) -> tuple[int, bool]:
     return EPIC_MAX_WINDOW_DEFAULT, True
 
 
+EPIC_REPOS_MAX = 25
+_REPO_NAME_RE = re.compile(r"(?![-.])[A-Za-z0-9_.-]{1,100}")                   # GitHub's repository rule (the same as app/github.py REPO_RE)
+
+
+def parse_epic_repos(raw) -> tuple[tuple[str, ...], bool]:
+    """CCBOARD_EPIC_REPOS (issue #157): the `owner/name` repositories whose epics the worker may take issues from, separated by commas or spaces, lower-cased, at most 25.
+    An item that is not `owner/name` by GitHub's rules is dropped and the second value is True. Empty: () and the worker refuses to start (it never means "every repository")."""
+    out, bad = [], False
+    for item in re.split(r"[,\s]+", (raw or "").strip()):
+        if not item:
+            continue
+        owner, sep, name = item.partition("/")
+        if sep and _LOGIN_RE.fullmatch(owner) and _REPO_NAME_RE.fullmatch(name) and name not in (".", "..") and len(out) < EPIC_REPOS_MAX:
+            if item.lower() not in out:
+                out.append(item.lower())
+        else:
+            bad = True
+    return tuple(out), bad
+
+
+EPIC_WORKER_POLL_DEFAULT, EPIC_WORKER_POLL_MIN, EPIC_WORKER_POLL_MAX = 90, 30, 3600
+
+
+def parse_bounded(raw, default: int, lo: int, hi: int) -> tuple[int, bool]:
+    """A whole number from `lo` to `hi`; empty is `default`; anything else is `default` and the second value is True (the doctor says so). Used by the worker's settings (issue #157)."""
+    text = (raw or "").strip()
+    if not text:
+        return default, False
+    if text.isascii() and text.isdigit() and len(text) <= 6 and lo <= int(text) <= hi:
+        return int(text), False
+    return default, True
+
+
 # The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
 # (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
 ENV_FILE_KEYS = (
@@ -147,6 +198,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
     "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL", "CCBOARD_MCP_NODES",
     "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES", "CCBOARD_EPIC_ALIAS", "CCBOARD_EPIC_LEASE_MIN", "CCBOARD_EPIC_MAX_WINDOW_PCT",
+    "CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_WORKER_POLL", "CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -272,7 +324,7 @@ class Settings:
         # ("" here) and a tool call that names a node other than `local` is a tool error. Read at start; there is no switch in Settings, only this word.
         self.mcp_nodes = {"1": "read", "read": "read", "tasks": "tasks"}.get((env.get("CCBOARD_MCP_NODES") or "").strip().lower(), "")
         # Whose claim comments count on an epic (issue #147): GitHub logins who can also write to the repository. Empty = the login gh uses on this board only. Never the repository owner by default.
-        self.epic_authors, self.epic_authors_bad = parse_epic_authors(env.get("CCBOARD_EPIC_AUTHORS"))
+        self.epic_authors, self.epic_author_ids, self.epic_authors_bad = parse_epic_author_entries(env.get("CCBOARD_EPIC_AUTHORS"))      # `login` or `login:id`; an id pins the account (worker mode, issue #157)
         # Writes to GitHub for the claim of an epic issue (issue #148): OFF unless this is exactly "1". With it off no code path builds or runs a gh command that is not a GET.
         self.epic_writes = (env.get("CCBOARD_EPIC_WRITES") or "").strip() == "1"
         # The name this board gives itself in a claim comment on GitHub (public on a public repository): empty = a neutral word derived from the node id, never the host name.
@@ -280,6 +332,13 @@ class Settings:
         self.epic_lease_min, self.epic_lease_bad = parse_epic_lease(env.get("CCBOARD_EPIC_LEASE_MIN"))
         # Auto routing of epic issues (issue #150): a node whose rate-limit window for the issue's agent is at or above this percentage is not chosen (an unknown reading counts as 50).
         self.epic_max_window_pct, self.epic_max_window_bad = parse_epic_max_window(env.get("CCBOARD_EPIC_MAX_WINDOW_PCT"))
+        # Worker mode (issue #157): a node that takes ready issues of the listed epics by itself, unattended. OFF unless this is exactly "1"; it also needs CCBOARD_EPIC_WRITES=1, a
+        # non-empty CCBOARD_EPIC_REPOS and a known allowed author, or it refuses to start. A poll below 30 s is not allowed (the default is used and the doctor says so).
+        self.epic_worker = (env.get("CCBOARD_EPIC_WORKER") or "").strip() == "1"
+        self.epic_repos, self.epic_repos_bad = parse_epic_repos(env.get("CCBOARD_EPIC_REPOS"))
+        self.epic_worker_poll, self.epic_worker_poll_bad = parse_bounded(env.get("CCBOARD_EPIC_WORKER_POLL"), EPIC_WORKER_POLL_DEFAULT, EPIC_WORKER_POLL_MIN, EPIC_WORKER_POLL_MAX)
+        self.epic_worker_max_hour, self.epic_worker_max_hour_bad = parse_bounded(env.get("CCBOARD_EPIC_WORKER_MAX_PER_HOUR"), 6, 1, 60)
+        self.epic_worker_max_day, self.epic_worker_max_day_bad = parse_bounded(env.get("CCBOARD_EPIC_WORKER_MAX_PER_DAY"), 30, 1, 500)
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to

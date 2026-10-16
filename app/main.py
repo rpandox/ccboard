@@ -30,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -148,6 +148,17 @@ def _runner() -> "nodes_run.Runner":
     return node_runner
 
 
+node_worker: "nodes_worker.Worker | None" = None
+
+
+def _worker() -> "nodes_worker.Worker":
+    """The epic worker of this board (issue #157). The object holds no thread and reads nothing until `ensure()` finds CCBOARD_EPIC_WORKER on and the worker allowed."""
+    global node_worker
+    if node_worker is None or node_worker.db is not db:
+        node_worker = nodes_worker.Worker(db, repos_fn=_epic_repos)
+    return node_worker
+
+
 def _recover_claims() -> None:
     """Startup, on a thread: the claim records of an earlier run (issue #148). A failure is logged, never raised (nothing reads this thread's result)."""
     try:
@@ -235,6 +246,11 @@ async def lifespan(app: FastAPI):
         _runner().resume()                                # a run that was active when the board stopped goes on; a board with none starts nothing (one key is read)
     except Exception as e:
         log.warning("epic runs could not be resumed: %s", e.__class__.__name__)
+    if nodes_worker.enabled():                            # issue #157: off means off (no thread, no row, nothing asked of GitHub)
+        try:
+            _worker().ensure()
+        except Exception as e:
+            log.warning("epic worker could not be started: %s", e.__class__.__name__)
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -268,6 +284,8 @@ async def lifespan(app: FastAPI):
     if claims_task is not None:
         await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
     await asyncio.to_thread(_runner().stop, 20.0)                          # the run loop sends nothing more (a call in flight is given a moment)
+    if node_worker is not None:
+        await asyncio.to_thread(node_worker.stop, 20.0)                    # the epic worker starts nothing more (a work call in flight is given a moment)
     await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
     await asyncio.to_thread(nodes_work.stop_work, 15.0)                    # a report of epic work that is writing to an issue is given a moment (the next start finishes what is left)
     await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
@@ -5050,6 +5068,42 @@ def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, reque
     _epic_here(owner, repo)
     nodes_epics.save_settings(db, owner, repo, num, {k: getattr(body, k) for k in body.model_fields_set})
     return JSONResponse(nodes_epics.settings_view(db, owner, repo, num, _hub_records()), headers={"Cache-Control": "no-store"})
+
+
+# ---------- the epic worker (issue #157): its state, and Stop and Start for a person; the loop is app/nodes_worker.py ----------
+
+@app.get("/api/epic-worker")
+def api_epic_worker():
+    """The worker's state (app/nodes_worker.py has the shape): {on: false, state: off} while CCBOARD_EPIC_WORKER is off (nothing is read or written then); else the state in words,
+    the caps, the allowlists and the last 20 decisions. Reads the database only."""
+    if not nodes_worker.enabled():
+        return JSONResponse(nodes_worker.off_view(), headers={"Cache-Control": "no-store"})          # off: not even the object is made
+    return JSONResponse(_worker().view(), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/epic-worker/stop")
+def api_epic_worker_stop(request: Request):
+    """Stop worker: at once, no confirmation (the safe direction). A signed-in person only (403 for the hook token, the hub, a node token and a device token; the X-CCBoard header
+    is required). Kept: a restart stays stopped until Start. A claim the worker made that has no task is released. Answers the worker's state; 409 `off` when the worker is off."""
+    user = _epic_person(request, "Stop worker is pressed by a signed-in person")
+    if not nodes_worker.enabled():
+        return JSONResponse({"error": "The worker is off (CCBOARD_EPIC_WORKER).", "reason": "off"}, status_code=409, headers={"Cache-Control": "no-store"})
+    view = _worker().stop_worker()
+    nodes.audit("in", "", "epic_worker_stop", True, "stopped", user=user, target="epic worker", status="ok", db=db)
+    return JSONResponse(view, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/epic-worker/start")
+def api_epic_worker_start(request: Request):
+    """Start the worker again after a Stop. A signed-in person only. 409 with the reason when it is off or refused (an empty allowlist, writes off): the state says why."""
+    user = _epic_person(request, "Start worker is pressed by a signed-in person")
+    if not nodes_worker.enabled():
+        return JSONResponse({"error": "The worker is off (CCBOARD_EPIC_WORKER).", "reason": "off"}, status_code=409, headers={"Cache-Control": "no-store"})
+    view = _worker().start_worker()
+    if view["state"] == "refused":
+        return JSONResponse({"error": view["text"], "reason": view["reason"], "worker": view}, status_code=409, headers={"Cache-Control": "no-store"})
+    nodes.audit("in", "", "epic_worker_start", True, "started", user=user, target="epic worker", status="ok", db=db)
+    return JSONResponse(view, headers={"Cache-Control": "no-store"})
 
 
 # ---------- Run, Pause and Resume, one issue on a node, and the Auto preview (issue #150); the routing is app/nodes_route.py, the loop app/nodes_run.py ----------
