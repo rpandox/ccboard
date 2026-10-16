@@ -16,6 +16,7 @@ from pathlib import Path
 from croniter import croniter
 
 from . import agents, claude_auth, devguard, notify, projects, tasks
+from . import platform as plat
 from .agents import codex as codex_agent
 from .agents.claude import BARE_REFUSAL, FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
@@ -249,12 +250,12 @@ BUSY_PAUSE = 0.05     # seconds between them
 
 
 def _run_agent(cmd, **kw):
-    """subprocess.run for an agent binary, tried again when the kernel says the file is busy (ETXTBSY). That happens when another process still has
+    """platform.run_group (subprocess.run in its own process group, the whole group ended on a timeout) for an agent binary, tried again when the kernel says the file is busy (ETXTBSY). That happens when another process still has
     the binary open for writing at the moment of the exec: an installer or an update that just wrote it, or (in the tests) a fork that inherited the
     descriptor a fake binary was written through. It clears within milliseconds; any other error, and a busy file after BUSY_TRIES, is raised as it is."""
     for i in range(BUSY_TRIES):
         try:
-            return subprocess.run(cmd, **kw)
+            return plat.run_group(cmd, **kw)
         except OSError as e:
             if e.errno != 26 or i == BUSY_TRIES - 1:          # 26: ETXTBSY
                 raise
