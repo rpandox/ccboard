@@ -39,10 +39,11 @@ import re
 import socket
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import github, github_write, node_state, nodes, projects
+from . import github, github_write, issues, node_state, nodes, projects
 from .config import settings
 
 log = logging.getLogger("ccboard.nodes.epics")
@@ -1107,11 +1108,9 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
     return out
 
 
-def known_repos(projects_list) -> list[str]:
-    """`owner/name` of every GitHub repository of THIS board's own projects (the `origin` remote of each repository on this disk, read with git; validated against
-    GitHub's rules): the one set of repositories this board may ask GitHub about. Nothing another node sends is in it. Deduplicated without regard to case, at
-    most REPO_SET_MAX. The list view reads the first REPO_CAP of them and says when there are more."""
-    seen: dict[str, str] = {}
+def _repo_pairs(projects_list) -> list[tuple[str, str]]:
+    """[(slug, project name)] of every GitHub repository of this board's own projects, deduplicated without regard to case, at most REPO_SET_MAX (see `known_repos`)."""
+    seen: dict[str, tuple[str, str]] = {}
     for p in projects_list or []:
         for r in (p.get("repos") or []) if isinstance(p, dict) else []:
             if isinstance(r, dict) and r.get("state") == "ok" and r.get("path"):
@@ -1119,8 +1118,25 @@ def known_repos(projects_list) -> list[str]:
                 if isinstance(slug, str) and "/" in slug:
                     o, _, name = slug.partition("/")
                     if github.valid_slug(o, name) and slug.lower() not in seen and len(seen) < REPO_SET_MAX:
-                        seen[slug.lower()] = slug
+                        seen[slug.lower()] = (slug, p.get("name") if isinstance(p.get("name"), str) else "")
     return list(seen.values())
+
+
+def known_repos(projects_list) -> list[str]:
+    """`owner/name` of every GitHub repository of THIS board's own projects (the `origin` remote of each repository on this disk, read with git; validated against
+    GitHub's rules): the one set of repositories this board may ask GitHub about. Nothing another node sends is in it. Deduplicated without regard to case, at
+    most REPO_SET_MAX. The list view reads the first REPO_CAP of them and says when there are more."""
+    return [s for s, _ in _repo_pairs(projects_list)]
+
+
+def new_options(projects_list, project: str | None = None) -> dict:
+    """What the New epic sheet starts from (issue #158): {repos: [{repo, project}], writes_on, limits}. The repositories are `known_repos` with the project each belongs to; those of `project`
+    (when named) come first. Local remotes only: nothing is asked of GitHub."""
+    pairs = _repo_pairs(projects_list)
+    if project:
+        pairs.sort(key=lambda x: x[1] != project)                  # stable: the named project's repositories first, the rest in their order
+    return {"repos": [{"repo": s, "project": pn} for s, pn in pairs], "writes_on": github_write.writes_enabled(),
+            "limits": {"children": CHILDREN_MAX, "title": TITLE_MAX, "body": BODY_MAX}}
 
 
 def _counts(owner: str, repo: str, issue: dict) -> dict | None:
@@ -2316,3 +2332,610 @@ def recover(actor: Actor | None = None, repos=None) -> list[dict]:
     if any(d["did"] == "held" for d in did) and github_write.writes_enabled():
         _ensure_renewer(actor)
     return did
+
+
+# ================================================================ start an epic from the board (issue #158)
+#
+# The owner types an epic (a title, a goal and up to 20 rows); the board shows a PREVIEW (the exact titles, labels and bodies and the number of calls; it reads one fact from GitHub, whether the
+# repository is private, and writes nothing) and CREATE writes it: the labels (once), the parent, each child, each child attached to the parent as a sub-issue, then ONE edit of the parent's
+# body that lists the children as `- [ ] #N` lines. Every write goes through github_write's queue (one at a time, at least 1.1 s apart) as a request of the closed list, behind CCBOARD_EPIC_WRITES.
+#
+# The person's text is DATA. It is cleaned (control, format and bidi characters dropped, titles on one line), refused when it names a bypass or holds a secret, a personal path, an email address or
+# a host name, and put into the template with `<` and a line-leading `#` made harmless, so it can never become a heading of the template (the "Who should do it" block above all), a marker, a
+# comment, a label, a flag or a command. The "Who should do it" block comes only from the tier table below, which is the table of CONTRIBUTING.md and never names a bypass.
+#
+# RESUME: a hidden line `<!-- ccboard:epic <key> -->` in the parent and `<!-- ccboard:epic-child <key>-<row> -->` in each child. A create looks FIRST at the issues with the two labels (by the
+# gh login of this board, so a line a stranger typed means nothing), and only writes what is not there; so a retry after any failure (an unknown outcome included) never makes a duplicate.
+# The key is made from the repository, the epic title and the child titles; a retry with the same ones is the same epic.
+
+CHILD_LABEL = github_write.EPIC_CHILD_LABEL
+CHILDREN_MAX = 20
+TITLE_MAX = github_write.EPIC_TITLE_MAX
+BODY_MAX = github_write.EPIC_BODY_MAX
+TEXT_IN_MAX = 100_000                    # characters of one field the cleaner reads at all; more is refused first
+SIZES = ("S", "M", "L")
+LIST_MARK = "<!-- ccboard:epic-list -->"
+# the tier table: CONTRIBUTING.md's, line for line (a test compares them). `why` and `cheaper` are the two fixed sentences of the block.
+TIERS = {
+    "A": {"claude": "claude --model opus --effort high --permission-mode acceptEdits",
+          "codex": 'codex -m gpt-6.1-sol -c model_reasoning_effort="high" -s workspace-write -a on-request',
+          "why": "open design, risky or cross-cutting work.", "cheaper": "mechanical parts may go to a cheaper tier."},
+    "B": {"claude": "claude --model sonnet --effort medium --permission-mode acceptEdits",
+          "codex": 'codex -m gpt-6.1-sol -c model_reasoning_effort="medium" -s workspace-write -a on-request',
+          "why": "standard feature work: code, pages and the tests with them.", "cheaper": "text, docs and mechanical edits may go to tier C."},
+    "C": {"claude": "claude --model haiku --effort low --permission-mode acceptEdits",
+          "codex": 'codex -m gpt-6-luna -c model_reasoning_effort="low" -s workspace-write -a on-request',
+          "why": "mechanical work with a clear recipe.", "cheaper": "none."},
+    "check": {"claude": "claude --model sonnet --effort medium --permission-mode acceptEdits",
+              "codex": "codex -m gpt-6.1-sol -s workspace-write -a on-request",
+              "why": "a check or review of finished work, started on the machine that holds the branch.", "cheaper": "none."},
+}
+CHILD_HEADINGS = ("Goal", "Why / evidence", "Scope", "Files", "Tests", "Acceptance", "Who should do it", "Rules", "References")
+PARENT_HEADINGS = ("Goal", "Issues", "How this epic runs")
+PROBLEM_TEXT = {
+    "bypass": "this text names a permission bypass, which the board never writes into an issue",
+    "secret": "this text looks like a secret or a token",
+    "email": "this text holds an email address",
+    "path": "this text holds a personal path",
+    "host": "this text holds a host name or an address",
+}
+_CHILD_END = re.compile(r"\n\n<!-- ccboard:epic-child ([0-9a-f]{12}-[0-9]{2}) -->\Z")
+_PARENT_END = re.compile(r"\n\n<!-- ccboard:epic ([0-9a-f]{12}) -->\Z")
+_LIST_RE = re.compile(re.escape(LIST_MARK) + r"\n((?:- \[ \] #[1-9][0-9]{0,8}\n)*)\n## How this epic runs\n")
+_WHO_BLOCK = re.compile(r"^## Who should do it\n\n(.*?)\n\n## Rules\n", re.M | re.S)
+_REFS_RE = re.compile(r"## References\n\n(- none yet|- depends on #[1-9][0-9]{0,8})\n\n<!-- ccboard:epic-child")
+_LEAD_HASH = re.compile(r"^[ \t]*#")
+_LEAD_DEPENDS = re.compile(r"^[ \t>*+-]*depends[ \t]+on", re.I)
+
+
+class EpicInvalid(Exception):
+    """The epic the person typed is refused, before anything is read or written. `errors` is a list of {field, index, message}: `field` is repo, title, goal, children, child_title,
+    child_description, child_tier, child_size or depends_on; `index` is the row (0 is the first) for a child field, else None."""
+
+    def __init__(self, errors: list):
+        self.errors = errors
+        super().__init__(errors[0]["message"] if errors else "invalid epic")
+
+
+class EpicRefused(Exception):
+    """Create does not start: `reason` is writes_off, no_login or in_progress; `status` is the HTTP code the route answers with."""
+
+    def __init__(self, reason: str, text: str, status: int = 409):
+        self.reason, self.text, self.status = reason, text, status
+        super().__init__(text)
+
+
+def who_block(tier: str) -> str:
+    """The text under `## Who should do it` for a tier: the two commands of the table and the two fixed sentences."""
+    t = TIERS[tier]
+    return f"- Claude: `{t['claude']}`\n- Codex: `{t['codex']}`\n- Why this tier: {t['why']}\n- Cheaper parts: {t['cheaper']}"
+
+
+def _drop_chars(s: str, multiline: bool) -> str:
+    out = []
+    for c in unicodedata.normalize("NFC", s.replace("\r\n", "\n").replace("\r", "\n")):
+        cat = unicodedata.category(c)
+        if c == "\n" or c in "  ":
+            out.append("\n" if multiline else " ")
+        elif c == "\t":
+            out.append(" ")
+        elif cat in ("Cc", "Cf", "Cs", "Co", "Cn") or c == "\x7f":
+            continue
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def clean_title(s) -> str:
+    """One plain line: control, format and bidi characters dropped, every run of white space one space, no space at either end."""
+    return re.sub(r"\s+", " ", _drop_chars(s if isinstance(s, str) else "", False)).strip()
+
+
+def clean_text(s) -> str:
+    """Several lines of plain text: control, format and bidi characters dropped, no trailing space, at most one empty line in a row, none at either end."""
+    lines = [ln.rstrip() for ln in _drop_chars(s if isinstance(s, str) else "", True).split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+
+
+def _esc(text: str) -> str:
+    """The person's cleaned text made safe to stand inside the template. `<` becomes `&lt;` (no HTML comment, so no forged marker and no comment that hides the rest), a line that starts with
+    `#` (a heading, "Who should do it" included) or with `depends on` gets a backslash, and a code fence is broken up; everything else stays as typed."""
+    out = []
+    for ln in text.replace("<", "&lt;").replace("```", "` ` `").replace("~~~", "~ ~ ~").split("\n"):
+        out.append("\\" + ln if _LEAD_HASH.match(ln) or _LEAD_DEPENDS.match(ln) else ln)
+    return "\n".join(out)
+
+
+def epic_key(spec: dict) -> str:
+    """12 hex characters made from the repository, the epic title and the child titles in order: the same epic typed again has the same key and so the same markers."""
+    raw = "\n".join([spec["repo"].lower(), spec["title"]] + [c["title"] for c in spec["children"]])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def child_slug(key: str, row: int) -> str:
+    return f"{key}-{row:02d}"
+
+
+def parent_marker(key: str) -> str:
+    return f"<!-- ccboard:epic {key} -->"
+
+
+def child_marker(slug: str) -> str:
+    return f"<!-- ccboard:epic-child {slug} -->"
+
+
+def parent_body(spec: dict, key: str) -> str:
+    """The parent's body as it is created: the goal, an empty list of issues and the hidden marker. The list is filled by `fill_list` in the one edit."""
+    goal = _esc(spec["goal"] or spec["title"])
+    return (f"## Goal\n\n{goal}\n\n## Issues\n\n{LIST_MARK}\n\n## How this epic runs\n\n"
+            "The issues listed above are the sub-issues of this epic, in order. The board's Epics tab shows who works on which.\n\n" + parent_marker(key))
+
+
+def fill_list(body: str, lines: list[str]) -> str | None:
+    """`body` with the list between the list marker and the next heading replaced by `lines` (`- [ ] #N`), or None when the body has no such list (someone removed it)."""
+    m = _LIST_RE.search(body)
+    if not m:
+        return None
+    return body[:m.start()] + LIST_MARK + "\n" + "".join(ln + "\n" for ln in lines) + "\n## How this epic runs\n" + body[m.end():]
+
+
+def list_lines(count: int, numbers: dict | None = None) -> list[str]:
+    """The `- [ ] #N` lines of the parent. Without `numbers` (the preview) N is `[row k]`: GitHub gives the number when the issue is created."""
+    return [f"- [ ] #{numbers[i]}" if numbers and i in numbers else f"- [ ] #[row {i}]" for i in range(1, count + 1)]
+
+
+def child_body(spec: dict, row: int, key: str, numbers: dict | None = None) -> str:
+    """The body of child `row` (1 is the first): the nine sections of the repository's issue template, the child's text in Goal, empty lists for the person to complete, the tier's block
+    and, for a `depends on` row, one line with that row's issue number (`#[row k]` in the preview, the number GitHub gave it when written)."""
+    c = spec["children"][row - 1]
+    dep = c["depends_on"]
+    if dep:
+        refs = "- depends on " + (f"#{numbers[dep]}" if numbers and dep in numbers else f"#[row {dep}]")
+    else:
+        refs = "- none yet"
+    return "\n".join([
+        "## Goal", "", _esc(c["description"] or c["title"]), "", f"Size: {c['size']}", "",
+        "## Why / evidence", "", "<!-- What was seen, where, and on which commit. -->", "",
+        "## Scope", "", "- [ ]", "",
+        "## Files", "", '<!-- "Read first" and "Change" lists. -->', "",
+        "## Tests", "", "<!-- The tests to add or change, and the two suites staying green. -->", "",
+        "## Acceptance", "", "- [ ]", "",
+        "## Who should do it", "", who_block(c["tier"]), "",
+        "## Rules", "", '- Keep emails, tokens, host names and personal paths out of anything you write here. Say "the box".',
+        "- Run both test suites before opening the pull request. Work lands through a pull request.", "",
+        "## References", "", refs, "",
+        child_marker(child_slug(key, row))])
+
+
+def valid_generated_body(body: str, kind: str) -> bool:
+    """The structure check github_write.valid_epic_body calls: `body` has exactly the headings of the template for `kind` (the person's text cannot add one: a line that starts with `#` was given
+    a backslash), exactly one hidden marker line at its end, no other `<!-- ccboard:` and, for a child, the "Who should do it" block of one of the four tiers, one References line and nothing
+    that issues.parse_who warns about."""
+    if not isinstance(body, str):
+        return False
+    text = issues._comment_free(body)
+    heads = tuple(re.findall(r"^## (.+?)[ \t]*$", text, flags=re.M))
+    if kind == "child":
+        if heads != CHILD_HEADINGS or not _CHILD_END.search(body) or body.count("<!-- ccboard:") != 1 or not _REFS_RE.search(body):
+            return False
+        m = _WHO_BLOCK.search(text)                                   # the real heading at the start of a line, never the person's own `\## Who should do it`
+        if not m or not any(m.group(1) == who_block(t) for t in TIERS):
+            return False
+        who = issues.parse_who(body)
+        return not who["warnings"] and who["claude"] is not None and who["codex"] is not None
+    if kind == "parent":
+        return heads == PARENT_HEADINGS and bool(_PARENT_END.search(body)) and body.count("<!-- ccboard:") == 2 and bool(_LIST_RE.search(body))
+    return False
+
+
+# ---- the typed epic: cleaned, checked and numbered
+
+def _problem(errors: list, field: str, index, text: str) -> None:
+    why = github_write.epic_text_problem(text)
+    if why:
+        errors.append({"field": field, "index": index, "message": PROBLEM_TEXT[why]})
+
+
+def normalize(raw, repo: str) -> dict:
+    """The epic as typed -> the epic as it will be written: {repo, title, goal, children: [{title, description, tier, size, depends_on}]}. Raises EpicInvalid with every problem found
+    (a message for each field, so the sheet can show it beside the field and keep every value). `repo` is `owner/name`, already one of this board's own."""
+    errors: list = []
+    if not isinstance(raw, dict):
+        raise EpicInvalid([{"field": "children", "index": None, "message": "send the epic as an object"}])
+    o, _, r = repo.partition("/")
+    if not github.valid_slug(o, r):
+        errors.append({"field": "repo", "index": None, "message": "that is not a GitHub repository"})
+
+    def text_in(v, field, index, what):
+        if not isinstance(v, str):
+            errors.append({"field": field, "index": index, "message": f"{what} must be text"})
+            return ""
+        if len(v) > TEXT_IN_MAX:
+            errors.append({"field": field, "index": index, "message": f"{what} is far too long (over {TEXT_IN_MAX:,} characters)"})
+            return ""
+        return v
+
+    title = clean_title(text_in(raw.get("title", ""), "title", None, "the epic title"))
+    if not title:
+        errors.append({"field": "title", "index": None, "message": "give the epic a title"})
+    elif len(title) > TITLE_MAX:
+        errors.append({"field": "title", "index": None, "message": f"the title is {len(title)} characters; the most is {TITLE_MAX}"})
+    else:
+        _problem(errors, "title", None, title)
+    goal = clean_text(text_in(raw.get("goal", ""), "goal", None, "the goal"))
+    _problem(errors, "goal", None, goal)
+    kids_in = raw.get("children")
+    kids: list = []
+    if not isinstance(kids_in, list) or not kids_in:
+        errors.append({"field": "children", "index": None, "message": "add at least one issue"})
+        kids_in = []
+    elif len(kids_in) > CHILDREN_MAX:
+        errors.append({"field": "children", "index": None, "message": f"an epic has at most {CHILDREN_MAX} issues; this one has {len(kids_in)}"})
+        kids_in = kids_in[:CHILDREN_MAX]
+    for i, k in enumerate(kids_in):
+        if not isinstance(k, dict):
+            errors.append({"field": "children", "index": i, "message": "this row is not an issue"})
+            continue
+        ct = clean_title(text_in(k.get("title", ""), "child_title", i, "the title"))
+        if not ct:
+            errors.append({"field": "child_title", "index": i, "message": "give this issue a title"})
+        elif len(ct) > TITLE_MAX:
+            errors.append({"field": "child_title", "index": i, "message": f"the title is {len(ct)} characters; the most is {TITLE_MAX}"})
+        else:
+            _problem(errors, "child_title", i, ct)
+        desc = clean_text(text_in(k.get("description", ""), "child_description", i, "the description"))
+        _problem(errors, "child_description", i, desc)
+        tier = k.get("tier")
+        if tier not in TIERS:
+            errors.append({"field": "child_tier", "index": i, "message": "the tier is A, B, C or check"})
+            tier = "B"
+        size = k.get("size")
+        if size not in SIZES:
+            errors.append({"field": "child_size", "index": i, "message": "the size is S, M or L"})
+            size = "M"
+        dep = k.get("depends_on")
+        if dep is not None and (isinstance(dep, bool) or not isinstance(dep, int) or not 1 <= dep <= i):
+            errors.append({"field": "depends_on", "index": i, "message": "depends on must be the number of an earlier row"})
+            dep = None
+        kids.append({"title": ct, "description": desc, "tier": tier, "size": size, "depends_on": dep})
+    spec = {"repo": repo, "title": title, "goal": goal, "children": kids}
+    if not errors:                                                        # the length of the bodies, with the template around the text
+        key = epic_key(spec)
+        if len(parent_body(spec, key)) > BODY_MAX:
+            errors.append({"field": "goal", "index": None, "message": f"the goal makes the issue longer than {BODY_MAX:,} characters; shorten it"})
+        for i in range(1, len(kids) + 1):
+            if len(child_body(spec, i, key, {j: 999_999_999 for j in range(1, i)})) > BODY_MAX:
+                errors.append({"field": "child_description", "index": i - 1, "message": f"the description makes the issue longer than {BODY_MAX:,} characters; shorten it"})
+    if errors:
+        raise EpicInvalid(errors)
+    return spec
+
+
+def check_bodies(spec: dict, key: str) -> None:
+    """Raise EpicInvalid when github_write would refuse a title or a body of this epic (`valid_epic_title`, `valid_epic_body`): Preview and Create both call it, so the sheet refuses, beside the
+    field, what Create would refuse, and Create never dies in the middle of the writes. The numbers GitHub gives are stood in for by a number of full length."""
+    k = len(spec["children"])
+    nums = {j: 999_999_999 for j in range(1, k + 1)}
+    errors: list = []
+    pb = parent_body(spec, key)
+    if not github_write.valid_epic_title(spec["title"]):
+        errors.append({"field": "title", "index": None, "message": "the board cannot write this title into an issue; change it"})
+    if not (github_write.valid_epic_body(pb, "parent") and github_write.valid_epic_body(fill_list(pb, list_lines(k, nums)) or "", "parent")):
+        errors.append({"field": "goal", "index": None, "message": "the board cannot write this text into the epic issue; change it"})
+    for i, c in enumerate(spec["children"], 1):
+        if not github_write.valid_epic_title(c["title"]):
+            errors.append({"field": "child_title", "index": i - 1, "message": "the board cannot write this title into an issue; change it"})
+        if not github_write.valid_epic_body(child_body(spec, i, key, nums), "child"):
+            errors.append({"field": "child_description", "index": i - 1, "message": "the board cannot write this text into an issue; change it"})
+    if errors:
+        raise EpicInvalid(errors)
+
+
+def est_seconds(writes: int) -> float:
+    """About how long `writes` writes take on the queue: a gap of MIN_GAP between two, and never more than CEILING in any CEILING_WINDOW seconds (30 a minute)."""
+    t: list[float] = []
+    for _ in range(writes):
+        at = (t[-1] + github_write.MIN_GAP) if t else 0.0
+        if len(t) >= github_write.CEILING:
+            at = max(at, t[-github_write.CEILING] + github_write.CEILING_WINDOW)
+        t.append(at)
+    return round(t[-1], 1) if t else 0.0
+
+
+def writes_count(k: int) -> int:
+    """The most writes a create makes for k children: the two labels, the parent, k children, k attachments and the one edit of the parent."""
+    return 2 + 1 + k + k + 1
+
+
+def preview(raw, repo: str, private=None) -> dict:
+    """What Create will write; nothing is written (the caller read `private` from GitHub, or passes None). Every text of the answer is what the queue sends, except that a `depends on`
+    line of a child and the list of the parent say `#[row k]` where GitHub's number for row k goes in.
+    {repo, private, writes_on, key, calls: {writes, labels, issues, attachments, edits, min_gap_s, min_seconds, est_seconds}, parent: {title, labels, body, edit_body, marker},
+    children: [{index, row, slug, title, labels, body, marker, tier, size, depends_on, claude, codex}], limits: {children, title, body}}"""
+    spec = normalize(raw, repo)
+    key = epic_key(spec)
+    check_bodies(spec, key)
+    k = len(spec["children"])
+    pb = parent_body(spec, key)
+    n = writes_count(k)
+    return {
+        "repo": repo, "private": private, "writes_on": github_write.writes_enabled(), "key": key,
+        "calls": {"writes": n, "labels": 2, "issues": 1 + k, "attachments": k, "edits": 1, "min_gap_s": github_write.MIN_GAP, "min_seconds": round((n - 1) * github_write.MIN_GAP, 1), "est_seconds": est_seconds(n)},
+        "parent": {"title": spec["title"], "labels": [EPIC_LABEL], "body": pb, "edit_body": fill_list(pb, list_lines(k)), "marker": parent_marker(key)},
+        "children": [{"index": i - 1, "row": i, "slug": child_slug(key, i), "title": c["title"], "labels": [CHILD_LABEL], "body": child_body(spec, i, key), "marker": child_marker(child_slug(key, i)),
+                      "tier": c["tier"], "size": c["size"], "depends_on": c["depends_on"], "claude": TIERS[c["tier"]]["claude"], "codex": TIERS[c["tier"]]["codex"]}
+                     for i, c in enumerate(spec["children"], 1)],
+        "limits": {"children": CHILDREN_MAX, "title": TITLE_MAX, "body": BODY_MAX},
+    }
+
+
+# ---- create
+
+class _ReadFail(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason if reason in github.MESSAGES else "unavailable"
+        super().__init__(self.reason)
+
+
+class _StepFail(Exception):
+    def __init__(self, step: str, reason: str, text: str, unknown: bool = False):
+        self.step, self.reason, self.text, self.unknown = step, reason, text, unknown
+        super().__init__(text)
+
+
+_STATUS_REASON = {401: "no_login", 403: "no_access", 404: "not_found", 429: "rate_limited"}
+_running: set[str] = set()
+_running_lock = threading.Lock()
+
+
+def _get(path: str):
+    try:
+        status, _headers, data = github.api(path)
+    except github.GhReadError as e:
+        raise _ReadFail(e.reason) from None
+    return status, data
+
+
+def _read_labelled(o: str, r: str, label: str) -> list[dict]:
+    """The issues (all states, newest first, pull requests left out) that carry `label`, at most MAX_PAGES pages."""
+    out: list[dict] = []
+    for page in range(1, github.MAX_PAGES + 1):
+        status, data = _get(github.labeled_path(o, r, label, "all", page, github.PER_PAGE))
+        if status != 200 or not isinstance(data, list):
+            raise _ReadFail(_STATUS_REASON.get(status, "unavailable"))
+        out += [x for x in data if isinstance(x, dict) and "pull_request" not in x]
+        if len(data) < github.PER_PAGE:
+            break
+    return out
+
+
+def _read_attached(o: str, r: str, n: int) -> set[int] | None:
+    """The numbers attached to the parent as sub-issues; None when GitHub has no sub-issues endpoint (404) so nothing is known."""
+    out: set[int] = set()
+    for page in range(1, github.MAX_PAGES + 1):
+        status, data = _get(github.sub_issues_path(o, r, n, page, github.PER_PAGE))
+        if status == 404:
+            return None
+        if status != 200 or not isinstance(data, list):
+            raise _ReadFail(_STATUS_REASON.get(status, "unavailable"))
+        out |= {x["number"] for x in data if isinstance(x, dict) and github.valid_number(x.get("number"))}
+        if len(data) < github.PER_PAGE:
+            break
+    return out
+
+
+def _own_issue(item: dict, login: str) -> bool:
+    u = item.get("user")
+    return isinstance(u, dict) and isinstance(u.get("login"), str) and u["login"].lower() == login.lower() and github.valid_number(item.get("number")) and isinstance(item.get("body"), str)
+
+
+def _lines(body: str) -> list[str]:
+    return [ln.rstrip() for ln in body.replace("\r\n", "\n").split("\n")]
+
+
+def _find(items: list[dict], login: str, markers: list) -> dict:
+    """{marker: the issue} for the board's own issues whose body holds the marker as a line of its own; the lowest number when there are several (an earlier mistake)."""
+    out: dict = {}
+    for it in sorted((x for x in items if _own_issue(x, login)), key=lambda x: x["number"]):
+        have = set(_lines(it["body"]))
+        for m in markers:
+            if m in have and m not in out:
+                out[m] = it
+    return out
+
+
+_LIST_LINES = re.compile(re.escape(LIST_MARK) + r"\n(?:- \[[ xX]\] #[0-9]+\n)*")
+_DEP_LINE = re.compile(r"(?m)^(- depends on )#(?:[0-9]+|\[row [0-9]+\])$")
+
+
+def _text_of(body: str, *, parent: bool = False, mask_dep: bool = False) -> str:
+    """A body made comparable: line breaks as `\n`, no space at the end of a line or of the body. Of a parent the list of issues is left out (the board fills it in, and a person ticks it);
+    of a child, when `mask_dep`, the number in the `depends on` line (it is not known yet)."""
+    text = "\n".join(_lines(body)).strip()
+    if parent:
+        text = _LIST_LINES.sub("", text)
+    if mask_dep:
+        text = _DEP_LINE.sub(r"\1#N", text)
+    return text
+
+
+def _audit_row(db, user, action: str, ok: bool, o: str, r: str, n, detail: str) -> None:
+    nodes.audit("out", "", action, ok, detail, target=f"{o}/{r}#{int(n)}" if n else f"{o}/{r}", status="ok" if ok else "failed", user=user, db=db)
+
+
+def create(raw, *, repo: str, db, user: str | None, wq=None) -> dict:
+    """Write the epic. Raises EpicRefused (writes_off, no_login, in_progress: nothing was read or written) or EpicInvalid (nothing was read or written). Otherwise answers
+    {ok, repo, key, resumed, writes, parent: {number, url, state} | None, children: [{index, row, slug, number, url, state, attached}], done, notes,
+     error, reason, unknown, step}  where state is created or existing; on a failure `ok` is false and `step` says where it stopped (read, label, parent, child 3, attach 3, edit)."""
+    if not github_write.writes_enabled():
+        raise EpicRefused("writes_off", github_write.MESSAGES["writes_off"] + ". Preview still works and writes nothing.")
+    spec = normalize(raw, repo)
+    check_bodies(spec, epic_key(spec))
+    o, _, r = repo.partition("/")
+    login = _gh_login()
+    if not login:
+        raise EpicRefused("no_login", github_write.MESSAGES["no_login"])
+    key = epic_key(spec)
+    with _running_lock:
+        if key in _running:
+            raise EpicRefused("in_progress", "this epic is being created right now; wait for it to finish")
+        _running.add(key)
+    try:
+        return _create(spec, key, o, r, login, db, user, wq)
+    finally:
+        with _running_lock:
+            _running.discard(key)
+
+
+def _create(spec: dict, key: str, o: str, r: str, login: str, db, user, wq) -> dict:
+    kids = spec["children"]
+    k = len(kids)
+    slugs = [child_slug(key, i) for i in range(1, k + 1)]
+    res: dict = {"ok": False, "repo": f"{o}/{r}", "key": key, "resumed": False, "writes": 0, "parent": None, "children": [], "done": False, "notes": [],
+                 "error": None, "reason": None, "unknown": False, "step": None}
+    numbers: dict[int, int] = {}
+    ids: dict[int, int] = {}
+    kid_state: dict[int, str] = {}
+    attached_now: dict[int, bool] = {}
+    reg_numbers: set[int] = set()                 # the issues this run created or adopted: the only ones an attach or an edit may name (the request carries them)
+    reg_ids: set[int] = set()
+
+    def send(step: str, build, *args, **kw):
+        """Build the request and send it. The request is built HERE, inside the try: a builder that refuses (GhWriteError) is a failed step like a write that fails, so the answer says which
+        step it was and lists what exists."""
+        try:
+            req = build(*args, **kw)
+            _s, _h, data = github_write.send(req, wq)
+        except github_write.GhWriteError as e:
+            raise _StepFail(step, e.reason, e.message, e.unknown) from None
+        res["writes"] += 1
+        return data
+
+    try:
+        try:
+            status, repo_info = _get(github.repo_path(o, r))
+            if status != 200:
+                raise _ReadFail(_STATUS_REASON.get(status, "unavailable"))
+            if isinstance(repo_info, dict) and isinstance(repo_info.get("permissions"), dict) and repo_info["permissions"].get("push") is False:
+                # GitHub drops the labels of an issue made by a login that cannot push, and an unlabelled issue could not be found again: no duplicate-proof resume, so nothing is written
+                raise _StepFail("read", "no_access", "this gh login cannot push to that repository, so the board cannot label the issues it would create there")
+            epic_items = _read_labelled(o, r, EPIC_LABEL)
+            child_items = _read_labelled(o, r, CHILD_LABEL)
+            p_hit = _find(epic_items, login, [parent_marker(key)]).get(parent_marker(key))
+            c_hits = _find(child_items, login, [child_marker(s) for s in slugs])
+            attached = _read_attached(o, r, p_hit["number"]) if p_hit else set()
+        except _ReadFail as e:
+            raise _StepFail("read", e.reason, github.MESSAGES[e.reason]) from None
+        res["resumed"] = bool(p_hit or c_hits)
+        # an issue found by its marker is adopted only when its text is what would be written now (the marker holds the repository, the epic title and the child titles; the rest could differ)
+        known = {i: int(c_hits[child_marker(slugs[i - 1])]["number"]) for i in range(1, k + 1) if child_marker(slugs[i - 1]) in c_hits}
+        differ: list[str] = []
+        if p_hit and _text_of(p_hit["body"], parent=True) != _text_of(parent_body(spec, key), parent=True):
+            differ.append(f"The epic issue (#{int(p_hit['number'])}) is already on GitHub with different text: edit it there or start a new epic.")
+        for i in sorted(known):
+            hit = c_hits[child_marker(slugs[i - 1])]
+            dep = kids[i - 1]["depends_on"]
+            mask = bool(dep) and dep not in known
+            if _text_of(hit["body"], mask_dep=mask) != _text_of(child_body(spec, i, key, known), mask_dep=mask):
+                differ.append(f"Issue {i} (#{known[i]}) is already on GitHub with different text: edit it there or start a new epic.")
+        if differ:
+            if p_hit:
+                res["parent"] = {"number": int(p_hit["number"]), "url": issue_url(o, r, int(p_hit["number"])), "state": "existing"}
+            numbers.update(known)
+            kid_state.update({i: "existing" for i in known})
+            res["notes"] += differ
+            raise _StepFail("read", "differs", f"{len(differ)} of the issues from an earlier try {'is' if len(differ) == 1 else 'are'} already on GitHub with different text, so the board wrote nothing more")
+        # the labels: only when no issue carries them yet; a 422 on the fixed definition means it exists already
+        for name, known in ((EPIC_LABEL, bool(epic_items)), (CHILD_LABEL, bool(child_items))):
+            if known:
+                continue
+            try:
+                send("label", github_write.epic_label_create, o, r, name)
+            except _StepFail as e:
+                if e.reason != "invalid":
+                    _audit_row(db, user, "epic_label", False, o, r, None, e.reason)
+                    raise
+            else:
+                _audit_row(db, user, "epic_label", True, o, r, None, name)
+        # the parent
+        pbody = parent_body(spec, key)
+        if p_hit:
+            p_num, p_body = int(p_hit["number"]), p_hit["body"].replace("\r\n", "\n")          # GitHub's web editor saves line breaks as CRLF
+            res["parent"] = {"number": p_num, "url": issue_url(o, r, p_num), "state": "existing"}
+            reg_numbers.add(p_num)
+        else:
+            try:
+                data = send("parent", github_write.epic_issue_create, o, r, spec["title"], pbody, parent=True)
+            except _StepFail as e:
+                _audit_row(db, user, "epic_issue_create", False, o, r, None, "parent " + e.reason)
+                raise
+            p_num = data.get("number") if isinstance(data, dict) else None
+            if not github.valid_number(p_num):
+                raise _StepFail("parent", "bad_answer", github_write.MESSAGES["bad_answer"] + "; look for the epic by its label on GitHub, then press Create again")
+            p_num, p_body = int(p_num), pbody
+            reg_numbers.add(p_num)
+            res["parent"] = {"number": p_num, "url": issue_url(o, r, p_num), "state": "created"}
+            _audit_row(db, user, "epic_issue_create", True, o, r, p_num, "parent")
+            log.info("epic issue created %s/%s#%d (parent)", o, r, p_num)
+        # the children, in order
+        for i in range(1, k + 1):
+            hit = c_hits.get(child_marker(slugs[i - 1]))
+            if hit:
+                numbers[i], kid_state[i] = int(hit["number"]), "existing"
+                if isinstance(hit.get("id"), int) and not isinstance(hit.get("id"), bool):
+                    ids[i] = hit["id"]
+                    reg_ids.add(hit["id"])
+                reg_numbers.add(numbers[i])
+                continue
+            dep = kids[i - 1]["depends_on"]
+            if dep and dep not in numbers:
+                raise _StepFail(f"child {i}", "bad_request", github_write.MESSAGES["bad_request"])
+            body = child_body(spec, i, key, numbers)
+            try:
+                data = send(f"child {i}", github_write.epic_issue_create, o, r, kids[i - 1]["title"], body, parent=False)
+            except _StepFail as e:
+                _audit_row(db, user, "epic_issue_create", False, o, r, None, f"child {i} {e.reason}")
+                raise
+            n = data.get("number") if isinstance(data, dict) else None
+            if not github.valid_number(n):
+                raise _StepFail(f"child {i}", "bad_answer", github_write.MESSAGES["bad_answer"] + "; look for the issue by its label on GitHub, then press Create again")
+            numbers[i], kid_state[i] = int(n), "created"
+            reg_numbers.add(numbers[i])
+            if isinstance(data.get("id"), int) and not isinstance(data.get("id"), bool):
+                ids[i] = data["id"]
+                reg_ids.add(data["id"])
+            _audit_row(db, user, "epic_issue_create", True, o, r, n, f"child {i}")
+            log.info("epic issue created %s/%s#%d (child %d)", o, r, int(n), i)
+        # the attachments
+        for i in range(1, k + 1):
+            if attached is not None and numbers[i] in attached:
+                attached_now[i] = True
+                continue
+            if i not in ids:
+                raise _StepFail(f"attach {i}", "bad_answer", github_write.MESSAGES["bad_answer"])
+            try:
+                send(f"attach {i}", github_write.epic_sub_issue_attach, o, r, p_num, ids[i], numbers=frozenset(reg_numbers), ids=frozenset(reg_ids))
+            except _StepFail as e:
+                _audit_row(db, user, "epic_attach", False, o, r, numbers[i], f"child {i} {e.reason}")
+                raise
+            attached_now[i] = True
+            _audit_row(db, user, "epic_attach", True, o, r, numbers[i], f"child {i}")
+        # the one edit of the parent
+        new_body = fill_list(p_body, list_lines(k, numbers))
+        if new_body is None:
+            res["notes"].append("the parent's list of issues was removed on GitHub, so the board did not fill it in")
+        elif new_body != p_body:
+            try:
+                send("edit", github_write.epic_issue_edit, o, r, p_num, new_body, numbers=frozenset(reg_numbers))
+            except _StepFail as e:
+                _audit_row(db, user, "epic_edit", False, o, r, p_num, e.reason)
+                raise
+            _audit_row(db, user, "epic_edit", True, o, r, p_num, "list")
+        res["ok"], res["done"] = True, True
+    except _StepFail as e:
+        res.update(error=e.text, reason=e.reason, unknown=e.unknown, step=e.step)
+        if e.unknown:
+            res["notes"].append("GitHub may have applied the last write; press Create again and the board looks before it writes")
+    res["children"] = [{"index": i - 1, "row": i, "slug": slugs[i - 1], "number": numbers[i], "url": issue_url(o, r, numbers[i]), "state": kid_state[i], "attached": attached_now.get(i, False)}
+                       for i in range(1, k + 1) if i in numbers]
+    return res

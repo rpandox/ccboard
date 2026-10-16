@@ -166,7 +166,7 @@ test('#/epic/<owner>/<repo>/<n> is a lazy route: epic.js and epic.css load once,
   L.w.location.hash = '#/epic/example/website/147';
   assert.equal(L.mounted(), null);
   assert.ok(await settle(() => L.mounted() === 'epic'), 'epic mounted');
-  assert.deepEqual(L.net.scripts, ['/static/pages/epic.js']);
+  assert.deepEqual(L.net.scripts, ['/static/pages/epic.js', '/static/pages/epic-new.js']);          // the New epic sheet (issue #158) comes with the epic bundle
   assert.deepEqual(L.net.sheets, ['/static/pages/epic.css']);
   assert.deepEqual(L.hrefs(), ['/static/pages/epic.css', '/static/charts.css'], 'the sheet goes in before charts.css');
   assert.equal(L.w.document.body.getAttribute('data-page'), 'epic');

@@ -199,7 +199,7 @@ test('the repos and danger panel is closed until the overflow menu opens it', as
   const more = overflow(env);
   assert.ok(more, 'an overflow button');
   more.click();
-  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Add repo', 'Open the folder in code-server', 'Repos and danger zone', 'Delete project']);
+  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Add repo', 'Open the folder in code-server', 'New epic', 'Repos and danger zone', 'Delete project']);
   menuItem(env, /repos and danger/i).click();
   assert.equal(shownButtons(env.page(), /^Remove$/).length, 2, 'one Remove per repo');
   assert.equal(shownButtons(env.page(), /^Delete project$/).length, 1);

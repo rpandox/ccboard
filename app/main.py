@@ -5070,6 +5070,120 @@ def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, reque
     return JSONResponse(nodes_epics.settings_view(db, owner, repo, num, _hub_records()), headers={"Cache-Control": "no-store"})
 
 
+# ---------- start an epic from the board (issue #158): Preview and Create; the logic, the template and the tier table are in app/nodes_epics.py, the writes in app/github_write.py ----------
+
+class EpicNewChildIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    title: str = ""
+    description: str = ""
+    tier: str = "B"                                      # A, B, C or check; anything else is refused with a message beside the field
+    size: str = "M"                                      # S, M or L
+    depends_on: StrictInt | None = None                  # the number of an EARLIER row (1 is the first row)
+
+
+class EpicNewIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    repo: str
+    title: str = ""
+    goal: str = ""
+    children: list[EpicNewChildIn] = Field(default_factory=list, max_length=200)          # more than 20 is refused with a message, not a bare 422
+
+
+def _epic_new_repo(repo: str) -> str:
+    """The repository the new epic goes to, as this board's own remote spells it. 400 for something that is not `owner/name`, 404 for a repository that is not one of this board's projects
+    (before anything is read or built)."""
+    if not isinstance(repo, str) or repo.count("/") != 1 or not github.valid_slug(*repo.split("/")):
+        raise projects.BadRequest("the repository must be owner/name")
+    for s in _epic_repos():
+        if s.lower() == repo.lower():
+            return s
+    raise projects.NotFound(f"this board has no project for {repo}")
+
+
+def _epic_new_invalid(e: "nodes_epics.EpicInvalid") -> JSONResponse:
+    return JSONResponse({"error": str(e), "errors": e.errors}, status_code=400, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/epics/new")
+def api_epic_new_options(project: str | None = None):
+    """What the New epic sheet starts from: {repos: [{repo, project}], writes_on, limits: {children, title, body}}. The repositories are the GitHub remotes of this board's own projects
+    (those of `?project=` first); `writes_on` is CCBOARD_EPIC_WRITES. Local remotes only: nothing is asked of GitHub, and nothing is written."""
+    projs = _cached_projects()
+    out = nodes_epics.new_options(projs if projs is not None else _scan_entry().get("projects"), project if isinstance(project, str) and len(project) <= 200 else None)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+EPIC_NEW_MAX = 1_000_000                       # bytes of one request body to Preview or Create; an epic within the limits (20 rows, 10,000-character bodies) is well under it
+
+
+async def _epic_new_read(request: Request) -> "EpicNewIn | JSONResponse":
+    """The epic of a request: the body read with a cap (413 over EPIC_NEW_MAX, by Content-Length or by what was really read, before anything is parsed), then parsed. An unreadable body is a 422 with a
+    plain message that never repeats what was sent."""
+    raw = await _read_capped(request, EPIC_NEW_MAX)
+    if raw is None:
+        return JSONResponse({"error": "the request is over 1 MB; shorten the epic"}, status_code=413, headers={"Cache-Control": "no-store"})
+    try:
+        return EpicNewIn.model_validate_json(raw)
+    except ValueError:                                  # pydantic's ValidationError is one
+        return JSONResponse({"error": "the board could not read that epic; check the repository, the tiers and the sizes"}, status_code=422, headers={"Cache-Control": "no-store"})
+
+
+def _epic_new_preview(payload: "EpicNewIn") -> JSONResponse:
+    repo = _epic_new_repo(payload.repo)
+    try:
+        out = nodes_epics.preview(payload.model_dump(), repo)
+    except nodes_epics.EpicInvalid as e:
+        return _epic_new_invalid(e)
+    o, _, r = repo.partition("/")
+    try:
+        status, _h, data = github.api(github.repo_path(o, r))
+        out["private"] = bool(data.get("private")) if status == 200 and isinstance(data, dict) else None
+    except github.GhReadError:
+        out["private"] = None
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+def _epic_new_create(payload: "EpicNewIn", user: str | None) -> JSONResponse:
+    repo = _epic_new_repo(payload.repo)
+    try:
+        out = nodes_epics.create(payload.model_dump(), repo=repo, db=db, user=user)
+    except nodes_epics.EpicRefused as e:
+        return JSONResponse({"error": e.text, "reason": e.reason}, status_code=e.status, headers={"Cache-Control": "no-store"})
+    except nodes_epics.EpicInvalid as e:
+        return _epic_new_invalid(e)
+    except github_write.GhWriteError as e:             # a request the writer refused to build: a plain refusal, never a 500
+        return JSONResponse({"error": e.message, "reason": e.reason}, status_code=409, headers={"Cache-Control": "no-store"})
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/epics/preview")
+async def api_epic_new_preview(request: Request):
+    """Preview of a new epic: exactly what Create would write, and nothing is written (it works with GitHub writes off). A signed-in person only (403 for the hook token, MCP, node and device
+    tokens). The body is at most 1 MB (413). Answers {repo, private, writes_on, key, calls: {writes, labels, issues, attachments, edits, min_gap_s, min_seconds, est_seconds}, parent: {title, labels, body,
+    edit_body, marker}, children: [{index, row, slug, title, labels, body, marker, tier, size, depends_on, claude, codex}], limits}; a `depends on` line and the parent's list say `#[row k]` where
+    GitHub's number for row k goes in. `private` is read from GitHub (null when that read fails). 400 {error, errors: [{field, index, message}]} for text the board refuses (limits, bypass words,
+    secrets, text the template cannot hold); 422 {error} for a body that is not an epic."""
+    _epic_person(request, "a new epic is previewed by a signed-in person")
+    payload = await _epic_new_read(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+    return await asyncio.to_thread(_epic_new_preview, payload)
+
+
+@app.post("/api/epics")
+async def api_epic_new(request: Request):
+    """Create a new epic on GitHub: the labels (once), the parent, each child, each child attached as a sub-issue and one edit of the parent, one write at a time at least 1.1 s apart, behind
+    CCBOARD_EPIC_WRITES. A signed-in person only. The body is at most 1 MB (413). 409 {error, reason} with reason `writes_off` (CCBOARD_EPIC_WRITES is off: nothing is read or written), `no_login`,
+    `in_progress`, or the writer's own reason when it refuses to build a request; 400 {error, errors} for text the board refuses; 422 {error} for a body that is not an epic; otherwise 200 {ok,
+    repo, key, resumed, writes, parent: {number, url, state}, children: [{index, row, slug, number, url, state, attached}], done, notes, error, reason, unknown, step}: `ok` is false when a step failed
+    (`step` says which, `children` lists what exists) and pressing Create again resumes without a duplicate; reason `differs` means an issue from an earlier try is on GitHub with different text."""
+    user = _epic_person(request, "a new epic is created by a signed-in person")
+    payload = await _epic_new_read(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+    return await asyncio.to_thread(_epic_new_create, payload, user)
+
+
 # ---------- the epic worker (issue #157): its state, and Stop and Start for a person; the loop is app/nodes_worker.py ----------
 
 @app.get("/api/epic-worker")

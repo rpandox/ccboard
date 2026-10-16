@@ -2021,5 +2021,137 @@
     }
    }
   }
+ },
+ "new": {
+  "_note": "New epic (issue #158). The demo plays /api/epics/new, /api/epics/preview and POST /api/epics in pages/epic-new.js (?newepic=writesoff|fail|unknown|private|norepo|down). `sample` is an epic as the sheet sends it and `preview` is what app/nodes_epics.py preview() answers for it (without private and writes_on): tests/test_epic_new_demo.py holds it to the board and tests/js/epic-new.test.mjs holds the demo's own builder to it.",
+  "sample": {
+   "repo": "example/website",
+   "title": "Checkout  rework",
+   "goal": "Let people pay in two steps.\n# Not a heading\ndepends on nothing   ",
+   "children": [
+    {
+     "title": "Tax rules table",
+     "description": "A table of rates per region.",
+     "tier": "B",
+     "size": "S",
+     "depends_on": null
+    },
+    {
+     "title": "Payment step",
+     "description": "Use <b>one</b> form.\n# kept as text\ndepends on the table",
+     "tier": "A",
+     "size": "L",
+     "depends_on": 1
+    },
+    {
+     "title": "Receipt email",
+     "description": "",
+     "tier": "C",
+     "size": "M",
+     "depends_on": 2
+    },
+    {
+     "title": "Check the flow",
+     "description": "Walk through it on a phone.",
+     "tier": "check",
+     "size": "S",
+     "depends_on": null
+    }
+   ]
+  },
+  "preview": {
+   "repo": "example/website",
+   "key": "430ae8272dde",
+   "calls": {
+    "writes": 12,
+    "labels": 2,
+    "issues": 5,
+    "attachments": 4,
+    "edits": 1,
+    "min_gap_s": 1.1,
+    "min_seconds": 12.1,
+    "est_seconds": 12.1
+   },
+   "parent": {
+    "title": "Checkout rework",
+    "labels": [
+     "ccboard:epic"
+    ],
+    "body": "## Goal\n\nLet people pay in two steps.\n\\# Not a heading\n\\depends on nothing\n\n## Issues\n\n<!-- ccboard:epic-list -->\n\n## How this epic runs\n\nThe issues listed above are the sub-issues of this epic, in order. The board's Epics tab shows who works on which.\n\n<!-- ccboard:epic 430ae8272dde -->",
+    "edit_body": "## Goal\n\nLet people pay in two steps.\n\\# Not a heading\n\\depends on nothing\n\n## Issues\n\n<!-- ccboard:epic-list -->\n- [ ] #[row 1]\n- [ ] #[row 2]\n- [ ] #[row 3]\n- [ ] #[row 4]\n\n## How this epic runs\n\nThe issues listed above are the sub-issues of this epic, in order. The board's Epics tab shows who works on which.\n\n<!-- ccboard:epic 430ae8272dde -->",
+    "marker": "<!-- ccboard:epic 430ae8272dde -->"
+   },
+   "children": [
+    {
+     "index": 0,
+     "row": 1,
+     "slug": "430ae8272dde-01",
+     "title": "Tax rules table",
+     "labels": [
+      "ccboard:epic-child"
+     ],
+     "body": "## Goal\n\nA table of rates per region.\n\nSize: S\n\n## Why / evidence\n\n<!-- What was seen, where, and on which commit. -->\n\n## Scope\n\n- [ ]\n\n## Files\n\n<!-- \"Read first\" and \"Change\" lists. -->\n\n## Tests\n\n<!-- The tests to add or change, and the two suites staying green. -->\n\n## Acceptance\n\n- [ ]\n\n## Who should do it\n\n- Claude: `claude --model sonnet --effort medium --permission-mode acceptEdits`\n- Codex: `codex -m gpt-6.1-sol -c model_reasoning_effort=\"medium\" -s workspace-write -a on-request`\n- Why this tier: standard feature work: code, pages and the tests with them.\n- Cheaper parts: text, docs and mechanical edits may go to tier C.\n\n## Rules\n\n- Keep emails, tokens, host names and personal paths out of anything you write here. Say \"the box\".\n- Run both test suites before opening the pull request. Work lands through a pull request.\n\n## References\n\n- none yet\n\n<!-- ccboard:epic-child 430ae8272dde-01 -->",
+     "marker": "<!-- ccboard:epic-child 430ae8272dde-01 -->",
+     "tier": "B",
+     "size": "S",
+     "depends_on": null,
+     "claude": "claude --model sonnet --effort medium --permission-mode acceptEdits",
+     "codex": "codex -m gpt-6.1-sol -c model_reasoning_effort=\"medium\" -s workspace-write -a on-request"
+    },
+    {
+     "index": 1,
+     "row": 2,
+     "slug": "430ae8272dde-02",
+     "title": "Payment step",
+     "labels": [
+      "ccboard:epic-child"
+     ],
+     "body": "## Goal\n\nUse &lt;b>one&lt;/b> form.\n\\# kept as text\n\\depends on the table\n\nSize: L\n\n## Why / evidence\n\n<!-- What was seen, where, and on which commit. -->\n\n## Scope\n\n- [ ]\n\n## Files\n\n<!-- \"Read first\" and \"Change\" lists. -->\n\n## Tests\n\n<!-- The tests to add or change, and the two suites staying green. -->\n\n## Acceptance\n\n- [ ]\n\n## Who should do it\n\n- Claude: `claude --model opus --effort high --permission-mode acceptEdits`\n- Codex: `codex -m gpt-6.1-sol -c model_reasoning_effort=\"high\" -s workspace-write -a on-request`\n- Why this tier: open design, risky or cross-cutting work.\n- Cheaper parts: mechanical parts may go to a cheaper tier.\n\n## Rules\n\n- Keep emails, tokens, host names and personal paths out of anything you write here. Say \"the box\".\n- Run both test suites before opening the pull request. Work lands through a pull request.\n\n## References\n\n- depends on #[row 1]\n\n<!-- ccboard:epic-child 430ae8272dde-02 -->",
+     "marker": "<!-- ccboard:epic-child 430ae8272dde-02 -->",
+     "tier": "A",
+     "size": "L",
+     "depends_on": 1,
+     "claude": "claude --model opus --effort high --permission-mode acceptEdits",
+     "codex": "codex -m gpt-6.1-sol -c model_reasoning_effort=\"high\" -s workspace-write -a on-request"
+    },
+    {
+     "index": 2,
+     "row": 3,
+     "slug": "430ae8272dde-03",
+     "title": "Receipt email",
+     "labels": [
+      "ccboard:epic-child"
+     ],
+     "body": "## Goal\n\nReceipt email\n\nSize: M\n\n## Why / evidence\n\n<!-- What was seen, where, and on which commit. -->\n\n## Scope\n\n- [ ]\n\n## Files\n\n<!-- \"Read first\" and \"Change\" lists. -->\n\n## Tests\n\n<!-- The tests to add or change, and the two suites staying green. -->\n\n## Acceptance\n\n- [ ]\n\n## Who should do it\n\n- Claude: `claude --model haiku --effort low --permission-mode acceptEdits`\n- Codex: `codex -m gpt-6-luna -c model_reasoning_effort=\"low\" -s workspace-write -a on-request`\n- Why this tier: mechanical work with a clear recipe.\n- Cheaper parts: none.\n\n## Rules\n\n- Keep emails, tokens, host names and personal paths out of anything you write here. Say \"the box\".\n- Run both test suites before opening the pull request. Work lands through a pull request.\n\n## References\n\n- depends on #[row 2]\n\n<!-- ccboard:epic-child 430ae8272dde-03 -->",
+     "marker": "<!-- ccboard:epic-child 430ae8272dde-03 -->",
+     "tier": "C",
+     "size": "M",
+     "depends_on": 2,
+     "claude": "claude --model haiku --effort low --permission-mode acceptEdits",
+     "codex": "codex -m gpt-6-luna -c model_reasoning_effort=\"low\" -s workspace-write -a on-request"
+    },
+    {
+     "index": 3,
+     "row": 4,
+     "slug": "430ae8272dde-04",
+     "title": "Check the flow",
+     "labels": [
+      "ccboard:epic-child"
+     ],
+     "body": "## Goal\n\nWalk through it on a phone.\n\nSize: S\n\n## Why / evidence\n\n<!-- What was seen, where, and on which commit. -->\n\n## Scope\n\n- [ ]\n\n## Files\n\n<!-- \"Read first\" and \"Change\" lists. -->\n\n## Tests\n\n<!-- The tests to add or change, and the two suites staying green. -->\n\n## Acceptance\n\n- [ ]\n\n## Who should do it\n\n- Claude: `claude --model sonnet --effort medium --permission-mode acceptEdits`\n- Codex: `codex -m gpt-6.1-sol -s workspace-write -a on-request`\n- Why this tier: a check or review of finished work, started on the machine that holds the branch.\n- Cheaper parts: none.\n\n## Rules\n\n- Keep emails, tokens, host names and personal paths out of anything you write here. Say \"the box\".\n- Run both test suites before opening the pull request. Work lands through a pull request.\n\n## References\n\n- none yet\n\n<!-- ccboard:epic-child 430ae8272dde-04 -->",
+     "marker": "<!-- ccboard:epic-child 430ae8272dde-04 -->",
+     "tier": "check",
+     "size": "S",
+     "depends_on": null,
+     "claude": "claude --model sonnet --effort medium --permission-mode acceptEdits",
+     "codex": "codex -m gpt-6.1-sol -s workspace-write -a on-request"
+    }
+   ],
+   "limits": {
+    "children": 20,
+    "title": 120,
+    "body": 10000
+   }
+  }
  }
 }

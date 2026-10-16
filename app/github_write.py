@@ -24,7 +24,19 @@ A presence write does NOT need CCBOARD_EPIC_WRITES: it is gated by the board's o
 gate installed, or the switch off for that repository, or the global pause on, nothing is built). An epic request can never carry a presence body or create an issue, and a presence
 request can never carry a claim body.
 
-No issue edit, no close, no pull request (a pull request is gitops', the one GitHub write that does not come through here), no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
+Starting an epic from the board (issue #158) adds, with `purpose` "epic_create" (behind CCBOARD_EPIC_WRITES like the claim, and nothing else may carry these shapes):
+
+    POST   /repos/{o}/{r}/issues                     create the epic's parent issue (label `ccboard:epic`) or one of its child issues (label `ccboard:epic-child`); the title and the body are the board's own template
+    POST   /repos/{o}/{r}/issues/{n}/sub_issues      attach a child to the parent: {sub_issue_id: <the child's REST id>}
+    PATCH  /repos/{o}/{r}/issues/{n}                 the ONE edit: the parent's body, with its list of `- [ ] #N` lines filled in
+    POST   /repos/{o}/{r}/labels                     create `ccboard:epic` or `ccboard:epic-child` (their fixed definitions)
+
+The attach and the edit also name issues: a request carries the numbers (and, for an attach, the child ids) the run created or adopted (`allow_numbers`, `allow_ids`), and a number or id that is not in them is refused, so a request can only touch the issues of its own run.
+
+A title is one plain line; a body must be a body app/nodes_epics.py `parent_body` / `child_body` could have made (`valid_epic_body`: the headings in order, the one marker, the "Who should do it" block of a
+fixed tier and nothing that names a bypass, a secret, a personal path or a host). The person's text is data inside that template, never a path, a flag, a label or a command.
+
+No issue edit (but the one above), no close, no pull request (a pull request is gitops', the one GitHub write that does not come through here), no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
 records the ids it created and re-reads before every edit); this module only guarantees the SHAPE. A comment body is never free text: it is made by `claim_body()` from validated fields and a
 fixed sentence, by `progress_body()` (issue #149: the alias, one phase sentence of a closed list, a branch name, a pull request link built from a validated repository and number and, only
 when the epic asks for it, a result that went through `redact_result()` first), or it is HELP_BODY, and `argv()` refuses any other body. The body goes to gh on stdin as JSON (`--input -`), the command is an argv list (never a shell) with a bounded timeout
@@ -89,7 +101,7 @@ PRESENCE_LABEL_DESCRIPTION = "ccboard team presence: one status comment per pers
 PRESENCE_TITLE = "ccboard team presence"
 PRESENCE_ISSUE_BODY = ("ccboard boards of the people working in this repository keep one comment each here, saying which issue and branch they work on and whether a session is running. "
                        "Only boards whose owner switched this on write here. Please leave this issue open; closing it stops presence for everyone.")
-PURPOSES = ("epic", "presence", "presence_remove")
+PURPOSES = ("epic", "presence", "presence_remove", "epic_create")
 presence_gate = None                # app/team_presence.py installs fn(owner, repo, purpose) -> bool; None refuses every presence write (fail closed)
 
 # a claim comment's fields, as the writer accepts them (ASCII only: a name with a dot looks like a host name and is refused)
@@ -110,7 +122,9 @@ _PATHS = (
     ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/labels")),
     ("DELETE", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/labels/ccboard%3Ain-progress")),
     ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/labels")),
-    ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues")),          # team presence: the status issue (fixed title, body and label only)
+    ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues")),          # team presence: the status issue (fixed title, body and label only); an epic's issues (issue #158)
+    ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/sub_issues")),     # issue #158: attach a child to the parent
+    ("PATCH", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}")),               # issue #158: the one edit of the parent's body
 )
 # ---------------------------------------------------------------- progress comments (issue #149): fixed sentences, validated fields, and a result that is redacted before it gets here
 PROGRESS_MARKER = "<!-- ccboard:progress v1 -->"
@@ -232,7 +246,9 @@ class Request(NamedTuple):
     method: str
     path: str
     body: dict | None
-    purpose: str = "epic"           # epic (the claim of #148, behind CCBOARD_EPIC_WRITES) or presence / presence_remove (team presence, behind the per-repository switch)
+    purpose: str = "epic"           # epic (the claim of #148) or epic_create (start an epic, #158), both behind CCBOARD_EPIC_WRITES; presence / presence_remove (team presence, behind the per-repository switch)
+    allow_numbers: frozenset = frozenset()      # epic_create only: the issue numbers this run created or adopted; an edit or an attach of any other number is refused
+    allow_ids: frozenset = frozenset()          # epic_create only: the REST ids of the children this run created or adopted; an attach of any other id is refused
 
 
 def writes_enabled() -> bool:
@@ -245,7 +261,7 @@ _REPO_OF = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})(?:/|\Z)")
 def _off(req=None) -> None:
     """Refuse before anything is built: an epic write while CCBOARD_EPIC_WRITES is off, a presence write the publish switch does not allow (no gate, switch off, paused)."""
     purpose = getattr(req, "purpose", "epic") if req is not None else "epic"
-    if purpose == "epic":
+    if purpose in ("epic", "epic_create"):
         if not writes_enabled():
             raise GhWriteError("writes_off")
         return
@@ -473,6 +489,130 @@ def presence_label_create(owner, repo) -> Request:
     return Request("POST", f"{_slug(owner, repo)}/labels", {"name": PRESENCE_LABEL, "color": PRESENCE_LABEL_COLOR, "description": PRESENCE_LABEL_DESCRIPTION}, "presence")
 
 
+# ---------------------------------------------------------------- start an epic from the board (issue #158): the labels, the title and body rules, the request builders
+
+EPIC_LABEL = "ccboard:epic"
+EPIC_CHILD_LABEL = "ccboard:epic-child"
+EPIC_LABELS = {EPIC_LABEL: ("5319e7", "A ccboard epic: its sub-issues are the work"), EPIC_CHILD_LABEL: ("c2e0c6", "An issue that a ccboard epic created")}
+EPIC_TITLE_MAX = 120
+EPIC_BODY_MAX = 10_000
+_NOT_ALNUM = re.compile(r"[^a-z0-9]+")
+_FOLD = str.maketrans({                                                   # letters of Cyrillic and Greek that look like a Latin one (after NFKC and lower case)
+    "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "i", "ј": "j", "ԁ": "d",
+    "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "γ": "y"})
+_NAMES_BYPASS = ("bypasspermissions", "dangerfullaccess", "dangerously")        # compared after case and the separators are dropped
+_YOLO = re.compile(r"(?i)(?<![a-z0-9])-{0,2}yolo(?![a-z0-9])")
+_IPV4 = re.compile(r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])")
+_P_ISSUES = re.compile(r"/repos/[^/?]+/[^/?]+/issues")
+_P_SUB = re.compile(r"/repos/[^/?]+/[^/?]+/issues/[1-9][0-9]{0,8}/sub_issues")
+_P_ONE = re.compile(r"/repos/[^/?]+/[^/?]+/issues/[1-9][0-9]{0,8}")
+_P_LABELS = re.compile(r"/repos/[^/?]+/[^/?]+/labels")
+_SECRET_SHAPES = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY"),
+    re.compile(r"npm_[A-Za-z0-9]{20,}"),
+    re.compile(r"glpat-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
+    re.compile(r"[sr]k_live_[A-Za-z0-9]{8,}"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}"),                  # a JSON web token: three base64url parts, the first of which opens a JSON object
+    re.compile(r"(?i)authorization\s*[:=]\s*(?:basic|bearer)\s+[A-Za-z0-9._~+/=-]{4,}"),
+)
+
+
+def _folded(text: str) -> str:
+    """`text` as a person would read it: NFKC (full-width letters, the non-breaking hyphen and the like become plain), lower case, look-alike Cyrillic and Greek letters as Latin."""
+    return unicodedata.normalize("NFKC", text).lower().translate(_FOLD)
+
+
+def epic_text_problem(text) -> str | None:
+    """Why `text` may not go into an issue the board writes: `bypass` (it names a permission bypass: bypassPermissions, danger-full-access, --dangerously-..., --yolo, in any case, with or
+    without any separator, and with full-width, look-alike Cyrillic or Greek letters, which are read as the Latin letters they imitate), `secret` (a token, a private key, a JSON web token,
+    an Authorization value, a credential in a URL, a password= assignment, a run of 32 or more base64 characters that holds a digit and a letter), `email`, `path` (a home folder of this or another machine),
+    `host` (a .ts.net, .local, .internal or .lan name, or an IPv4 address); None when it is clean. The person's text is refused, never edited."""
+    if not isinstance(text, str):
+        return "secret"
+    folded = _folded(text)
+    if any(w in _NOT_ALNUM.sub("", folded) for w in _NAMES_BYPASS) or _YOLO.search(folded):
+        return "bypass"
+    if (SECRETISH.search(text) or _URL_CRED.search(text) or _ASSIGN.search(text) or any(rx.search(text) for rx in _TOKENS) or any(rx.search(text) for rx in _SECRET_SHAPES)
+            or any(_run_is_token(m) == REMOVED for m in _RUN.finditer(text))):
+        return "secret"
+    if _EMAIL.search(text):
+        return "email"
+    if any(rx.search(text) for rx in (_HOME, _WIN_HOME, _ROOT_HOME)):
+        return "path"
+    if _IPV4.search(text) or any(_host_name(m) == REMOVED for m in _DOTTED.finditer(text)):
+        return "host"
+    return None
+
+
+def _plain(text: str, multiline: bool) -> bool:
+    return all((c == "\n" and multiline) or (unicodedata.category(c) not in _DROP and ord(c) >= 32 and c != "\x7f") for c in text)
+
+
+def valid_epic_title(title) -> bool:
+    """One plain line of 1 to 120 characters, no control, format or line-break character, no space at either end, and `epic_text_problem` finds nothing."""
+    return isinstance(title, str) and 1 <= len(title) <= EPIC_TITLE_MAX and title == title.strip() and _plain(title, False) and epic_text_problem(title) is None
+
+
+def valid_epic_body(body, kind: str) -> bool:
+    """True only for a body app/nodes_epics.py `parent_body` (kind `parent`, with or without its list filled in) or `child_body` (kind `child`) could have made: at most EPIC_BODY_MAX
+    characters, no control character but the line break, nothing `epic_text_problem` finds, and the structure of the template (the nine headings in order, the one marker, the "Who
+    should do it" block of one of the four fixed tiers, no other heading; checked by nodes_epics.valid_generated_body)."""
+    if kind not in ("parent", "child") or not isinstance(body, str) or len(body) > EPIC_BODY_MAX or not _plain(body, True) or epic_text_problem(body) is not None:
+        return False
+    from . import nodes_epics                                                  # the template table lives there; it imports this module, so the import is made when it is needed
+    return nodes_epics.valid_generated_body(body, kind)
+
+
+def _checked_epic_create(req: Request) -> bytes | None:
+    """The JSON of an epic_create request after checking that its KIND is the one its method and path take, and every value in it (see the list at the top of this module)."""
+    b, p, m = req.body, req.path, req.method
+    if m == "POST" and _P_ISSUES.fullmatch(p):
+        ok = (isinstance(b, dict) and set(b) == {"title", "body", "labels"} and isinstance(b["labels"], list) and b["labels"] in ([EPIC_LABEL], [EPIC_CHILD_LABEL])
+              and valid_epic_title(b["title"]) and valid_epic_body(b["body"], "parent" if b["labels"] == [EPIC_LABEL] else "child"))
+    elif m == "POST" and _P_SUB.fullmatch(p):
+        ok = (isinstance(b, dict) and set(b) == {"sub_issue_id"} and isinstance(b["sub_issue_id"], int) and not isinstance(b["sub_issue_id"], bool) and 0 < b["sub_issue_id"] < 2 ** 53
+              and int(p.split("/")[-2]) in req.allow_numbers and b["sub_issue_id"] in req.allow_ids)         # only an issue this run created or adopted, passed with the request
+    elif m == "PATCH" and _P_ONE.fullmatch(p):
+        ok = isinstance(b, dict) and set(b) == {"body"} and valid_epic_body(b["body"], "parent") and int(p.rsplit("/", 1)[1]) in req.allow_numbers
+    elif m == "POST" and _P_LABELS.fullmatch(p):
+        ok = isinstance(b, dict) and any(b == {"name": n, "color": c, "description": d} for n, (c, d) in EPIC_LABELS.items())
+    else:
+        ok = False
+    if not ok:
+        raise GhWriteError("bad_request")
+    return json.dumps(b, separators=(",", ":")).encode("utf-8")
+
+
+def epic_label_create(owner, repo, name) -> Request:
+    if name not in EPIC_LABELS:
+        raise GhWriteError("bad_request")
+    color, desc = EPIC_LABELS[name]
+    return Request("POST", f"{_slug(owner, repo)}/labels", {"name": name, "color": color, "description": desc}, "epic_create")
+
+
+def epic_issue_create(owner, repo, title, body, *, parent: bool) -> Request:
+    """Create the epic's parent issue (`parent`) or one child: the title, the body and the one fixed label."""
+    req = Request("POST", f"{_slug(owner, repo)}/issues", {"title": title, "body": body, "labels": [EPIC_LABEL if parent else EPIC_CHILD_LABEL]}, "epic_create")
+    _checked_epic_create(req)
+    return req
+
+
+def epic_sub_issue_attach(owner, repo, parent_n, sub_issue_id, *, numbers=(), ids=()) -> Request:
+    """Attach a child to the parent. `sub_issue_id` is the child's REST id (not its number). `numbers` and `ids` are the issues this run created or adopted: the parent must be one of the
+    numbers and the child's id one of the ids, or the request is refused."""
+    req = Request("POST", f"{_slug(owner, repo)}/issues/{_num(parent_n)}/sub_issues", {"sub_issue_id": sub_issue_id}, "epic_create", frozenset(numbers), frozenset(ids))
+    _checked_epic_create(req)
+    return req
+
+
+def epic_issue_edit(owner, repo, n, body, *, numbers=()) -> Request:
+    """The one edit of an epic: the parent's body, with the list of its children filled in. `n` must be one of `numbers`, the issues this run created or adopted."""
+    req = Request("PATCH", f"{_slug(owner, repo)}/issues/{_num(n)}", {"body": body}, "epic_create", frozenset(numbers))
+    _checked_epic_create(req)
+    return req
+
+
 def allowed_write(method, path) -> bool:
     """True for the method and path shapes of the list at the top of this module and nothing else (owner and repository checked again against GitHub's rules)."""
     if not isinstance(method, str) or not isinstance(path, str) or len(path) > 300:
@@ -487,6 +627,8 @@ def allowed_write(method, path) -> bool:
 def _checked_body(req: Request) -> bytes | None:
     """The JSON the request carries, after checking that its KIND is the one its path takes (a comment path takes {body}, an assignees path {assignees: [login]}, the issue labels
     path {labels: [the one label]}, the repository labels path the one label's definition, and the delete paths of comments and labels take none) and every value in it."""
+    if req.purpose == "epic_create":
+        return _checked_epic_create(req)
     b, p = req.body, req.path
     if req.purpose != "epic":
         if p.endswith("/comments") or "/issues/comments/" in p and req.method == "PATCH":
@@ -500,8 +642,8 @@ def _checked_body(req: Request) -> bytes | None:
         if not ok:
             raise GhWriteError("bad_request")
         return None if b is None else json.dumps(b, separators=(",", ":")).encode("utf-8")
-    if p.endswith("/issues"):
-        raise GhWriteError("bad_request")                                  # an epic write never creates an issue
+    if p.endswith("/issues") or _P_SUB.fullmatch(p) or (req.method == "PATCH" and _P_ONE.fullmatch(p)):
+        raise GhWriteError("bad_request")                                  # a claim never creates or edits an issue or attaches a sub-issue (those are purpose epic_create)
     if p.endswith("/comments") or "/issues/comments/" in p and req.method == "PATCH":
         ok = isinstance(b, dict) and set(b) == {"body"} and valid_body(b["body"])
     elif p.endswith("/assignees"):

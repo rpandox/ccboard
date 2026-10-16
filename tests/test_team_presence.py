@@ -729,7 +729,7 @@ def test_every_presence_command_is_on_the_closed_allow_list_and_needs_the_gate(m
     for req in presence_requests():
         a = github_write.argv(req)
         assert set(x for x in a if x.startswith("-") and x != "-") <= {"--include", "--method", "-H", "--input"} and a[-1] == req.path
-    assert {p for p, _ in github_write._PATHS} == {"POST", "PATCH", "DELETE"} and len(github_write._PATHS) == 9, "the allow list stays closed: one new shape (the status issue)"
+    assert {p for p, _ in github_write._PATHS} == {"POST", "PATCH", "DELETE"} and len(github_write._PATHS) == 11, "the allow list stays closed: the status issue, and the two shapes of a new epic (issue #158: attach a sub-issue, edit the parent), each pinned in tests/test_epics_create.py"
 
 
 def test_presence_writes_work_with_the_epic_switch_off_and_epic_writes_never_carry_presence(monkeypatch):

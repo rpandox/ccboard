@@ -32,8 +32,8 @@ const LAZY_BUNDLES = {
   settings: { needs: ['agents'], js: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
   // the hub view (issue #139): loads only once state.nodes_enabled is true (nodes.js Nodes.use), or for a #/n/ address
   nodeshub: { js: ['/static/nodes-hub.js', '/static/pages/node.js'], css: [{ href: '/static/pages/nodes.css', rank: 14 }], probe: () => typeof Nodes !== 'undefined' && Nodes.ready },
-  // the epic view (issue #147): the page #/epic/<owner>/<repo>/<n>, the Epics list of the Tasks page, the palette's epic rows and the demo's answers for /api/epics
-  epic: { js: ['/static/pages/epic.js'], css: [{ href: '/static/pages/epic.css', rank: 15 }], probe: () => typeof epicPage !== 'undefined' },
+  // the epic view (issue #147): the page #/epic/<owner>/<repo>/<n>, the Epics list of the Tasks page, the palette's epic rows and the demo's answers for /api/epics; with it the New epic sheet (issue #158, epic-new.js: epicNewOpen)
+  epic: { js: ['/static/pages/epic.js', '/static/pages/epic-new.js'], css: [{ href: '/static/pages/epic.css', rank: 15 }], probe: () => typeof epicPage !== 'undefined' },
   // the Team view (issue #197): the project page's Team tab, Settings > Team and the demo's answers for /api/team; both pages load it on first use, never at first paint
   team: { js: ['/static/team.js'], css: [{ href: '/static/pages/team.css', rank: 16 }], probe: () => typeof Team !== 'undefined' },
   // the Team page (issue #200): #/team, and what the sidebar group, the Home line and the palette draw once the board shares a repository (core.js teamUse); never at first paint

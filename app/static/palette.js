@@ -374,6 +374,9 @@ Palette.epicGroup = function (query, close) {
   const words = String(query || '').trim().split(/\s+/);
   if (words[0] && words[0].toLowerCase() === 'open') words.shift();
   const first = String(words[0] || '').toLowerCase();
+  const newEpic = { id: 'ep:new', label: 'New epic', hint: 'write an epic and its issues to GitHub, after a preview', keywords: 'create start epic issues', always: true,
+    run: () => { close(); if (typeof Lazy !== 'undefined') Lazy.run('epic', () => epicNewOpen({}), 'the New epic sheet'); } };
+  if (first === 'new' && words.length > 1 && words[1].length >= 2 && 'epics'.startsWith(words[1].toLowerCase()) && words.length === 2) return { id: 'epics', title: 'Epics', items: [newEpic], limit: Palette.PER_GROUP };      // "new ep", "new epic"
   if (first.length < 2 || !'epics'.startsWith(first)) return null;
   const rest = words.slice(1).join(' ');
   const u = Palette.ui;
@@ -386,6 +389,7 @@ Palette.epicGroup = function (query, close) {
   const ref = Palette.epicRef(rest);
   if (ref) items.push({ id: 'ep:open', label: `Open epic ${ref.owner}/${ref.repo}#${ref.n}`, hint: 'read from GitHub through this board', always: true, run: () => { let h = null; try { h = buildHash('epic', ref); } catch (_) { h = null; } if (h) go(h); else Palette.say('That is not a GitHub epic address.', 'warn'); } });
   if (!rest) items.push({ id: 'ep:list', label: 'Epics', hint: 'on the Tasks page', always: true, run: () => go('#/tasks?tab=epics') });
+  if (!rest) items.push(newEpic);
   for (const e of typeof Epics !== 'undefined' && Array.isArray(Epics.known) ? Epics.known : []) {
     const h = Epics.hash(e.owner, e.name, e.number);
     const hay = `${e.title || ''} ${e.repo}#${e.number}`.toLowerCase();
