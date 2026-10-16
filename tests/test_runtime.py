@@ -1,5 +1,6 @@
 """Runtime detection (docker / systemd / host), what it switches off, and the container-only branches."""
 import logging
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -42,6 +43,29 @@ def test_dev_bypass_only_on_a_dev_host():
 def test_image_version():
     assert Settings({}).image_version == ""
     assert Settings({"CCBOARD_IMAGE_VERSION": " v0.5.2 "}).image_version == "v0.5.2"
+
+
+def test_native_board_takes_its_version_from_the_changelog(tmp_path):
+    """Issue #233: a native board has no image tag, so its version is the newest CHANGELOG heading; the image tag wins in the container."""
+    from app.config import checkout_version
+    native = Settings({})
+    assert native.checkout_version and native.version == native.checkout_version
+    assert re.fullmatch(r"v\d+\.\d+\.\d+[a-z]?", native.version)
+    image = Settings({"CCBOARD_IMAGE_VERSION": "v0.5.2"})
+    assert image.version == "v0.5.2" and image.checkout_version == ""
+    log = tmp_path / "CHANGELOG.md"
+    log.write_text("# Changelog\n\nIntro.\n\n## v1.2.3a - 2026-01-02\n\n- a\n\n## v1.2.2 - 2026-01-01\n")
+    assert checkout_version(log) == "v1.2.3a"
+    log.write_text("# Changelog\n\nNo release yet.\n")
+    assert checkout_version(log) == ""
+    assert checkout_version(tmp_path / "missing.md") == ""
+
+
+def test_native_card_names_its_version(lite_client, monkeypatch):
+    from app import main, nodes
+    monkeypatch.setattr(settings, "image_version", "")
+    monkeypatch.setattr(settings, "checkout_version", "v9.8.7")
+    assert nodes.card(main.db, health_snap={}, sessions=[])["version"] == "v9.8.7"
 
 
 def test_state_config_runtime(lite_client, monkeypatch):
