@@ -20,6 +20,57 @@ async function world(t, info = INFO) {
   return w;
 }
 
+test('pending options have one restart control; cleared options put it beside the heading', async t => {
+  const w = await world(t);
+  assert.equal(page(w).querySelectorAll('.set-restart-control').length, 1);
+  assert.equal(page(w).querySelectorAll('.set-pending .set-restart-control').length, 1);
+  assert.equal(page(w).querySelectorAll('button').filter(n => text(n) === 'Restart board').length, 1);
+  w.ctx.__answers['/api/settings/options'] = { ...structuredClone(FX), pending: [], restart: INFO };
+  await w.run('settingsOptions(settingsPage.refs.panels.options)'); await settle();
+  assert.equal(page(w).querySelectorAll('.set-restart-control').length, 1);
+  assert.ok(page(w).querySelector('.set-restart-header .set-restart-control'));
+});
+
+test('armed demo confirmation keeps both blockers directly under its sole button pair at 390 and 1280', async t => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages/settings.css'), 'utf8');
+  assert.match(css, /\.set-restart-control\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/);
+  for (const width of [390, 1280]) {
+    const w = await world(t, FX.restart);
+    w.ctx.innerWidth = width;
+    w.ctx.demoOn = () => true;
+    button(w, 'Restart board').click(); await settle();
+    const confirms = page(w).querySelectorAll('button').filter(n => text(n) === 'Confirm Restart board');
+    assert.equal(confirms.length, 1);
+    const pair = confirms[0].parentNode;
+    const control = pair.parentNode;
+    assert.ok(control.classList.contains('set-restart-control'));
+    assert.deepEqual(pair.querySelectorAll('button').map(text), ['Confirm Restart board', 'Cancel']);
+    const blockers = control.querySelectorAll('.set-restart-blocker');
+    assert.deepEqual(blockers.map(text), FX.restart.blockers);
+    assert.equal(pair.nextElementSibling, blockers[0]);
+    assert.equal(blockers[0].nextElementSibling, blockers[1]);
+    for (const line of blockers) {
+      assert.equal(line.parentNode, control);
+      assert.equal(line.closest('.hidden, [hidden]'), null);
+    }
+  }
+});
+
+test('container guidance and recreate command each appear once with and without pending settings', async t => {
+  const notice = 'A restart does not reread /etc/ccboard/env; to apply changes made there, recreate the container with the command above.';
+  const w = await world(t, FX.restart);
+  for (const pending of [FX.pending, []]) {
+    w.ctx.__answers['/api/settings/options'] = { ...structuredClone(FX), pending };
+    await w.run('settingsOptions(settingsPage.refs.panels.options)'); await settle();
+    assert.equal(text(page(w)).split(FX.restart.hint).length - 1, 1);
+    assert.equal(text(page(w)).split(notice).length - 1, 1);
+    const notices = page(w).querySelectorAll('p').filter(n => text(n) === notice);
+    assert.equal(notices.length, 1);
+    const command = notices[0].parentNode.querySelector('.doc-cmdline');
+    assert.equal(command.nextElementSibling, notices[0]);
+  }
+});
+
 test('first tap arms, second confirms; busy warnings require a further forced confirmation', async t => {
   const w = await world(t);
   let requests = 0;

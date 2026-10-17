@@ -1514,7 +1514,7 @@
     "hint": "docker compose up -d --force-recreate ccboard",
     "why": "",
     "logs": "docker compose logs --tail 100 ccboard",
-    "docker_notice": "A restart will not read /etc/ccboard/env. On the box run: docker compose up -d --force-recreate ccboard",
+    "docker_notice": "A restart does not reread /etc/ccboard/env; to apply changes made there, recreate the container with the command above.",
     "blockers": [
       "1 permission is waiting for an answer and will be lost",
       "2 terminals are open; ttyd and tmux sessions keep running"

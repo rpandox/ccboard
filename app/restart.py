@@ -42,8 +42,8 @@ def info() -> dict:
     return {"launch_log": launch_log, "method": via, "hint": hint, "why": why, "expect_seconds": 10,
             "logs": "docker compose logs --tail 100 ccboard" if settings.runtime == "docker" else
                     "tail -n 100 " + shlex.quote(launch_log) if launch_log else plat.hint("logs", "ccboard"),
-            "docker_notice": ("A restart will not read /etc/ccboard/env. On the box run: "
-                              "docker compose up -d --force-recreate ccboard") if settings.runtime == "docker" else ""}
+            "docker_notice": ("A restart does not reread /etc/ccboard/env; to apply changes made there, "
+                              "recreate the container with the command above.") if settings.runtime == "docker" else ""}
 
 
 def readiness(db) -> list[str]:

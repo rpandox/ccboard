@@ -272,7 +272,8 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 #page .settings-restart .doc-cmd, #page .set-options-guidance .doc-cmd { white-space:pre-wrap; max-width:100%; box-sizing:border-box; }
 
 .set-restart-header { display: flex; flex-wrap: wrap; align-items: start; gap: 12px; margin-block: 12px; }
-.set-restart-control { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.set-restart-control { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.set-restart-control > .set-restart-blocker { display: block; max-width: 100%; }
 .set-restart-control .row { flex-wrap: wrap; }
 .set-restart-control p { margin-block: 6px; }
 .set-restart-control button { min-height: 28px; }

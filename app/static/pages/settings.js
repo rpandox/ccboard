@@ -286,11 +286,11 @@ function settingsOptionsPaint(p, data) {
   const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
   const pending = settingsPendingSummary(data);
   if (pending.count) p.append(settingsRestartBanner(pending));
-  p.append(el('div', { class: 'set-restart-header' }, settingsHead('Options'), settingsRestartControl(data.restart)));
-  if (!pending.count && data.restart?.docker_notice) p.append(el('p', { text: data.restart.docker_notice }));
+  p.append(el('div', { class: 'set-restart-header' }, settingsHead('Options'), pending.count ? null : settingsRestartControl(data.restart)));
   p.append(el('div', { class: 'dim set-note set-options-guidance' },
     el('p', { text: 'Page options save here; others are set by the installer or settings file.' }),
-    pending.count ? null : settingsRestartCommand(data.restart_hint)), filter);
+    pending.count ? null : settingsRestartCommand(data.restart_hint),
+    !pending.count && data.restart?.docker_notice ? el('p', { text: data.restart.docker_notice }) : null), filter);
   const sections = [];
   const glyphs = { default: '○', file: '▤', environment: '◇', page: '▣' };
   for (const group of data.groups) {
