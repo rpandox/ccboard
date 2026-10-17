@@ -994,12 +994,13 @@ Quad.mount = function (root, route) {
     const open = el('a', { class: 'btn icon minimal small qt-open', href: `/term/${enc(tmux)}`, target: '_blank', rel: 'noopener', 'data-dock': 'skip', 'data-standalone': 'skip', 'aria-label': 'Open the terminal page', title: 'Open the terminal page' }, ic('share'));
     const again = el('button', { class: 'icon minimal small qt-reconnect', type: 'button', 'aria-label': 'Reconnect', title: 'Reconnect this tile', onclick: () => reconnect(tile) }, ic('refresh'));
     const shut = el('button', { class: 'icon minimal small qt-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => close(tile) }, ic('cross'));
+    tile.queued = queuedPromptsChip();                           // #79: '+2 queued' while the board holds prompts for the session (patchTile)
     tile.hooks = el('span', { class: 'qt-hooks hidden' });       // #96: 'no hooks (untrusted?)' while hooks_missing (patchTile)
     tile.chipSlot = el('span', { class: 'qt-nodechip' });            // issue #144: the node's chip, filled once the nodes are read (patchRemote)
     tile.openSlot = el('span', { class: 'qt-openslot' });             // and the link to its terminal, on the node itself
     const tailWord = el('span', { class: 'qt-tailword', title: 'Tail: the last captured lines of the session and a prompt box, not an interactive terminal', text: 'Tail' });
     const head = tile.remote ? el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.chipSlot, tailWord, tile.zoomBtn, tile.openSlot, again, shut)
-      : el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.hooks, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
+      : el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.queued, tile.hooks, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
     tile.head = head;
     tile.task = el('div', { class: 'qt-task hidden' });
     tile.permText = el('span', { class: 'qt-perm-text' });
@@ -1488,6 +1489,7 @@ Quad.mount = function (root, route) {
     tile.ctx.classList.toggle('hi', !!ci && ci.level === 'hi');
     tile.ctx.classList.toggle('crit', !!ci && ci.level === 'crit');
     if (ci) tile.ctx.setAttribute('title', ci.title);
+    if (tile.queued) queuedPromptsSet(tile.queued, s && s.queued_prompts);
     const hm = (s && s.hooks_missing) || '';                  // #96: the same chip as the Agents row, after the glyphs
     if (tile.hm !== hm && typeof hooksMissingChip === 'function') {
       tile.hm = hm;
