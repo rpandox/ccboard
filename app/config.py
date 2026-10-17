@@ -434,7 +434,7 @@ def page_stamp(path) -> str:
         return "unreadable"
 
 
-def read_page_file(path, *, env=None, info=None) -> dict[str, str]:
+def read_page_file(path, *, env=None, info=None, document=None) -> dict[str, str]:
     """Read a private, bounded file; no rejected value is logged, even by a startup parser."""
     from .options import safe_key, validate_value
     info = info if info is not None else {}
@@ -442,6 +442,7 @@ def read_page_file(path, *, env=None, info=None) -> dict[str, str]:
         return {}
     problem = env_file_problem(path)
     values = {}
+    confirmed = []
     if problem is None:
         try:
             with os.fdopen(os.open(path, os.O_RDONLY | plat.o_nofollow() | getattr(os, "O_NONBLOCK", 0)), "rb") as f:
@@ -459,7 +460,12 @@ def read_page_file(path, *, env=None, info=None) -> dict[str, str]:
             if (not isinstance(doc, dict) or type(doc.get("version")) is not int or doc["version"] != 1
                     or not isinstance(doc.get("set"), dict) or any(not isinstance(v, str) for v in doc["set"].values())):
                 raise ValueError("must contain version 1 and string settings")
+            confirmed = doc.get("confirmed", [])
+            if not isinstance(confirmed, list) or any(not isinstance(k, str) for k in confirmed):
+                raise ValueError("must contain a list of confirmed option names")
             values = doc["set"]
+            if document is not None:
+                document.update(doc)
         except FileNotFoundError:
             return {}
         except OSError:
@@ -473,10 +479,16 @@ def read_page_file(path, *, env=None, info=None) -> dict[str, str]:
             _page_warnings.add(warning)
             log.warning("ignoring settings.page.json: %s", problem)
         return {}
-    allowed = {o.key: o for o in registry() if o.cls == "page" and not o.secret}
+    allowed = {o.key: o for o in registry() if o.cls in ("page", "confirm") and not o.secret}
     out = {}
     for key, value in values.items():
         reason = "not a page option" if key not in allowed else validate_value(allowed[key], value, env or {})
+        if key in allowed and allowed[key].cls == "confirm":
+            if (env or {}).get("CCBOARD_PAGE_WIDEN") != "1":
+                reason = "CCBOARD_PAGE_WIDEN is off"
+                info["ignored_widening"] = info.get("ignored_widening", 0) + 1
+            elif key not in confirmed:
+                reason = "not a page option; save with confirmation in Settings"
         if reason:
             # JSON keys are untrusted too; only option-shaped names can appear in diagnostics.
             name = safe_key(key, env or {}) or "unknown key"
@@ -506,6 +518,7 @@ class Settings:
         info = {}
         env = apply_env_file(os.environ if env is None else env, file_keys=self.file_keys, info=info)
         self.page_file = page_path(env)
+        self.page_widen = env.get("CCBOARD_PAGE_WIDEN") == "1"
         self.page_info = {}
         env = apply_page_settings(env, info=self.page_info)
         self.raw = {o.key: str(env[o.key]) for o in registry() if o.key in env}

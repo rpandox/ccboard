@@ -535,7 +535,7 @@
       "help": "Copy unpushed work to backup branches on each repository's origin.",
       "kind": "bool",
       "default": "1",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -625,7 +625,7 @@
       "help": "Type continue once when a limit resets or a working session recovers.",
       "kind": "bool",
       "default": "1",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -757,7 +757,7 @@
       "help": "Review trusts hooks once in Codex and bypass also trusts repository hooks.",
       "kind": "choice",
       "default": "review",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -781,7 +781,7 @@
       "help": "Comma-separated private hosts or wildcard domains that clones may reach.",
       "kind": "list",
       "default": "",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -802,7 +802,7 @@
       "help": "Start remote MCP enabled only with 1 unless its page switch overrides it.",
       "kind": "bool",
       "default": "",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -852,14 +852,14 @@
         86400
       ],
       "choices": null,
-      "value": 45.0,
+      "value": 50,
       "set": false,
       "line": "CCBOARD_AUTOCLOSE_GRACE=45",
-      "source": "default",
+      "source": "page",
       "problem": null,
-      "running": 45.0,
-      "pending": false,
-      "edit_value": "45.0"
+      "running": 45,
+      "pending": true,
+      "edit_value": "50"
     },
     {
       "key": "CCBOARD_CODEX_HOOKS_ASYNC",
@@ -914,7 +914,7 @@
       "help": "Empty or inherit uses the main model and a model name overrides it.",
       "kind": "text",
       "default": "",
-      "cls": "page",
+      "cls": "confirm",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -926,7 +926,9 @@
       "problem": null,
       "running": "",
       "pending": false,
-      "edit_value": ""
+      "edit_value": "",
+      "phrase": "ALLOW SUBAGENT MODEL",
+      "widen_plain": "Subagents may use a different model, with different capability and cost."
     },
     {
       "key": "CCBOARD_HEADLESS_FABLE_CAP",
@@ -935,7 +937,7 @@
       "help": "The largest dollar cap allowed for a scheduled or batch Fable run.",
       "kind": "float",
       "default": "25",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": [
@@ -1005,7 +1007,7 @@
       "help": "Advisory task capacity with 0 meaning no cap.",
       "kind": "int",
       "default": "3",
-      "cls": "page",
+      "cls": "confirm",
       "applies": "restart",
       "secret": false,
       "bounds": [
@@ -1013,14 +1015,16 @@
         999
       ],
       "choices": null,
-      "value": 5,
+      "value": 4,
       "set": true,
       "line": "CCBOARD_NODE_LANES=4",
-      "source": "page",
+      "source": "file",
       "problem": null,
       "running": 4,
-      "pending": true,
-      "edit_value": "5"
+      "pending": false,
+      "edit_value": "4",
+      "phrase": "ALLOW NODE CAPACITY",
+      "widen_plain": "This node may advertise more task capacity or no cap."
     },
     {
       "key": "CCBOARD_NODE_PORTS",
@@ -1056,7 +1060,7 @@
       "help": "Tailscale tags identifying candidate boards with none meaning only your own devices.",
       "kind": "list",
       "default": "tag:ccboard",
-      "cls": "page",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1105,7 +1109,7 @@
       "help": "Allow agents to read paired nodes or also start tasks there.",
       "kind": "choice",
       "default": "0",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1143,7 +1147,9 @@
       "problem": null,
       "running": [],
       "pending": false,
-      "edit_value": "[]"
+      "edit_value": "[]",
+      "phrase": "ALLOW WORKER",
+      "widen_plain": "Additional author entries may authorize epic work."
     },
     {
       "key": "CCBOARD_EPIC_WRITES",
@@ -1164,7 +1170,9 @@
       "problem": null,
       "running": false,
       "pending": false,
-      "edit_value": "False"
+      "edit_value": "False",
+      "phrase": "ALLOW GITHUB WRITES",
+      "widen_plain": "The board may write claims and work updates to GitHub."
     },
     {
       "key": "CCBOARD_EPIC_ALIAS",
@@ -1254,7 +1262,9 @@
       "problem": null,
       "running": false,
       "pending": false,
-      "edit_value": "False"
+      "edit_value": "False",
+      "phrase": "ALLOW WORKER",
+      "widen_plain": "The worker may start epic issues unattended."
     },
     {
       "key": "CCBOARD_EPIC_REPOS",
@@ -1275,7 +1285,9 @@
       "problem": null,
       "running": [],
       "pending": false,
-      "edit_value": "[]"
+      "edit_value": "[]",
+      "phrase": "ALLOW WORKER",
+      "widen_plain": "The worker may take issues from additional repositories."
     },
     {
       "key": "CCBOARD_EPIC_WORKER_POLL",
@@ -1308,7 +1320,7 @@
       "help": "The most issues the worker starts in an hour.",
       "kind": "int",
       "default": "6",
-      "cls": "page",
+      "cls": "confirm",
       "applies": "restart",
       "secret": false,
       "bounds": [
@@ -1323,7 +1335,9 @@
       "problem": null,
       "running": 6,
       "pending": false,
-      "edit_value": "6"
+      "edit_value": "6",
+      "phrase": "ALLOW WORKER",
+      "widen_plain": "The worker may start more issues each hour."
     },
     {
       "key": "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
@@ -1332,7 +1346,7 @@
       "help": "The most issues the worker starts in twenty-four hours.",
       "kind": "int",
       "default": "30",
-      "cls": "page",
+      "cls": "confirm",
       "applies": "restart",
       "secret": false,
       "bounds": [
@@ -1347,7 +1361,9 @@
       "problem": null,
       "running": 30,
       "pending": false,
-      "edit_value": "30"
+      "edit_value": "30",
+      "phrase": "ALLOW WORKER",
+      "widen_plain": "The worker may start more issues each day."
     },
     {
       "key": "CCBOARD_NODE_AUTH",
@@ -1356,7 +1372,7 @@
       "help": "Require a pair token alone or also its device and an app capability.",
       "kind": "choice",
       "default": "token",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1381,7 +1397,7 @@
       "help": "The domain/cap/name capability required by whois+cap authentication.",
       "kind": "text",
       "default": "",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1402,7 +1418,7 @@
       "help": "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.",
       "kind": "choice",
       "default": "prefer",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1424,7 +1440,7 @@
       "help": "Allow a browser on this machine to sign in with a one-time link from bin/ccboard-open.",
       "kind": "bool",
       "default": "0",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1442,7 +1458,7 @@
       "help": "How long a local browser session lasts, from 1 to 168 hours.",
       "kind": "int",
       "default": "12",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": [
@@ -1463,7 +1479,7 @@
       "help": "Relaunch Claude sessions after a reboot unless this is 0.",
       "kind": "bool",
       "default": "1",
-      "cls": "confirm",
+      "cls": "file",
       "applies": "restart",
       "secret": false,
       "bounds": null,
@@ -1499,6 +1515,48 @@
       "edit_value": "ccboard"
     },
     {
+      "key": "CCBOARD_PAGE_WIDEN",
+      "group": "safety",
+      "label": "Allow page widening",
+      "help": "Only exactly 1 permits confirmed changes from Settings.",
+      "kind": "bool",
+      "default": "",
+      "cls": "file",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": false,
+      "set": false,
+      "line": "CCBOARD_PAGE_WIDEN=",
+      "source": "default",
+      "problem": null,
+      "pending": false,
+      "running": false,
+      "edit_value": ""
+    },
+    {
+      "key": "CCBOARD_DEV_BYPASS_USER",
+      "group": "safety",
+      "label": "Development identity",
+      "help": "Development shell authentication override, never set by a page.",
+      "kind": "text",
+      "default": "",
+      "cls": "file",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": "",
+      "set": false,
+      "line": "CCBOARD_DEV_BYPASS_USER=",
+      "source": "default",
+      "problem": null,
+      "pending": false,
+      "running": "",
+      "edit_value": ""
+    },
+    {
       "key": "CCBOARD_ENV_FILE",
       "group": "advanced",
       "label": "Settings file",
@@ -1524,7 +1582,7 @@
   "restart_hint": "docker compose up -d --force-recreate ccboard",
   "stamp": "demo",
   "pending": [
-    "CCBOARD_NODE_LANES"
+    "CCBOARD_AUTOCLOSE_GRACE"
   ],
   "audit": [],
   "refusals": [],
@@ -1540,5 +1598,6 @@
       "1 permission is waiting for an answer and will be lost",
       "2 terminals are open; ttyd and tmux sessions keep running"
     ]
-  }
+  },
+  "page_widen": false
 }

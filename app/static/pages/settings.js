@@ -234,16 +234,26 @@ function settingsOptionEdit(p, data, option, row) {
   const editor = el('div', { class: 'set-option-editor' }, control, error);
   const actions = row.querySelector('.kv-act');
   const close = () => { editor.remove(); actions.classList.remove('hidden'); p.ccOptionCancel = null; };
-  const submit = async (value) => {
+  const submit = async (value, confirm) => {
     if (value === initial) { close(); return; }
     for (const button of editor.querySelectorAll('button')) button.disabled = true;
     try {
-      const result = await api('PUT', '/api/settings/options', { changes: { [option.key]: value }, stamp: data.stamp });
+      const result = await api('PUT', '/api/settings/options', { changes: { [option.key]: value }, stamp: data.stamp, ...(confirm === undefined ? {} : { confirm }) });
       settingsOptionsPaint(p, result);
       if (state) state.settings_pending = settingsPendingSummary(result);
     } catch (e) {
+      if (e.status === 409 && e.body?.reason === 'needs_confirm') {
+        for (const button of editor.querySelectorAll('button')) button.disabled = false;
+        settingsWidenDialog(e.body, phrase => submit(value, phrase), control);
+        return;
+      }
       if (e.status === 409) { settingsOptions(p); return; }
-      error.textContent = (e.body && e.body.reason) || e.message;
+      const refusal = {
+        widen_off: 'Allow in settings: CCBOARD_PAGE_WIDEN=1.',
+        bad_phrase: 'The words you typed do not match; type them exactly as shown.',
+        file_only: 'This setting can only be changed in the settings file: ' + option.line,
+      };
+      error.textContent = refusal[e.body?.reason] || e.body?.reason || e.message;
       control.setAttribute('aria-invalid', 'true');
       for (const button of editor.querySelectorAll('button')) button.disabled = false;
     }
@@ -258,15 +268,83 @@ function settingsOptionEdit(p, data, option, row) {
   control.focus();
 }
 
+function settingsWidenDialog(answer, submit, opener) {
+  if (settingsPage.widen) settingsPage.widen.close();
+  const shell = modalShell('qr-editor readout set-widen', 'Allow wider agent permissions', () => {
+    settingsPage.widen = null;
+    if (opener?.isConnected) opener.focus();
+  });
+  settingsPage.widen = shell;
+  const input = el('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Confirmation phrase' });
+  const confirm = el('button', { type: 'button', class: 'primary', text: 'Confirm save', disabled: true, onclick: () => {
+    if (input.value !== answer.phrase) return;
+    const typed = input.value;
+    shell.close(); submit(typed);
+  } });
+  confirm.disabled = true;
+  input.addEventListener('input', () => { confirm.disabled = input.value !== answer.phrase; });
+  shell.dlg.append(el('div', { class: 'qr-box' },
+    el('h2', { text: 'Allow wider agent permissions' }),
+    el('ul', {}, ...(answer.widens || []).map(row => el('li', { text: row.plain }))),
+    el('label', { class: 'field' }, el('span', { text: 'Type exactly:' }), el('code', { text: answer.phrase }), input),
+    el('p', { class: 'dim', text: 'The change takes effect after restarting the board.' }),
+    el('div', { class: 'qr-actions' }, el('button', { type: 'button', text: 'Cancel', onclick: shell.close }), confirm)));
+  shell.show();
+  if (!coarsePointer()) input.focus();
+  return shell;
+}
+
+function settingsDemoWidens(row, next) {
+  const old = String(row.edit_value ?? row.value ?? '');
+  const value = String(next ?? row.file_value ?? row.running ?? row.default);
+  if (row.kind === 'bool') return old !== '1' && value === '1';
+  if (row.kind === 'list') {
+    const entries = v => v.toLowerCase().split(/[,\s]+/).filter(Boolean);
+    return entries(value).some(v => !entries(old).includes(v));
+  }
+  if (row.key === 'CCBOARD_NODE_LANES') return Number(old) !== 0 && (Number(value) === 0 || Number(value) > Number(old));
+  if (row.kind === 'int') return Number(value) > Number(old);
+  const model = v => v === 'inherit' ? '' : v;
+  return model(old) !== model(value);
+}
+
 let settingsDemoOptions = null;
 async function demoSettingsOptions(body) {
   if (!settingsDemoOptions) settingsDemoOptions = await demoApi('GET', '/api/settings/options');
+  const refuse = (status, reason, detail = {}) => { const e = demoError(status, reason); e.body = { reason, ...detail }; throw e; };
+  const wider = [], groups = new Set();
   for (const [key, value] of Object.entries(body.changes)) {
     const row = settingsDemoOptions.options.find(o => o.key === key);
-    if (!row || row.cls !== 'page') throw demoError(403, 'file_only');
+    if (!row || !['page', 'confirm'].includes(row.cls)) refuse(403, 'file_only');
     if (value !== null && (row.kind === 'int' || row.kind === 'float') && (!value.trim() || !Number.isFinite(Number(value)) || (row.kind === 'int' && !/^\d+$/.test(value)) || (row.bounds && ((row.bounds[0] !== null && Number(value) < row.bounds[0]) || (row.bounds[1] !== null && Number(value) > row.bounds[1]))))) {
       const e = demoError(400, 'Use a number within the listed bounds.'); e.body = { key, reason: e.message }; throw e;
     }
+    if (row.cls === 'confirm') {
+      if (!settingsDemoOptions.page_widen) refuse(403, 'widen_off', { line: 'CCBOARD_PAGE_WIDEN=1' });
+      if (settingsDemoWidens(row, value)) {
+        wider.push({ key, from: row.edit_value, to: value, plain: row.widen_plain });
+        groups.add(row.phrase);
+      }
+    }
+  }
+  if (wider.some(r => r.key === 'CCBOARD_EPIC_WORKER')) {
+    const next = key => {
+      const row = settingsDemoOptions.options.find(o => o.key === key);
+      const value = ownKey(body.changes, key) ? body.changes[key] : row.edit_value;
+      return value === null ? row.file_value ?? row.running ?? row.default : value;
+    };
+    const missing = [];
+    if (String(next('CCBOARD_EPIC_WRITES')) !== '1') missing.push('CCBOARD_EPIC_WRITES=1');
+    if (!String(next('CCBOARD_EPIC_REPOS')).trim()) missing.push('CCBOARD_EPIC_REPOS');
+    if (missing.length) refuse(400, 'Worker requires ' + missing.join(' and ') + '.');
+  }
+  if (wider.length) {
+    const phrase = [...groups].sort().join(' AND ');
+    if (body.confirm === undefined) refuse(409, 'needs_confirm', { phrase, widens: wider });
+    if (body.confirm !== phrase) refuse(403, 'bad_phrase');
+  }
+  for (const [key, value] of Object.entries(body.changes)) {
+    const row = settingsDemoOptions.options.find(o => o.key === key);
     row.running = row.running === undefined ? row.value : row.running;
     if (row.file_value === undefined) { row.file_value = row.running; row.file_source = row.source === 'page' ? 'file' : row.source; }
     row.value = value === null ? row.file_value : value;
@@ -286,7 +364,7 @@ function settingsOptionsPaint(p, data) {
   const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
   const pending = settingsPendingSummary(data);
   if (pending.count) p.append(settingsRestartBanner(pending));
-  p.append(el('div', { class: 'set-restart-header' }, settingsHead('Options'), pending.count ? null : settingsRestartControl(data.restart)));
+  p.append(el('div', { class: 'set-restart-header' }, settingsHead('Options'), data.page_widen ? el('span', { class: 'badge warn set-widen-chip', text: 'Settings can widen agent permissions' }) : null, pending.count ? null : settingsRestartControl(data.restart)));
   p.append(el('div', { class: 'dim set-note set-options-guidance' },
     el('p', { text: 'Page options save here; others are set by the installer or settings file.' }),
     pending.count ? null : settingsRestartCommand(data.restart_hint),
@@ -310,7 +388,12 @@ function settingsOptionsPaint(p, data) {
       row.setAttribute('data-key', option.key);
       row.querySelector('.k').append(el('code', { class: 'mono set-option-key', text: option.key }));
       if (option.pending) row.add(el('span', { class: 'set-option-next', text: 'running ' + settingsOptionText(option.running, option) + ', next start ' + settingsOptionText(option.value, option) }));
-      if (option.cls === 'page' && !option.secret) row.add(el('button', { type: 'button', text: 'Edit', onclick: () => settingsOptionEdit(p, data, option, row) }));
+      if ((option.cls === 'page' || (option.cls === 'confirm' && data.page_widen)) && !option.secret) row.add(el('button', { type: 'button', text: 'Edit', onclick: () => settingsOptionEdit(p, data, option, row) }));
+      if (option.cls === 'confirm') {
+        row.add(el('span', { class: 'dim', text: data.page_widen ? 'Widening needs a typed confirmation; lowering uses Save.' : 'Changing this from the page is off. To allow it, set CCBOARD_PAGE_WIDEN=1 in the settings file. A value saved here before v0.5.83 is not used.' }));
+        if (!data.page_widen) row.add(el('code', { class: 'set-option-line', text: option.line }));
+      }
+      if (option.live_widening) row.add(el('span', { class: 'warn', text: 'Live value is wider than the settings file/environment alone.' }));
       if (option.problem) row.add(el('span', { class: 'warn', text: option.problem }));
       if (option.cls === 'file' || option.cls === 'installer') {
         row.add(el('code', { class: 'set-option-line', text: option.secret ? option.key + '=<value>' : option.line }));
@@ -3133,6 +3216,7 @@ function settingsShow(id) {
   const r = settingsPage.refs;
   if (!r) return;
   const opening = settingsPage.active !== id;
+  if (id !== 'options' && settingsPage.widen) settingsPage.widen.close();
   settingsPage.active = id;
   for (const sec of SETTINGS_SECTIONS) r.panels[sec.id].classList.toggle('hidden', sec.id !== id);
   r.tabs.set(id);
@@ -3200,6 +3284,7 @@ registerPage('settings', {
     if (settingsPage.focus && settingsPage.active === 'accounts') settingsFill('accounts', true);           // already on the page: the rows are rebuilt so the focus finds its row
   },
   unmount() {
+    if (settingsPage.widen) settingsPage.widen.close();
     if (settingsPage.add) settingsPage.add.dispose();                   // its one-second timer must not outlive the page
     settingsPage.add = null;
     if (settingsPage.cx) settingsPage.cx.dispose();

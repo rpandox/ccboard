@@ -93,3 +93,11 @@ def test_claim_recovery_documents_wait_bound_and_intentional_read_row(doc):
     text = (ROOT / doc).read_text()
     assert re.search(r'`wait_s`[^.]*upper bound[^.]*not a measured queue time', text)
     assert re.search(r'one read-only GET row[^.]*`epic_claim_status`[^.]*`tasks`[^.]*on purpose', text)
+
+
+def test_security_bullets_precede_settings_permission_subsection():
+    security = (ROOT / 'README.md').read_text().split('## Security model\n')[1].split('\n## ')[0]
+    general, settings = security.split('### Settings permission classes\n')
+    assert '- **Optional local sign-in' in general
+    assert '- Codex:' in general
+    assert not any(line.startswith('- ') for line in settings.splitlines())

@@ -262,3 +262,16 @@ def test_the_mem_viewer_off_word_clears_the_remembered_port(tmp_path):
 def test_every_registry_key_has_a_readme_row_or_internal_reason():
     from app.options import registry
     assert not {o.key for o in registry()} - readme_rows() - set(INTERNAL)
+
+
+def test_page_widen_is_file_only_and_bound():
+    from app.config import ENV_FILE_KEYS, Settings
+    from app.options import registry
+    key = "CCBOARD_PAGE_WIDEN"
+    assert key in env_keys() and key in ENV_FILE_KEYS and key in readme_rows()
+    assert '${CCBOARD_PAGE_WIDEN:=' in INSTALL.read_text()
+    assert next(o for o in registry() if o.key == key).cls == "file"
+    assert not Settings({}).page_widen
+    for value in ("", "0", "true", " 1", "1 "):
+        assert not Settings({key: value}).page_widen
+    assert Settings({key: "1"}).page_widen
