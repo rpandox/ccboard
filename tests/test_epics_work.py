@@ -1146,7 +1146,7 @@ def test_repo_not_here_is_a_404_in_the_hubs_words_and_a_timeout_is_unconfirmed_a
     w.count = Answer(raises=TimeoutError("slow"))
     nodes.peer_transport = w.count
     r = run_route(w)
-    assert r.status_code == 504 and r.json()["reason"] == "unconfirmed" and "75 s" in r.json()["error"] and w.count.seen == 1 and w.count.timeout == nr.WORK_TIMEOUT
+    assert r.status_code == 504 and r.json()["reason"] == "unconfirmed" and "120 s" in r.json()["error"] and w.count.seen == 1 and w.count.timeout == nr.WORK_TIMEOUT
 
 
 def test_only_a_few_runs_at_once_on_a_node_and_the_next_is_told_busy_before_anything_starts(w):

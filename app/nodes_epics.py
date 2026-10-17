@@ -40,6 +40,7 @@ import socket
 import threading
 import time
 import unicodedata
+from functools import wraps
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -47,6 +48,20 @@ from . import github, github_write, issues, node_state, nodes, projects
 from .config import settings
 
 log = logging.getLogger("ccboard.nodes.epics")
+
+
+def _claim_step(step):
+    def decorate(fn):
+        @wraps(fn)
+        def timed(*args, **kwargs):
+            started = time.monotonic()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                log.info("claim step %s took %.3f s", step, time.monotonic() - started)
+        return timed
+    return decorate
+
 
 EPIC_LABEL = "ccboard:epic"
 IN_PROGRESS_LABEL = "ccboard:in-progress"
@@ -570,6 +585,7 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
     return part
 
 
+@_claim_step("read")
 def fresh_claim_state(owner: str, repo: str, number, repos, login=None, detail: bool = False) -> dict:
     """The claim state of ONE issue, read now with every cache and TTL bypassed: the issue and each page of its comments are revalidated with GitHub in this call
     (a 304 on If-None-Match counts), the issue is read again afterwards and the thread is read once more if anything moved (see `_read_consistent`). Returns
@@ -1612,6 +1628,7 @@ def _audit(actor: Actor, action: str, ok: bool, owner: str, repo: str, n, detail
     nodes.audit("out", "", action, ok, detail, target=f"{owner}/{repo}#{int(n)}", status="ok" if ok else "failed", db=actor.db)
 
 
+@_claim_step("write")
 def _send(actor: Actor, req) -> tuple[int, dict, Any]:
     return github_write.send(req, actor.wq)
 
@@ -1785,6 +1802,7 @@ def _err_reason(e: github_write.GhWriteError) -> str:
     return e.reason if e.reason in ("rate_limited", "no_access", "no_login", "busy") else "error"
 
 
+@_claim_step("withdraw")
 def _withdraw(actor: Actor, rec: dict, comments=None) -> tuple[bool, str | None]:
     """Delete the board's own claim comment `rec` named, nothing else, and forget the record. `comments` (a thread just read) must show it is still the board's own; without
     a reading the record alone is the proof (the id was created by this board in this run and checked against the POST's answer). Returns (done, a reason when not)."""
@@ -1815,6 +1833,7 @@ def _ask_person(actor: Actor, owner: str, repo: str, n, comments) -> bool:
     return True
 
 
+@_claim_step("read_back")
 def _readback(actor: Actor, owner: str, repo: str, n, repos, before_ids: set, attempt: int) -> tuple[str, dict | None]:
     """After a POST whose outcome is unknown: read the thread (twice, WAIT_S apart) for a claim comment of this board that was not there before, with this attempt and seq 1.
     ("found", the raw comment) when it is there; ("absent", None) when two whole readings show it is not; ("unknown", None) when the readings could not settle it."""
@@ -1861,6 +1880,7 @@ def _sweep_orphans(actor: Actor, owner: str, repo: str, n, d: dict) -> int:
     return gone
 
 
+@_claim_step("read_back")
 def _decide(actor: Actor, rec: dict, repos) -> tuple[str, str | None, dict | None]:
     """Step 3. (verdict, winner alias, the last reading): `won` only when the claim is the first live one of both of two uncached readings taken WAIT_S apart; `lost` (another
     live claim is first, or this one is not to be seen); `closed`; `error` (a reading could not settle it, so the claim is not believed)."""
@@ -1954,6 +1974,7 @@ def _epic_ref(epic, owner: str, name: str):
     return (m.group(1), m.group(2), int(m.group(3))) if m and github.valid_slug(m.group(1), m.group(2)) else None
 
 
+@_claim_step("total")
 def claim_issue(repo, issue, *, actor: Actor | None = None, repos=None, epic=None, task_ref: str | None = None, branch: str | None = None) -> dict:
     """Claim issue `issue` of repository `repo` ("owner/name") for this board. Returns {claimed, reason, claim_ref, winner, message, ...}.
 
