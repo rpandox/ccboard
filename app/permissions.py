@@ -76,12 +76,12 @@ def wake(pid: int) -> None:
         loop.call_soon_threadsafe(ev.set)
 
 
-def push_request(pid: int, name: str, summary: str) -> None:
+def push_request(pid: int, name: str, summary: str, *, context_row=None) -> None:
     """The phone notice for one pending permission: Allow / Deny / Terminal and the `? Bash: npm test` line, on ntfy and Web Push.
     Never throttled (every request needs an answer), but it counts as the session's 'waiting' notice, so the Notification hook
     that follows when the TUI prompt shows does not buzz a second time."""
     try:
-        row, task = notify.context(name)
+        row, task = (context_row, None) if context_row else notify.context(name)
         n = notify.build(row or {"tmux_name": name}, task, "waiting", "permission_prompt", summary,
                          {"id": pid, "summary": summary})
         notify.mark_sent(name, "waiting")
@@ -96,6 +96,43 @@ _terminal_reads = WeakKeyDictionary()
 _terminal_lock = threading.RLock()
 TERMINAL_ID_MIN = 100_000_000_000
 TERMINAL_CHANGED = "the terminal prompt changed or is no longer available; nothing was sent. Refresh and check it again"
+
+
+def terminal_observe(cache, key, name, read, *, rearm=False, **context):
+    """Shared one-shot lifecycle and public redaction for local and device screens. Caller holds its lock.
+    Local callers keep the original rule: an answered prompt stays suppressed while the same screen returns, even after a transient
+    empty read. Device polling opts in with rearm=True, where an empty read ends the prompt and the same screen is a new one."""
+    from . import nodes_relay
+    from .db import now
+    old = cache.get(key)
+    if not read:
+        if old:
+            old["active"] = False
+        return None
+    dialog, fingerprint = read
+    if old and old["answered"] and old["fingerprint"] == fingerprint and (old["active"] or not rearm):
+        return None
+    if not old or old["fingerprint"] != fingerprint or not old["active"]:
+        known = nodes_relay.known_secrets()
+        public = {"id": TERMINAL_ID_MIN + secrets.randbelow(900_000_000_000), "kind": "terminal_prompt",
+                  "tmux_name": name, "tool_name": dialog["tool_name"],
+                  "summary": nodes_relay._perm_summary(dialog["summary"], known), "created_at": now(),
+                  "choices": [{"number": c["number"], "label": nodes_relay._perm_summary(c["label"], known)}
+                              for c in dialog["choices"]], **context}
+        old = cache[key] = {"public": public, "fingerprint": fingerprint, "active": True, "answered": False}
+    return dict(old["public"]) if not old["answered"] else None
+
+
+def terminal_consume(old, read):
+    """A fresh matching screen is required; consume before a transport can lose its acknowledgement."""
+    from . import projects
+    if not old or not old["active"] or old["answered"]:
+        raise projects.Conflict(TERMINAL_CHANGED)
+    if not read or read[1] != old["fingerprint"]:
+        old["active"] = False
+        raise projects.Conflict(TERMINAL_CHANGED)
+    old["answered"] = True
+    return read[0]
 
 
 def _terminal_read(db, name, *, row=None, panes=None):
@@ -119,8 +156,7 @@ def _terminal_read(db, name, *, row=None, panes=None):
 
 
 def terminal_pending(db, live: list[dict], *, max_age: float) -> list[dict]:
-    from . import hooks, nodes_relay, tmux
-    from .db import now
+    from . import hooks, tmux
     with _terminal_lock:
         cache = _terminal.setdefault(db, {})
         reads = _terminal_reads.setdefault(db, {})
@@ -151,23 +187,9 @@ def terminal_pending(db, live: list[dict], *, max_age: float) -> list[dict]:
             else:
                 read = _terminal_read(db, name, row=row, panes=panes)
                 reads[name] = (time.monotonic(), stamp, read)
-            old = cache.get(name)
-            if not read:
-                if old:
-                    old["active"] = False
-                continue
-            dialog, fingerprint = read
-            if old and old["answered"] and old["fingerprint"] == fingerprint:
-                continue
-            if not old or old["fingerprint"] != fingerprint or not old["active"]:
-                pid = TERMINAL_ID_MIN + secrets.randbelow(900_000_000_000)
-                known = nodes_relay.known_secrets()
-                public = {"id": pid, "kind": "terminal_prompt", "tmux_name": name, "tool_name": dialog["tool_name"],
-                          "summary": nodes_relay._perm_summary(dialog["summary"], known), "created_at": now(),
-                          "choices": [{"number": c["number"], "label": nodes_relay._perm_summary(c["label"], known)} for c in dialog["choices"]]}
-                old = cache[name] = {"public": public, "fingerprint": fingerprint, "active": True, "answered": False}
-            if not old["answered"]:
-                out.append(dict(old["public"]))
+            public = terminal_observe(cache, name, name, read)
+            if public:
+                out.append(public)
         return out
 
 
@@ -189,9 +211,6 @@ def terminal_answer(db, pid: int, decision: str, source: str, live) -> None:
             raise projects.Conflict(TERMINAL_CHANGED)
         _terminal_reads.get(db, {}).pop(name, None)
         read = _terminal_read(db, name)
-        if not read or read[1] != old["fingerprint"]:
-            old["active"] = False
-            raise projects.Conflict(TERMINAL_CHANGED)
-        old["answered"] = True           # consume before sending: a failed transport must not cause an automatic retry
+        terminal_consume(old, read)
         tmux.send_text(name, read[0][decision], enter=False)
         db.add_event(name, "TerminalPermission", read[0]["tool_name"], decision, {"id": pid, "source": source}, agent="claude")

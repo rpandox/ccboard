@@ -1,0 +1,23 @@
+#!/bin/sh
+# ccboard-attach-bare v1: a short-lived ticket, never a destination from the URL.
+exec python3 -c '
+import os, runpy, sys, time
+from pathlib import Path
+
+def fail(message):
+    print("ccboard: " + message, flush=True)
+    time.sleep(2)
+    sys.exit(1)
+
+if len(sys.argv) != 3:
+    fail("usage: ccboard-attach-bare <ticket>")
+try:
+    bare = runpy.run_path(str(Path(sys.argv[1]).resolve().parent.parent / "app" / "bare.py"))
+    directory = Path(os.environ.get("CCBOARD_DATA_DIR") or Path.home() / ".local/share/ccboard")
+    argv = bare["read_ticket"](sys.argv[2], data_dir=directory)
+    os.execvp(argv[0], argv)
+except ValueError as e:
+    fail(str(e))
+except OSError:
+    fail("The terminal could not start. Check the board installation and try again.")
+' "$0" "$@"

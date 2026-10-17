@@ -1147,7 +1147,7 @@
       "problem": null,
       "running": [],
       "pending": false,
-      "edit_value": "[]",
+      "edit_value": "",
       "phrase": "ALLOW WORKER",
       "widen_plain": "Additional author entries may authorize epic work."
     },
@@ -1170,7 +1170,7 @@
       "problem": null,
       "running": false,
       "pending": false,
-      "edit_value": "False",
+      "edit_value": "0",
       "phrase": "ALLOW GITHUB WRITES",
       "widen_plain": "The board may write claims and work updates to GitHub."
     },
@@ -1262,7 +1262,7 @@
       "problem": null,
       "running": false,
       "pending": false,
-      "edit_value": "False",
+      "edit_value": "0",
       "phrase": "ALLOW WORKER",
       "widen_plain": "The worker may start epic issues unattended."
     },
@@ -1285,7 +1285,7 @@
       "problem": null,
       "running": [],
       "pending": false,
-      "edit_value": "[]",
+      "edit_value": "",
       "phrase": "ALLOW WORKER",
       "widen_plain": "The worker may take issues from additional repositories."
     },
@@ -1599,5 +1599,66 @@
       "2 terminals are open; ttyd and tmux sessions keep running"
     ]
   },
-  "page_widen": false
+  "page_widen": false,
+  "worker_states": {
+    "off": {
+      "page_widen": true,
+      "values": {
+        "CCBOARD_EPIC_WORKER": "0",
+        "CCBOARD_EPIC_REPOS": "owner/name",
+        "CCBOARD_EPIC_AUTHORS": "owner:1",
+        "CCBOARD_EPIC_WRITES": "1",
+        "CCBOARD_EPIC_WORKER_POLL": "90",
+        "CCBOARD_EPIC_WORKER_MAX_PER_HOUR": "6",
+        "CCBOARD_EPIC_WORKER_MAX_PER_DAY": "30"
+      }
+    },
+    "widenoff": {
+      "page_widen": false,
+      "values": {
+        "CCBOARD_EPIC_WORKER": "0",
+        "CCBOARD_EPIC_REPOS": "owner/name",
+        "CCBOARD_EPIC_AUTHORS": "owner:1",
+        "CCBOARD_EPIC_WRITES": "1",
+        "CCBOARD_EPIC_WORKER_POLL": "90",
+        "CCBOARD_EPIC_WORKER_MAX_PER_HOUR": "6",
+        "CCBOARD_EPIC_WORKER_MAX_PER_DAY": "30"
+      }
+    },
+    "ready": {
+      "page_widen": true,
+      "values": {
+        "CCBOARD_EPIC_WORKER": "1",
+        "CCBOARD_EPIC_REPOS": "owner/name",
+        "CCBOARD_EPIC_AUTHORS": "owner:1",
+        "CCBOARD_EPIC_WRITES": "1",
+        "CCBOARD_EPIC_WORKER_POLL": "90",
+        "CCBOARD_EPIC_WORKER_MAX_PER_HOUR": "6",
+        "CCBOARD_EPIC_WORKER_MAX_PER_DAY": "30"
+      }
+    },
+    "refusing": {
+      "page_widen": true,
+      "values": {
+        "CCBOARD_EPIC_WORKER": "1",
+        "CCBOARD_EPIC_REPOS": "",
+        "CCBOARD_EPIC_AUTHORS": "owner:1",
+        "CCBOARD_EPIC_WRITES": "1",
+        "CCBOARD_EPIC_WORKER_POLL": "90",
+        "CCBOARD_EPIC_WORKER_MAX_PER_HOUR": "6",
+        "CCBOARD_EPIC_WORKER_MAX_PER_DAY": "30"
+      }
+    }
+  },
+  "worker": {
+    "on": false,
+    "reason": null,
+    "text": "After the restart the worker will be off",
+    "repos": [],
+    "authors": [],
+    "writes": false,
+    "poll": 90,
+    "hour": 6,
+    "day": 30
+  }
 }

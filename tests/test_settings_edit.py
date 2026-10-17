@@ -262,7 +262,6 @@ def test_race_during_write_leaves_newer_file(board, monkeypatch):
     (KEY, '86401'), (KEY, '-1'), (KEY, 'no'), (KEY, 'nan'),
     ('CCBOARD_AUTOCLOSE_GRACE', '86400'), ('CCBOARD_AUTOCLOSE_GRACE', 'inf'),
     ('CCBOARD_EPIC_LEASE_MIN', '9'), ('CCBOARD_EPIC_MAX_WINDOW_PCT', '101'),
-    ('CCBOARD_EPIC_WORKER_POLL', '29'),
     ('CCBOARD_NODES_POLL', '4'),
     ('CCBOARD_NODE_PORTS', '443,bad'), ('CCBOARD_NODE_PORTS', '1,2,3,4,5,6,7,8,9'),
     ('CCBOARD_NODE_NAME', 'x' * 501),
@@ -278,6 +277,18 @@ def test_validation_is_all_or_nothing(board, key, value, caplog):
     assert answer.json()['key'] == key
     assert not board[1].page_file.exists()
     assert 'fixture-secret-marker' not in answer.text + caplog.text
+
+
+def test_worker_poll_is_gated_first_then_validated_all_or_nothing(board, monkeypatch):
+    """A worker key needs CCBOARD_PAGE_WIDEN=1 before anything else (403 widen_off, whatever the value); with it, a bad poll is a 400 naming the field."""
+    from app import main
+    key = 'CCBOARD_EPIC_WORKER_POLL'
+    answer = put(board, {'CCBOARD_EPIC_ALIAS': 'safe', key: '29'})
+    assert answer.status_code == 403 and answer.json()['reason'] == 'widen_off' and answer.json()['key'] == key
+    monkeypatch.setattr(main, 'settings', config.Settings({**board[2], 'CCBOARD_PAGE_WIDEN': '1'}))
+    answer = put(board, {'CCBOARD_EPIC_ALIAS': 'safe', key: '29'})
+    assert answer.status_code == 400 and answer.json()['key'] == key and answer.json()['reason'].endswith('.')
+    assert not board[1].page_file.exists()
 
 
 @pytest.mark.parametrize('kind,choices,value', [('bool', None, 'yes'), ('choice', ('a', 'b'), 'c')])

@@ -88,3 +88,13 @@ def test_edit_refusal_has_a_glyph_words_and_a_disabled_work_reason():
     assert "off = 'edit'; text = epEditText(c)" in EPIC_JS
     fx = json.loads((STATIC / 'demo' / 'epic.json').read_text())
     assert any(c.get('edit_state') == 'blocked' for c in fx['details']['example/website#147']['children'])
+
+
+def test_worker_setup_copy_reuses_owner_safety_and_options_link():
+    from app.options import WORKER_SAFETY
+    source = (STATIC / 'nodes-worker.js').read_text()
+    assert _js_has(source, WORKER_SAFETY)
+    assert 'Set it up in Settings > Options > Epics & worker' in source
+    assert '#/settings?sec=options&group=epics' in source
+    assert 'Nothing on this page turns it on' not in source
+    assert 'CCBOARD_PAGE_WIDEN=1' in source

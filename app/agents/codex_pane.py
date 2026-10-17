@@ -71,3 +71,40 @@ def exit_reason(text: str) -> str:
         if ERROR_RE.match(ln):
             return "codex exited: " + re.sub(r"[\x00-\x1f\x7f]", " ", ln.strip())[:280]
     return "codex is not running in this pane: its login shell is (the launch exited before it started)"
+
+
+def approval_dialog(text: str) -> dict | None:
+    """Codex's command permission menu, with exact one-time labels only."""
+    lines = _tail(text)
+    if not lines or lines[-1].strip().lower() != "press enter to confirm or esc to cancel":
+        return None
+    start = next((i for i in range(len(lines) - 1, -1, -1)
+                  if lines[i].strip() == "Would you like to run the following command?"), None)
+    if start is None:
+        return None
+    choices, body = [], []
+    for line in lines[start + 1:-1]:
+        m = re.fullmatch(r"\s*(?:›\s*)?([1-9])\. (.+)", line)
+        if m:
+            choices.append({"number": m[1], "label": m[2].strip()})
+        elif choices:
+            choices[-1]["label"] += " " + line.strip()
+        else:
+            body.append(line.strip())
+    yes = [c for c in choices if c["label"] == "Yes, proceed (y)"]
+    no = [c for c in choices if c["label"] == "No, and tell Codex what to do differently (esc)"]
+    if len(yes) != 1 or len(no) != 1 or len({c["number"] for c in choices}) != len(choices):
+        return None
+    return {"tool_name": "command", "summary": "command: " + " ".join(body), "choices": choices,
+            "allow": yes[0]["number"], "deny": no[0]["number"], "enter": True}
+
+
+def screen_state(text: str) -> str:
+    if dialog(text) or approval_dialog(text):
+        return "dialog"
+    lines = _tail(text)
+    if any("esc to interrupt" in s.lower() for s in lines[-5:]):
+        return "working"
+    if any(re.match(r"^\s*›(?:\s|$)", s) or COMPOSER_RE.search(s) or FOOTER_RE.match(s) for s in lines[-5:]):
+        return "waiting"
+    return "unknown"

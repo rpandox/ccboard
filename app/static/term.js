@@ -12,6 +12,27 @@
 (function termPage() {
   let NAME = '';
   try { NAME = decodeURIComponent(location.pathname.replace(/^\/term\//, '').replace(/\/$/, '')); } catch (_) { NAME = ''; }
+  // Device terminals use only the attached TTY; local pane, prompt and tuning APIs do not apply.
+  // In demo mode a device terminal shows a local placeholder and never loads /tty/; other demo terminals keep the full page.
+  const BARE = /^bare-ticket-[a-f0-9]{64}$/.test(NAME);
+  if (BARE) {
+    document.body.classList.add('terminal-only');
+    document.title = 'Device terminal · ccboard';
+    $('#headid').append(el('span', { class: 'name', text: 'Device terminal' }));
+    for (const id of ['ctxstrip', 'rail', 'histchip', 'keyhost', 'quickrow', 'sendform']) $('#' + id).classList.add('hidden');
+    const frame = $('#tty');
+    if (demoOn()) {
+      $('#back').href = '/?demo=1';
+      frame.hidden = true;                                           // the page's CSP refuses inline styles, so the placeholder is page markup
+      frame.parentNode.append(el('pre', { class: 'demo-term', text: 'Demo terminal: no device connection.\nOn your board, this opens the session on the device.' }));
+    } else {
+      TermKit.bind(frame, { touchScroll: true });
+      frame.src = TermKit.ttyUrl(NAME);
+    }
+    TermKit.viewportFit();
+    window.addEventListener('resize', () => TermKit.fitSoon(frame));
+    return;
+  }
   const ENC = encodeURIComponent(NAME);
   const API = '/api/sessions/' + ENC;
   const INTERNAL = NAME.startsWith('_ccboard');                       // the login session: no session row, no polling

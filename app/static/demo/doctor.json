@@ -2,7 +2,7 @@
   "generated_at": "2026-10-06T08:00:00.000+00:00",
   "ok": false,
   "summary": {
-    "pass": 17,
+    "pass": 18,
     "warn": 4,
     "fail": 2,
     "skip": 1
@@ -46,6 +46,14 @@
       "label": "ccboard-attach wrapper",
       "status": "pass",
       "detail": "v2 wrapper at /home/demo/.local/share/ccboard/app/bin/ccboard-attach",
+      "fix": null
+    },
+    {
+      "id": "attach-bare-wrapper",
+      "group": "terminal",
+      "label": "ccboard-attach-bare wrapper",
+      "status": "pass",
+      "detail": "Device terminal helper and shared module installed",
       "fix": null
     },
     {

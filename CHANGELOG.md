@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.90 - 2026-10-17
+## v0.5.91 - 2026-10-17
 
 ### Changed
 - README: a new section, Several devices (nodes), linked from the top and from the Fleet paragraph, points to each part of the nodes feature; the repeated tables moved into one place.
@@ -12,6 +12,58 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Claims about Tailscale or GitHub carry a source link or the words "to verify".
 
 Upgrade: nothing to do.
+
+## v0.5.90 - 2026-10-17
+
+### Added
+- Worker setup in Settings > Options > Epics & worker: mode, repositories, allowed authors, epic writes, poll interval and hourly/daily limits in one save.
+- The owner's safety copy and Phase 4 typed confirmation show the trusted lists and limits before widening.
+- Shared prerequisite checks refuse invalid worker setup without calling GitHub; saved values show the next-start outcome and restart badges.
+- Live Stop and Start stay available when a running worker is saved off; demo states cover off, read-only, ready and refusing forms.
+
+Upgrade: no installer rerun required. To enable worker setup from the page, set `CCBOARD_PAGE_WIDEN=1` in the trusted settings file and restart once; saved worker changes also need a board restart.
+
+## v0.5.89 - 2026-10-17
+
+### Changed
+- README: one section, "Devices without a board", replaces the scattered notes: what such a device can and cannot do, the tailnet rule, the dedicated non-root user, the ten-second poll, the state log, removal, and a failure table in the board's own words.
+- `tests/test_bare_docs.py` fails when a message quoted in that table no longer appears in the code, so the README cannot drift.
+- Demo: lab-pi shows a session in each state the sidebar can show (working, waiting, needs you, unconfirmed, stopping), in page memory only.
+- Still to run on real hardware, by the owner: the Tailscale check prompt, a tmux session across a `tailscaled` restart, sleep and wake, and a Mac as a target.
+- Sidebar: a device session row offers Reply only while it is waiting, as a small icon button named for the agent, repo and device, so names keep room at 390 px (#285).
+
+Upgrade: nothing to do.
+
+## v0.5.88 - 2026-10-17
+
+### Added
+- Optional state log for a device without a board: **Install state log** and **Remove state log** (two taps) in the device check add four small hooks to that user's Claude and Codex settings.
+- The hooks append `{state, session, time}` lines, never prompt text, to `~/.ccboard-bare/state.log` (64 KB cap, one `.1` backup); the ten-second poll reads the tail in its one SSH call and prefers a new line to the screen read, which stays the fallback.
+- Settings merge on the board: your own hooks are kept, ours are added once, malformed or linked files are refused with nothing written, and each write is checksum-guarded, backed up and atomic. `bare_hook_install` and `bare_hook_remove` are audited with the person and the outcome; lab-pi in the demo shows the log installed.
+- A dialog line in the log never overrides a screen without a dialog, so an answered permission does not come back; a settings write checks the byte count it sent, so a stream that ended early leaves the original untouched and the board says the device received only part of it.
+- The state log control stays (with Remove) after a failing check while the log is installed; re-adding a device with a different user drops the saved log; the Install confirm and installed text say to review the hooks once with `/hooks` in Codex when Codex was found.
+
+Upgrade: nothing to do; the hooks are installed on a device only when you press Install state log.
+
+## v0.5.87 - 2026-10-17
+
+### Added
+- Read open device sessions every ten seconds in one SSH batch per device, with backoff after failed reads and no per-tick audit.
+- Show screen states in the sidebar and Claude or Codex terminal prompts in Needs you, with one-time Allow and Deny after a fresh fingerprint check.
+- Reply through stdin paste; audit the person, device, session and action without prompt or reply text.
+- Try lab-pi's permission dialog and replies in the in-memory demo.
+
+Upgrade: nothing to do.
+
+## v0.5.86 - 2026-10-17
+
+### Added
+- Open a checked device session in the normal terminal page from its sidebar row.
+- Private ten-minute tickets allow reconnects, keep device addresses out of URLs, and require a signed-in person; attachment is audited without the ticket.
+- Ship `ccboard-attach-bare` with the installers and Docker host files, and check it in Doctor; normal terminal arguments are unchanged.
+- Demo device terminals stay local without a network connection.
+
+Upgrade: rerun `./install.sh` on macOS so ttyd receives the configured data directory; other installations need no extra steps.
 
 ## v0.5.85 - 2026-10-17
 

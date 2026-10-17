@@ -56,6 +56,20 @@ def foreground(command: str | None) -> bool:
     return command == "claude" or bool(re.fullmatch(r"\d+\.\d+\.\d+", command or ""))
 
 
+def screen_state(text: str) -> str:
+    """Screen evidence only; unknown output is never evidence that typing is safe."""
+    if approval_dialog(text):
+        return "dialog"
+    lines = [s.strip() for s in text.splitlines() if s.strip()][-TAIL_LINES:]
+    if lines and "esc to cancel" in lines[-1].lower():
+        return "dialog"
+    if any("esc to interrupt" in s.lower() for s in lines[-5:]):
+        return "working"
+    if any(PROMPT_RE.match(s) for s in lines[-5:]) or interrupted_at_prompt(text):
+        return "waiting"
+    return "unknown"
+
+
 def approval_dialog(text: str) -> dict | None:
     """Only Claude's tool approval menu, ending at its cancel hint. Exact one-time labels; never infer a choice from its position."""
     # Keep frame boundaries until the heading/body association is established. A heading in

@@ -429,10 +429,10 @@ def _app_dir() -> Path:
     return seeded if settings.runtime == "docker" or (seeded / "bin").is_dir() else CHECKOUT
 
 
-def _attach_paths() -> list[Path]:
-    paths = [Path(settings.data_dir) / "app" / "bin" / "ccboard-attach"]
+def _attach_paths(name="ccboard-attach") -> list[Path]:
+    paths = [Path(settings.data_dir) / "app" / "bin" / name]
     if settings.runtime != "docker":      # the systemd units run the checkout's copy
-        paths.append(CHECKOUT / "bin" / "ccboard-attach")
+        paths.append(CHECKOUT / "bin" / name)
     return paths
 
 
@@ -451,6 +451,16 @@ def _c_attach_wrapper(db) -> Outcome:
     if ATTACH_MARKER not in head:
         return _warn("v1 wrapper", fix("The v2 wrapper (viewer modes, read-only attach) arrives with v0.5.7; nothing to do yet"))
     return _pass(f"v2 wrapper at {path}")
+
+
+def _c_attach_bare_wrapper(db) -> Outcome:
+    path = next((p for p in _attach_paths("ccboard-attach-bare") if p.is_file()), None)
+    if path is None or not os.access(path, os.X_OK):
+        return _fail("ccboard-attach-bare is missing or not executable", fix("Re-run the installer or restart the board container", "./install.sh"))
+    module = path.parent.parent / "app" / "bare.py"
+    if not module.is_file():
+        return _fail("The device terminal module is missing", fix("Re-run the installer or restart the board container", "./install.sh"))
+    return _pass(f"ccboard-attach-bare at {path}")
 
 
 # ------------------------------------------------------------------ box checks
@@ -2083,6 +2093,7 @@ for _id, _group, _label, _fn in (
     ("tmux-socket", "terminal", "tmux socket", _c_tmux_socket),
     ("ttyd", "terminal", "ttyd (web terminal)", _c_ttyd),
     ("attach-wrapper", "terminal", "ccboard-attach wrapper", _c_attach_wrapper),
+    ("attach-bare-wrapper", "terminal", "ccboard-attach-bare wrapper", _c_attach_bare_wrapper),
     ("code-server", "box", "code-server", _c_code_server),
     ("projects-dir", "box", "Projects directory", _c_projects_dir),
     ("git", "box", "git 2.15 or newer", _c_git),
