@@ -16,7 +16,7 @@ GROUPS = (
     ("nodes", "Nodes"), ("epics", "Epics & worker"), ("notify", "Notifications"),
     ("backup", "Backup"), ("memory", "Memory"), ("advanced", "Advanced"),
 )
-EXTRAS = {"CCBOARD_RECOVER", "CCBOARD_TMUX_SOCKET", "CCBOARD_ENV_FILE"}
+EXTRAS = {"CCBOARD_RECOVER", "CCBOARD_TMUX_SOCKET", "CCBOARD_ENV_FILE", "CCBOARD_DEV_BYPASS_USER"}
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class Option:
 
 
 def registry() -> tuple[Option, ...]:
-    """Installer order, followed by the three non-remembered options; resolve platform defaults without reading any settings file."""
+    """Installer order, followed by the non-remembered options; resolve platform defaults without reading any settings file."""
     return (
         Option("PROJECTS_DIR", "general", "Projects folder", "The folder containing this board's projects.", "path", str(plat.default_projects_dir()), "file", attr="projects_dir"),
         Option("CCBOARD_PORT", "general", "Board port", "The loopback port of the board.", "int", "8000", "installer", attr="port", bounds=(1, 65535)),
@@ -61,31 +61,32 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_NODES", "nodes", "Legacy nodes", "Comma-separated name=URL entries for the legacy fleet.", "list", "", "file", attr="nodes_raw"),
         Option("CCBOARD_RESTIC_REPO", "backup", "Backup repository", "Empty uses the data folder's restic repository and off disables it.", "url", "", "file", attr="restic_repo"),
         Option("CCBOARD_RESTIC_PASSWORD_FILE", "backup", "Backup password file", "Empty uses restic-password in the board data folder.", "path", "", "file", attr="restic_password_file"),
-        Option("CCBOARD_BACKUP_PUSH", "backup", "Push backup branches", "Copy unpushed work to backup branches on each repository's origin.", "bool", "1", "confirm", attr="backup_push"),
+        Option("CCBOARD_BACKUP_PUSH", "backup", "Push backup branches", "Copy unpushed work to backup branches on each repository's origin.", "bool", "1", "file", attr="backup_push"),
         Option("CCBOARD_BACKUP_ONCALENDAR", "backup", "Backup schedule", "The calendar expression for the nightly backup job.", "text", "*-*-* 02:30:00", "installer", applies="installer"),
         Option("CCBOARD_BACKUP_EXTRA", "backup", "Extra backup folders", "Colon-separated paths to include in the backup snapshot.", "list", "", "file", attr="backup_extra"),
         Option("CCBOARD_RUNTIME", "advanced", "Runtime", "Empty detects how this board process was started.", "choice", "", "installer", attr="runtime", choices=("", "host", "systemd", "docker", "launchd")),
-        Option("CCBOARD_AUTO_CONTINUE", "agents", "Auto-continue", "Type continue once when a limit resets or a working session recovers.", "bool", "1", "confirm", attr="auto_continue"),
+        Option("CCBOARD_AUTO_CONTINUE", "agents", "Auto-continue", "Type continue once when a limit resets or a working session recovers.", "bool", "1", "file", attr="auto_continue"),
         Option("CCBOARD_CLAUDE_MEM", "memory", "Memory worker monitoring", "Install the memory plugin and monitor its worker when enabled.", "bool", "1", "installer", attr="claude_mem"),
         Option("CCBOARD_MEM_PORT", "memory", "Memory worker port", "Empty discovers the memory worker port automatically.", "int", "", "file", attr="mem_port", bounds=(1, 65535)),
-        Option("CCBOARD_MEM_HTTPS_PORT", "memory", "Memory viewer HTTPS port", "Empty hides the viewer and a port exposes its writable API on the tailnet.", "int", "", "installer", attr="mem_https_port", bounds=(1, 65535)),
+        Option("CCBOARD_MEM_HTTPS_PORT", "memory", "Memory viewer HTTPS port", "A port exposes the local worker's writable API on the tailnet; empty leaves it unmapped.", "int", "", "installer", attr="mem_https_port", bounds=(1, 65535)),
+        Option("CCBOARD_MEM_VIEWER_URL", "memory", "Memory viewer URL", "An existing dashboard URL, HTTPS or HTTP on loopback, without credentials; takes precedence over the viewer port.", "url", "", "page", attr="mem_viewer_url_override", bad="mem_viewer_url_bad"),
         Option("CCBOARD_MEM_SERVICE", "memory", "Memory service", "Run the memory worker as a managed service.", "bool", "0", "installer", applies="installer"),
-        Option("CCBOARD_CODEX_HOOK_TRUST", "safety", "Codex hook trust", "Review trusts hooks once in Codex and bypass also trusts repository hooks.", "choice", "review", "confirm", attr="codex_hook_trust", choices=("review", "bypass")),
-        Option("CCBOARD_CLONE_ALLOWED_HOSTS", "safety", "Private clone hosts", "Comma-separated private hosts or wildcard domains that clones may reach.", "list", "", "confirm", attr="clone_allowed_hosts"),
-        Option("CCBOARD_MCP_REMOTE", "safety", "Remote MCP default", "Start remote MCP enabled only with 1 unless its page switch overrides it.", "bool", "", "confirm", attr="mcp_remote"),
+        Option("CCBOARD_CODEX_HOOK_TRUST", "safety", "Codex hook trust", "Review trusts hooks once in Codex and bypass also trusts repository hooks.", "choice", "review", "file", attr="codex_hook_trust", choices=("review", "bypass")),
+        Option("CCBOARD_CLONE_ALLOWED_HOSTS", "safety", "Private clone hosts", "Comma-separated private hosts or wildcard domains that clones may reach.", "list", "", "file", attr="clone_allowed_hosts"),
+        Option("CCBOARD_MCP_REMOTE", "safety", "Remote MCP default", "Start remote MCP enabled only with 1 unless its page switch overrides it.", "bool", "", "file", attr="mcp_remote"),
         Option("CODEX_HOME", "advanced", "Codex folder", "Empty uses Codex's own default configuration folder.", "path", "", "file", attr="codex_home"),
         Option("CCBOARD_AUTOCLOSE_GRACE", "agents", "Auto-close grace", "Seconds to wait after Stop before closing a task session.", "float", "45", "page", attr="autoclose_grace", bad="autoclose_grace_bad", bounds=(0, 86400)),
         Option("CCBOARD_CODEX_HOOKS_ASYNC", "agents", "Asynchronous Codex hooks", "Write asynchronous Codex hooks unless this is 0.", "bool", "1", "installer", applies="installer"),
         Option("CCBOARD_CLAUDE_ULTRACODE_FLAG", "agents", "Ultracode support", "Empty asks Claude's help and 1 or 0 records verified flag support.", "choice", "", "file", choices=("", "0", "1")),
-        Option("CCBOARD_SUBAGENT_MODEL", "agents", "Subagent model", "Empty or inherit uses the main model and a model name overrides it.", "text", "", "page", attr="subagent_model", bad="subagent_model_bad"),
-        Option("CCBOARD_HEADLESS_FABLE_CAP", "agents", "Fable budget ceiling", "The largest dollar cap allowed for a scheduled or batch Fable run.", "float", "25", "confirm", attr="headless_fable_cap", bounds=(0, 1000)),
+        Option("CCBOARD_SUBAGENT_MODEL", "agents", "Subagent model", "Empty or inherit uses the main model and a model name overrides it.", "text", "", "confirm", attr="subagent_model", bad="subagent_model_bad"),
+        Option("CCBOARD_HEADLESS_FABLE_CAP", "agents", "Fable budget ceiling", "The largest dollar cap allowed for a scheduled or batch Fable run.", "float", "25", "file", attr="headless_fable_cap", bounds=(0, 1000)),
         Option("CCBOARD_PRICE_TABLE", "advanced", "Price table", "A JSON file that adds to or replaces built-in estimated prices.", "path", "", "file", attr="price_table"),
         Option("CCBOARD_TAILSCALE_PLACEMENT", "advanced", "Tailscale placement", "Choose Tailscale in WSL or on Windows when running under WSL.", "choice", "", "installer", choices=("", "wsl", "host")),
-        Option("CCBOARD_NODE_LANES", "nodes", "Task lanes", "Advisory task capacity with 0 meaning no cap.", "int", "3", "page", attr="node_lanes", bad="node_lanes_bad", bounds=(0, 999)),
+        Option("CCBOARD_NODE_LANES", "nodes", "Task lanes", "Advisory task capacity with 0 meaning no cap.", "int", "3", "confirm", attr="node_lanes", bad="node_lanes_bad", bounds=(0, 999)),
         Option("CCBOARD_NODE_PORTS", "nodes", "Discovery ports", "Try up to eight HTTPS ports when looking for other boards.", "list", "443,8443", "page", attr="node_ports", bad="node_ports_bad"),
-        Option("CCBOARD_NODE_TAGS", "nodes", "Discovery tags", "Tailscale tags identifying candidate boards with none meaning only your own devices.", "list", "tag:ccboard", "page", attr="node_tags", bad="node_tags_bad"),
+        Option("CCBOARD_NODE_TAGS", "nodes", "Discovery tags", "Tailscale tags identifying candidate boards with none meaning only your own devices.", "list", "tag:ccboard", "file", attr="node_tags", bad="node_tags_bad"),
         Option("CCBOARD_NODES_POLL", "nodes", "Node poll interval", "Seconds between polls of a paired node, from five seconds to one hour.", "float", "20", "page", attr="nodes_poll", bad="nodes_poll_bad", bounds=(5, 3600)),
-        Option("CCBOARD_MCP_NODES", "safety", "MCP node access", "Allow agents to read paired nodes or also start tasks there.", "choice", "0", "confirm", attr="mcp_nodes", choices=("0", "read", "tasks", "1")),
+        Option("CCBOARD_MCP_NODES", "safety", "MCP node access", "Allow agents to read paired nodes or also start tasks there.", "choice", "0", "file", attr="mcp_nodes", choices=("0", "read", "tasks", "1")),
         Option("CCBOARD_EPIC_AUTHORS", "epics", "Allowed authors", "Comma-separated login or login:id entries trusted for epic work.", "list", "", "confirm", attr="epic_authors", bad="epic_authors_bad"),
         Option("CCBOARD_EPIC_WRITES", "epics", "Epic writes", "Allow the board to write claims and work updates to GitHub.", "bool", "0", "confirm", attr="epic_writes"),
         Option("CCBOARD_EPIC_ALIAS", "epics", "Public alias", "Empty uses a neutral name for this board's public claim comments.", "text", "", "page", attr="epic_alias"),
@@ -94,15 +95,17 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_EPIC_WORKER", "epics", "Unattended worker", "Take ready epic issues automatically when the required allowlists and writes are enabled.", "bool", "0", "confirm", attr="epic_worker"),
         Option("CCBOARD_EPIC_REPOS", "epics", "Worker repositories", "Comma-separated owner/name repositories the worker may take issues from.", "list", "", "confirm", attr="epic_repos", bad="epic_repos_bad"),
         Option("CCBOARD_EPIC_WORKER_POLL", "epics", "Worker poll interval", "Seconds between worker checks with a little jitter.", "int", "90", "page", attr="epic_worker_poll", bad="epic_worker_poll_bad", bounds=(30, 3600)),
-        Option("CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "epics", "Hourly start cap", "The most issues the worker starts in an hour.", "int", "6", "page", attr="epic_worker_max_hour", bad="epic_worker_max_hour_bad", bounds=(1, 60)),
-        Option("CCBOARD_EPIC_WORKER_MAX_PER_DAY", "epics", "Daily start cap", "The most issues the worker starts in twenty-four hours.", "int", "30", "page", attr="epic_worker_max_day", bad="epic_worker_max_day_bad", bounds=(1, 500)),
-        Option("CCBOARD_NODE_AUTH", "safety", "Node authentication", "Require a pair token alone or also its device and an app capability.", "choice", "token", "confirm", attr="node_auth", bad="node_auth_bad", choices=("token", "whois", "whois+cap")),
-        Option("CCBOARD_NODE_CAP", "safety", "Node capability", "The domain/cap/name capability required by whois+cap authentication.", "text", "", "confirm", attr="node_cap", bad="node_cap_bad"),
-        Option("CCBOARD_NODE_KEYS", "safety", "Node signing keys", "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.", "choice", "prefer", "confirm", attr="node_keys", choices=("prefer", "require", "off")),
-        Option("CCBOARD_LOCAL_SIGNIN", "safety", "Local sign-in", "Allow a browser on this machine to sign in with a one-time link from bin/ccboard-open.", "bool", "0", "confirm", attr="local_signin"),
-        Option("CCBOARD_LOCAL_SIGNIN_HOURS", "safety", "Local session hours", "How long a local browser session lasts, from 1 to 168 hours.", "int", "12", "confirm", attr="local_signin_hours", bounds=(1, 168)),
-        Option("CCBOARD_RECOVER", "agents", "Session recovery", "Relaunch Claude sessions after a reboot unless this is 0.", "bool", "1", "confirm", attr="recover"),
+        Option("CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "epics", "Hourly start cap", "The most issues the worker starts in an hour.", "int", "6", "confirm", attr="epic_worker_max_hour", bad="epic_worker_max_hour_bad", bounds=(1, 60)),
+        Option("CCBOARD_EPIC_WORKER_MAX_PER_DAY", "epics", "Daily start cap", "The most issues the worker starts in twenty-four hours.", "int", "30", "confirm", attr="epic_worker_max_day", bad="epic_worker_max_day_bad", bounds=(1, 500)),
+        Option("CCBOARD_NODE_AUTH", "safety", "Node authentication", "Require a pair token alone or also its device and an app capability.", "choice", "token", "file", attr="node_auth", bad="node_auth_bad", choices=("token", "whois", "whois+cap")),
+        Option("CCBOARD_NODE_CAP", "safety", "Node capability", "The domain/cap/name capability required by whois+cap authentication.", "text", "", "file", attr="node_cap", bad="node_cap_bad"),
+        Option("CCBOARD_NODE_KEYS", "safety", "Node signing keys", "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.", "choice", "prefer", "file", attr="node_keys", choices=("prefer", "require", "off")),
+        Option("CCBOARD_LOCAL_SIGNIN", "safety", "Local sign-in", "Allow a browser on this machine to sign in with a one-time link from bin/ccboard-open.", "bool", "0", "file", attr="local_signin"),
+        Option("CCBOARD_LOCAL_SIGNIN_HOURS", "safety", "Local session hours", "How long a local browser session lasts, from 1 to 168 hours.", "int", "12", "file", attr="local_signin_hours", bounds=(1, 168)),
+        Option("CCBOARD_RECOVER", "agents", "Session recovery", "Relaunch Claude sessions after a reboot unless this is 0.", "bool", "1", "file", attr="recover"),
         Option("CCBOARD_TMUX_SOCKET", "advanced", "Terminal socket", "The named tmux socket used for board sessions.", "text", "ccboard", "file", attr="tmux_socket"),
+        Option("CCBOARD_PAGE_WIDEN", "safety", "Allow page widening", "Only exactly 1 permits confirmed changes from Settings.", "bool", "", "file", attr="page_widen"),
+        Option("CCBOARD_DEV_BYPASS_USER", "safety", "Development identity", "Development shell authentication override, never set by a page.", "text", "", "file"),
         Option("CCBOARD_ENV_FILE", "advanced", "Settings file", "An explicit path selects the settings file and an explicit empty value disables it.", "path", "", "file"),
     )
 
@@ -166,7 +169,7 @@ def view(settings, page_values=None) -> dict:
         if not option.secret and page_values and option.key in page_values:
             row.update(value=page_values[option.key], source="page", set=True)
         rows.append(row)
-    return {"runtime": settings.runtime, "groups": [{"id": key, "label": label} for key, label in GROUPS],
+    return {"page_widen": settings.page_widen, "runtime": settings.runtime, "groups": [{"id": key, "label": label} for key, label in GROUPS],
             "options": rows, "other_lines": settings.other_lines, "restart_hint": plat.hint("restart", "ccboard")}
 
 
@@ -209,6 +212,7 @@ def validate_value(option, value, raw) -> str | None:
     dry = Settings({**raw, option.key: value, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
     if option.bad and getattr(dry, option.bad):
         rules = {"CCBOARD_NODE_PORTS": "Use ports from 1 to 65535, at most eight.",
+                 "CCBOARD_MEM_VIEWER_URL": "Use HTTPS, or HTTP on loopback, without credentials; leave empty for the viewer port fallback.",
                  "CCBOARD_NODE_TAGS": "Use up to eight tag:name entries, or none.",
                  "CCBOARD_SUBAGENT_MODEL": "Use inherit, a model alias or a model id of at most 80 characters.",
                  "CCBOARD_AUTOCLOSE_GRACE": "Use 0 to less than 86400."}
@@ -216,7 +220,7 @@ def validate_value(option, value, raw) -> str | None:
     return None
 
 
-def next_settings(settings, env=None):
+def next_settings(settings, env=None, *, page=True):
     from .config import Settings
     raw = dict(settings._input_env if env is None else env)
     if settings._process_env:
@@ -224,7 +228,7 @@ def next_settings(settings, env=None):
             raw.pop(key, None)
         if "CCBOARD_ENV_FILE" not in raw:
             raw["CCBOARD_ENV_FILE"] = "/etc/ccboard/env" if plat.IS_LINUX else str(settings.data_dir / "env")
-    raw["CCBOARD_PAGE_FILE"] = str(settings.page_file) if settings.page_file else ""
+    raw["CCBOARD_PAGE_FILE"] = str(settings.page_file) if page and settings.page_file else ""
     return Settings(raw)
 
 
@@ -235,12 +239,16 @@ def pending(settings, env=None, *, next_start=None):
             and settings.raw.get(o.key, o.default) != next_start.raw.get(o.key, o.default)]
 
 
-def pending_state(settings):
-    from .config import page_stamp
+def settings_file(settings):
     env_path = settings._input_env.get("CCBOARD_ENV_FILE")
     if env_path is None and settings._process_env:
         env_path = "/etc/ccboard/env" if plat.IS_LINUX else settings.data_dir / "env"
-    stamp = (page_stamp(settings.page_file), page_stamp(env_path or None))
+    return env_path or None
+
+
+def pending_state(settings):
+    from .config import page_stamp
+    stamp = (page_stamp(settings.page_file), page_stamp(settings_file(settings)))
     cached = getattr(settings, "_pending_cache", None)
     if cached is None or cached[0] != stamp:
         keys = pending(settings)
@@ -259,17 +267,19 @@ def listing(settings, page_values=None, db=None):
     result = view(next_start, page_values)
     running = {r["key"]: r for r in view(settings)["options"]}
     keys = pending(settings, next_start=next_start)
+    live_wider = live_widening(settings)
     for row in result["options"]:
+        row["live_widening"] = row["key"] in live_wider
         row["pending"] = row["key"] in keys
         row["running"] = running[row["key"]]["value"]
         row["edit_value"] = None if row["secret"] else redact(next_start.raw.get(row["key"], row["default"]), settings.raw)
-    result.update(pending=keys, stamp=stamp, audit=nodes.audit_list(20, db=db, action="settings_set"),
+    result.update(pending=keys, stamp=stamp, audit=sorted(nodes.audit_list(20, db=db, action="settings_set") + nodes.audit_list(20, db=db, action="settings_widen"), key=lambda r: r["id"], reverse=True)[:20],
                   refusals=nodes.audit_list(5, db=db, action="settings_refused"))
     return result
 
 
-def save(settings, changes, stamp=None):
-    from .config import PAGE_FILE_MAX, page_stamp, read_page_file
+def save(settings, changes, stamp=None, *, confirm=None):
+    from .config import PAGE_FILE_MAX, Settings, page_stamp, read_page_file
     with write_lock:
         path = settings.page_file
         if path is None:
@@ -277,22 +287,126 @@ def save(settings, changes, stamp=None):
         before = page_stamp(path)
         if stamp is not None and stamp != before:
             raise plat.WriteRaced()
+        env_path = settings_file(settings)
+        env_stamp = page_stamp(env_path)
+        base = next_settings(settings, page=False)
         info = {}
-        values = read_page_file(path, env=settings.raw, info=info)
+        document = {"version": 1, "set": {}}
+        values = read_page_file(path, env=base.raw, info=info, document=document)
         if info.get("problem"):
             command = "rm -- " + shlex.quote(str(path.absolute()))
             raise ValueError(f"The page file {info['problem']}. To reset page settings, run: {command}")
-        old = next_settings(settings)
+        old = Settings({**base.raw, **values, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
+        known = {o.key: o for o in registry()}
         for key, value in changes.items():
+            reason = validate_value(known[key], value, base.raw) if value is not None else None
+            if reason:
+                raise ChangeRefused(reason, 400, key=key)
             if value is None:
                 values.pop(key, None)
             else:
                 values[key] = value
-        data = (json.dumps({"version": 1, "set": values}, ensure_ascii=True) + "\n").encode()
+        proposed = Settings({**base.raw, **values, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
+        wider = check_changes(old, proposed, changes, confirm)
+        # Preserve dormant, unconfirmed and unknown entries without activating them.
+        confirmed = [key for key in document.get("confirmed", []) if key not in changes]
+        for key, value in changes.items():
+            if value is None:
+                document["set"].pop(key, None)
+            else:
+                document["set"][key] = value
+                if known[key].cls == "confirm":
+                    confirmed.append(key)
+        if confirmed or "confirmed" in document:
+            document["confirmed"] = confirmed
+        data = (json.dumps(document, ensure_ascii=True) + "\n").encode()
         if len(data) > PAGE_FILE_MAX:
             raise ValueError("The page file must be at most 64 KB.")
         path.parent.mkdir(parents=True, exist_ok=True)
-        plat.secure_write(path, data, 0o600, still=lambda: page_stamp(path) == before)
-        new = next_settings(settings)
+        plat.secure_write(path, data, 0o600, still=lambda: page_stamp(path) == before and page_stamp(env_path) == env_stamp)
+        new = proposed
         defaults = {o.key: o.default for o in registry()}
-        return "; ".join(f"{k}: {redact(old.raw.get(k, defaults[k]), settings.raw)!r} -> {redact(new.raw.get(k, defaults[k]), settings.raw)!r}" for k in changes)
+        return wider, "; ".join(f"{k}: {redact(redact(old.raw.get(k, defaults[k]), base.raw), settings.raw)!r} -> {redact(redact(new.raw.get(k, defaults[k]), base.raw), settings.raw)!r}" for k in changes)
+
+
+class ChangeRefused(Exception):
+    def __init__(self, reason, status, **detail):
+        self.reason, self.status, self.detail = reason, status, detail
+
+
+def widens(key, old, new):
+    """Compare effective values; unknown model changes have no safe ordering."""
+    if key in ("CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_WRITES"):
+        return str(old).strip() != "1" and str(new).strip() == "1"
+    if key in ("CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_AUTHORS"):
+        entries = lambda v: {x.lower() for x in re.split(r"[,\s]+", str(v).strip()) if x}
+        return bool(entries(new) - entries(old))
+    if key == "CCBOARD_NODE_LANES":
+        return int(old) != 0 and (int(new) == 0 or int(new) > int(old))
+    if key in ("CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY"):
+        return int(new) > int(old)
+    if key == "CCBOARD_SUBAGENT_MODEL":
+        model = lambda v: "" if str(v).strip().lower() == "inherit" else str(v).strip()
+        return model(old) != model(new)
+    return False
+
+
+def effective(settings, option):
+    value = getattr(settings, option.attr)
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if option.key == "CCBOARD_EPIC_AUTHORS":
+        return ",".join(name + (":" + str(settings.epic_author_ids[name]) if name in settings.epic_author_ids else "") for name in value)
+    if isinstance(value, (list, tuple)):
+        return ",".join(value)
+    return str(value)
+
+
+def live_widening(settings):
+    """Compare running permissions with the settings file/environment alone."""
+    base = next_settings(settings, page=False)
+    return [o.key for o in registry() if o.cls == "confirm"
+            and widens(o.key, effective(base, o), effective(settings, o))]
+
+
+def check_changes(old, new, changes, confirm):
+    wider = []
+    for option in registry():
+        if option.key not in changes or option.cls != "confirm":
+            continue
+        if not old.page_widen:
+            raise ChangeRefused("widen_off", 403, key=option.key, line="CCBOARD_PAGE_WIDEN=1")
+        before, after = effective(old, option), effective(new, option)
+        if widens(option.key, before, after):
+            plain = {
+                "CCBOARD_EPIC_WORKER": "The worker may start epic issues unattended.",
+                "CCBOARD_EPIC_WRITES": "The board may write claims and work updates to GitHub.",
+                "CCBOARD_EPIC_REPOS": "The worker may take issues from additional repositories.",
+                "CCBOARD_EPIC_AUTHORS": "Additional author entries may authorize epic work.",
+                "CCBOARD_EPIC_WORKER_MAX_PER_HOUR": "The worker may start more issues each hour.",
+                "CCBOARD_EPIC_WORKER_MAX_PER_DAY": "The worker may start more issues each day.",
+                "CCBOARD_NODE_LANES": "This node may advertise more task capacity or no cap.",
+                "CCBOARD_SUBAGENT_MODEL": "Subagents may use a different model, with different capability and cost.",
+            }[option.key]
+            wider.append({"key": option.key, "from": redact(before, old.raw), "to": redact(after, old.raw), "plain": plain})
+    if "CCBOARD_EPIC_WORKER" in changes and not old.epic_worker and new.epic_worker:
+        missing = []
+        if not new.epic_writes:
+            missing.append("CCBOARD_EPIC_WRITES=1")
+        if not new.epic_repos:
+            missing.append("CCBOARD_EPIC_REPOS")
+        if missing:
+            raise ChangeRefused("Worker requires " + " and ".join(missing) + ".", 400)
+    if wider:
+        groups = set()
+        for row in wider:
+            key = row["key"]
+            groups.add("ALLOW GITHUB WRITES" if key == "CCBOARD_EPIC_WRITES" else
+                       "ALLOW NODE CAPACITY" if key == "CCBOARD_NODE_LANES" else
+                       "ALLOW SUBAGENT MODEL" if key == "CCBOARD_SUBAGENT_MODEL" else "ALLOW WORKER")
+        phrase = " AND ".join(sorted(groups))
+        if confirm is None:
+            raise ChangeRefused("needs_confirm", 409, phrase=phrase, widens=wider)
+        if confirm != phrase:
+            raise ChangeRefused("bad_phrase", 403, key=wider[0]["key"])
+    return wider

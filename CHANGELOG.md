@@ -11,6 +11,25 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.83 - 2026-10-17
+
+### Added
+
+- File-only `CCBOARD_PAGE_WIDEN=1` opt-in and exact typed confirmation before Settings widens agent work.
+- File-only options: `CCBOARD_BACKUP_PUSH`, `CCBOARD_AUTO_CONTINUE`, `CCBOARD_CODEX_HOOK_TRUST`, `CCBOARD_CLONE_ALLOWED_HOSTS`, `CCBOARD_MCP_REMOTE`, `CCBOARD_HEADLESS_FABLE_CAP`, `CCBOARD_MCP_NODES`, `CCBOARD_NODE_TAGS`, `CCBOARD_NODE_AUTH`, `CCBOARD_NODE_CAP`, `CCBOARD_NODE_KEYS`, `CCBOARD_LOCAL_SIGNIN`, `CCBOARD_LOCAL_SIGNIN_HOURS` and `CCBOARD_RECOVER`.
+- Confirm-class worker caps, node lanes and subagent model; old plain page entries remain ignored.
+- Permission changes in a native dialog, audits of saves and real refusals, and a switch explanation in Doctor.
+
+Upgrade: nothing to do.
+
+## v0.5.82 - 2026-10-17
+
+### Added
+- Settings > Options can save a claude-mem dashboard URL for the Memory page link, taking precedence over the local viewer port.
+- Viewer URLs require HTTPS or loopback HTTP without credentials; invalid values are ignored and reported in Options and Doctor.
+
+Upgrade: nothing to do.
+
 ## v0.5.81 - 2026-10-17
 
 ### Added
