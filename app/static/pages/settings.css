@@ -279,3 +279,18 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 .set-restart-control button { min-height: 28px; }
 html.force-coarse .set-restart-control button { min-height: 44px; }
 @media (pointer: coarse) { .set-restart-control button { min-height: 44px; } }
+
+/* Devices without a board: readable check sentences and controls that wrap on a phone. */
+.bare-section { min-width:0; }
+.bare-form { display:flex; align-items:end; flex-wrap:wrap; gap:10px; margin:12px 0; }
+.bare-form label { display:flex; flex-direction:column; gap:4px; min-width:0; flex:1 1 160px; }
+.bare-form input, .bare-form select { width:100%; min-width:0; box-sizing:border-box; }
+.bare-device { border-top:1px solid var(--line); padding:12px 0; overflow-wrap:anywhere; }
+.bare-device h3 { font-size:14px; margin:0 0 6px; }
+.bare-actions { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0; }
+.bare-check { display:grid; grid-template-columns:18px minmax(0, 1fr); gap:6px; padding:6px 0; line-height:1.5; }
+.bare-repos { padding-left:24px; }
+@media (max-width:600px) {
+  .bare-form label { flex-basis:100%; }
+  #page .settings-page .bare-section button, .bare-form input, .bare-form select { min-height:44px; }
+}

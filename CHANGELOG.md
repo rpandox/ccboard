@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.84 - 2026-10-17
+
+### Added
+- Settings lists your online tailnet devices and tagged devices without a board, excluding shared-in devices.
+- Add, check and remove devices with plain results and fixes for SSH, the account and groups, system, tmux, agent commands and projects.
+- Checks refuse root and administrator accounts, pin SSH host keys, and record device actions in Activity without prompts or secrets.
+
+Upgrade: nothing to do.
+
 ## v0.5.81 - 2026-10-17
 
 ### Added
