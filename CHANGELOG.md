@@ -13,6 +13,35 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.70 - 2026-10-17
+
+### Fixed
+- Claude approval dialogs remain answerable from the board and a paired hub after the hook wait ends. Needs you shows the scrubbed command or file details and numbered choices on the board, inbox, epic page and hub.
+- Only a signed-in person can answer a permission request. Allow and Deny use only the one-time choices from the same Claude dialog, rechecked against the full screen and foreground process immediately before sending. A changed prompt sends nothing.
+- Terminal approvals allow only navigation keys and a confirmed interrupt through the local keys route, and offer no redundant “In terminal” action. Waiting and attention rows share cached captures for the scan interval; answers always read the pane again.
+- Epic issues show “waiting for a person” with the same Allow and Deny actions.
+
+Upgrade: nothing to do.
+
+## v0.5.69 - 2026-10-17
+
+### Fixed
+- Slow relayed claims get more time, and the epic page reads the node’s result after an unknown answer without claiming again.
+- Busy claim refusals say how many claims are ahead; `wait_s` is an upper bound, not a measured queue time. Run respects the wait.
+- The relay gained one read-only GET row, `epic_claim_status` (scope `tasks`), on purpose to recover unknown claims from local state without another GitHub write.
+- Claim recovery uses attempt tokens, expires abandoned pending results, records exceptions and released wins, and prunes results older than a day. The page paints before status reads finish and preserves the fresh GitHub owner or closed state.
+- Claim steps log their duration so queue delays can be measured.
+
+Upgrade: nothing to do.
+
+## v0.5.68 - 2026-10-17
+
+### Fixed
+- During the first minute after launch (after a 20-second grace), running Claude tasks with no reported state now fail when a shell pane shows a line starting with the workspace-trust error. The failure explains how to accept trust in a session, including through a hub. Sending prompts and echoed commands quoting the error do not trigger this check.
+- The project page and task launcher warn until repository history shows an interactive Claude session, a reported Claude state other than the trust failure, or a completed Claude task. Dispatch to an existing session hides the warning. Hub warnings and failure reasons accept only the exact board sentence for that row's folder. The board never answers the trust dialog.
+
+Upgrade: nothing to do.
+
 ## v0.5.67 - 2026-10-17
 
 ### Fixed

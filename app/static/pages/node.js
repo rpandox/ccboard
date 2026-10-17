@@ -328,7 +328,7 @@ function nodeTaskPeek(rec, id) {
   return el('div', { class: 'nd-peek' },
     el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: String(t.title || `Task ${t.id}`) }), Nodes.chip(rec.handle)),
     el('p', { class: 'dim nd-ro', text: `Read only: the last reading of ${nhName(rec)}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}.` }),
-    nodeFacts([['Phase', t.phase], ['Agent', nhAgent(t.agent)], ['Where', nhWhere(t)], ['Branch', t.branch], ['Issue', t.issue_ref], ['Updated', t.updated_at ? `${nhAgeText(t.updated_at)} ago` : ''],
+    nodeFacts([['Phase', t.phase], ['Reason', t.failure_reason], ['Agent', nhAgent(t.agent)], ['Where', nhWhere(t)], ['Branch', t.branch], ['Issue', t.issue_ref], ['Updated', t.updated_at ? `${nhAgeText(t.updated_at)} ago` : ''],
       ['Session', sHref ? el('a', { href: sHref, text: String(t.tmux) }) : t.tmux]]),
     Nodes.acts(open, nodePeekBack(rec), nodeStart(rec, t), Nodes.off('Run again', Nodes.reason(rec, 'tasks')), Nodes.off('Cancel task', Nodes.reason(rec, 'tasks'))));
 }

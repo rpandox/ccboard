@@ -3104,3 +3104,22 @@ test('the same session name on this board and on a node: two tiles, the node\'s 
   assert.deepEqual(saved.slots[1], { node: 'box', tmux: S1 });
   assert.equal(saved.modes['box/' + S1], 'ro');
 });
+
+
+test('terminal permission rows show the command body', () => {
+  const st = fixtureState();
+  Object.assign(st.pending_permissions[0], { kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix' });
+  const { w } = quadWorld({ hash: `#/quad?s=${CK}&l=1`, state: st });
+  assert.equal(text(tileOf(w, CK).querySelector('.qt-perm-text')), st.pending_permissions[0].summary);
+});
+
+
+test('terminal permissions omit the In terminal button and menu action', () => {
+  const st = fixtureState();
+  st.pending_permissions[0].kind = 'terminal_prompt';
+  const { w } = quadWorld({ hash: '#/quad', state: st, kit: 'stub' });
+  assert.deepEqual(tileOf(w, CK).querySelector('.qt-perm').querySelectorAll('button').map(text), ['Allow', 'Deny']);
+  const c = openMenu(w, CK).ctx;
+  assert.equal(c.perm.kind, 'terminal_prompt');
+  assert.equal(c.actions.tui, null);
+});

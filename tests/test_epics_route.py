@@ -582,6 +582,29 @@ def test_an_unexpected_failure_of_a_call_is_treated_as_unknown_and_does_not_end_
     assert rt.calls() == [("box", 201), ("box", 202)] and rt.runner.view("acme", "shop", 147)["held"]["201"]["code"] == "unclear"
 
 
+def test_a_broken_reply_with_an_unknown_outcome_keeps_the_lane_reserved(rt):
+    epic(rt, 1)
+    rt.hub.put(node("box", free=2))
+    rt.relay.plan[("box", 201)] = nr.RelayError(502, "peer_error", "answer lost", outcome="unknown")
+    rt.run()
+    rt.runner.tick()
+    assert rt.runner.reservations.items(rt.ck.t)
+    assert rt.cycle() is True and rt.calls() == [("box", 201)]
+    assert rt.runner.view("acme", "shop", 147)["held"]["201"]["code"] == "unclear"
+
+
+def test_run_observes_the_busy_claim_queue_wait(rt):
+    epic(rt, 1)
+    rt.hub.put(node("box", free=2))
+    rt.relay.plan[("box", 201)] = nr.RelayError(409, "work_refused", "busy", why="busy", claims_ahead=4, wait_s=90)
+    rt.run()
+    rt.runner.tick()
+    assert rt.runner.blocked["box"]["until"] >= rt.ck.t + 90
+    rt.ck.t += 60
+    rt.runner.tick()
+    assert rt.calls() == [("box", 201)]
+
+
 def test_pause_stops_new_assignments_at_once_and_resume_goes_on(rt):
     epic(rt, 3)
     rt.hub.put(node("box", free=3))

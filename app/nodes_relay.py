@@ -82,11 +82,14 @@ import http.client
 import json
 import logging
 import re
+import secrets
 import shlex
 import socket
 import threading
+import time
 import unicodedata
 from types import SimpleNamespace
+from datetime import datetime
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Callable, Literal
@@ -102,8 +105,9 @@ from .config import settings
 log = logging.getLogger("ccboard.nodes.relay")
 
 RELAY_TIMEOUT = 10.0                       # seconds one relayed call may take
-CLAIM_TIMEOUT = 45.0                       # the claim of an epic issue (issue #148) waits 1.5 s twice and writes at least 1.1 s apart: more than 10 s is normal, and the answer after it is real
-WORK_TIMEOUT = 75.0                        # running a claimed issue (issue #149) is the claim, a second read of the issue and the start of a task: a worktree, a session, two more writes to the claim
+CLAIM_TIMEOUT = 90.0                       # load check: 31–39 s through the write queue; over twice that with headroom. Unknown answers are read back, never retried.
+CLAIM_PENDING_MAX_AGE = CLAIM_TIMEOUT + 30.0  # allow a final local result after the relay times out
+WORK_TIMEOUT = CLAIM_TIMEOUT + 30.0        # running a claimed issue (issue #149) is the claim, a second read of the issue and the start of a task: a worktree, a session, two more writes to the claim
 PANE_LINES = 40                            # the most lines of a screen a peer ever sends
 PANE_LINE_MAX = 400                        # characters kept of one line
 NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
@@ -739,6 +743,7 @@ def _shape_task(body, reg):
             "repo": s(body.get("repo")), "branch": s(body.get("branch")), "tmux": s(body.get("tmux")), "issue_ref": s(body.get("issue_ref"), 20),
             "updated_at": s(body.get("updated_at"), 40), "slug": s(body.get("slug"), 80), "mode": s(body.get("mode"), 20), "base": s(body.get("base")),
             "created_at": s(body.get("created_at"), 40), "assigned_at": s(body.get("assigned_at"), 40), "done_at": s(body.get("done_at"), 40),
+            **({"failure_reason": reason} if s(body.get("phase"), 20) == "failed" and (reason := nodes_hub._trust_reason(body.get("failure_reason"), body.get("project"), body.get("repo"))) else {}),
             "pr_number": i(body.get("pr_number")), "pr_state": s(body.get("pr_state"), 20), "has_result": bool(body.get("has_result"))}
 
 
@@ -1054,6 +1059,35 @@ class EpicClaimBody(_Strict):
         return check_field("epic_ref", v)
 
 
+class EpicClaimRequest(EpicClaimBody):
+    """The hub adds a correlation token; it is never a GitHub claim fencing token."""
+    claim_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+    @field_validator("claim_id")
+    @classmethod
+    def _claim_id(cls, v):
+        if v is not None and not re.fullmatch(r"[a-f0-9]{32}", v):
+            raise ValueError("claim_id is 32 lowercase hex characters")
+        return v
+
+
+class EpicClaimQuery(_Strict):
+    repo: str = Field(max_length=140)
+    issue: str = Field(pattern=r"^[1-9][0-9]{0,8}$")
+
+    @field_validator("repo")
+    @classmethod
+    def _repo(cls, v):
+        return check_field("repo_slug", v)
+
+    @field_validator("issue")
+    @classmethod
+    def _issue(cls, v):
+        if not re.fullmatch(r"[1-9][0-9]{0,8}", v):
+            raise ValueError("issue is an issue number")
+        return v
+
+
 class EpicWorkBody(EpicClaimBody):
     """Run one issue of an epic on the node that takes this request (issue #149): the claim's three values, and the choices of the person and of the epic. `force` starts past the
     node's advisory lane cap. `report` (phase, summary or none), `auto_pr` and `close` are the epic's per-epic settings, which the hub writes into the body from its own stored choice
@@ -1186,12 +1220,15 @@ UNLISTED_WHY = "unlisted_reason"          # the `unknown_reason` of a refusal wh
 
 def _claim_facts(src: dict) -> dict:
     """The few facts of a claim answer, each rebuilt: the winner's alias (a plain word), the attempt (0 to 99), the wait (seconds, at most a day) and the unknown reason (a word).
-    Nothing else the peer put there is kept; never its sentence, a claim_ref, a login or a comment id."""
+    The random claim_id correlates relay attempts only. Nothing else is kept; never the peer sentence, a claim_ref, a login or a comment id."""
     out: dict = {}
+    claim_id = src.get("claim_id")
+    if isinstance(claim_id, str) and re.fullmatch(r"[a-f0-9]{32}", claim_id):
+        out["claim_id"] = claim_id
     w = src.get("winner")
     if isinstance(w, str) and _ALIAS_OUT.fullmatch(w):
         out["winner"] = w
-    for k, hi in (("attempt", 99), ("wait_s", 86400)):
+    for k, hi in (("attempt", 99), ("wait_s", 86400), ("claims_ahead", 100)):
         v = src.get(k)
         if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= hi:
             out[k] = v
@@ -1219,6 +1256,15 @@ def _shape_epic_claim(body, reg):
 WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed", "changed")     # nodes_work.REASONS without the two good answers
 
 
+def _shape_claim_status(body, reg):
+    from . import nodes_hub
+    if isinstance(body, dict) and body.get("claimed") is True:
+        return _shape_epic_claim(body, reg)
+    if not isinstance(body, dict) or body.get("claimed") is not False or body.get("reason") not in (*CLAIM_PEER_WHY, "pending", "unknown", "released"):
+        raise nodes_hub.Bad("not a claim outcome")
+    return {"claimed": False, "reason": body["reason"], **_claim_facts(body)}
+
+
 def _fill_work(clean: dict, db) -> dict:
     """The hub's side of Run: the epic's `report`, `auto_pr` and `close` are the person's choices on THIS board (kv `epic:<repo#n>`), so they are written into the body here and a body
     that came from a page or an agent cannot choose them. Without a known epic the plain defaults go (phase comments, no pull request, no Closes)."""
@@ -1244,6 +1290,8 @@ def _work_text(name: str, why: str, facts: dict) -> str:
         who = "the epic" if why == "epic_author_not_allowed" else "the issue"
         return f"{name}: {who} is authored by {facts['author']}, not on the allowed list." if facts.get("author") else f"{name}: {nodes_work.WORK_TEXT[why]}"
     base = nodes_work.WORK_TEXT.get(why) or nodes_epics.CLAIM_TEXT[why]
+    if why == "busy" and "claims_ahead" in facts:
+        base += f" {facts['claims_ahead']} claims ahead; try again in about {facts.get('wait_s', int(CLAIM_TIMEOUT))} s."
     return f"{name}: {base}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
 
 
@@ -1261,6 +1309,16 @@ def _shape_epic_work(body, reg):
             "tmux": _shaped_tmux(body.get("tmux")), "repo": repo, "issue": issue}
 
 
+def _terminal_fields(row):
+    if row.get("kind") != "terminal_prompt":
+        return {}
+    choices = row.get("choices")
+    return {"kind": "terminal_prompt", "choices": [
+        {"number": c["number"], "label": _perm_summary(c.get("label"), known_secrets())}
+        for c in (choices if isinstance(choices, list) else [])[:9]
+        if isinstance(c, dict) and isinstance(c.get("number"), str) and re.fullmatch(r"[1-9]", c["number"])]}
+
+
 def _shape_permissions(body, reg):
     """The pending requests rebuilt field by field: {permissions: [{id, tmux, tool, summary (300 characters), since}]}. A row without an id or a session name is dropped."""
     from . import nodes_hub
@@ -1274,7 +1332,7 @@ def _shape_permissions(body, reg):
         if pid is None or pid < 1 or tm is None:
             continue
         out.append({"id": pid, "tmux": tm, "tool": _shaped(r.get("tool"), _TOOL_OUT, 60) or "tool", "summary": nodes_hub._s(r.get("summary"), SUMMARY_MAX) or "",
-                    "since": _shaped(r.get("since"), _TIME_OUT, 40)})
+                    "since": _shaped(r.get("since"), _TIME_OUT, 40), **_terminal_fields(r)})
     return {"permissions": out}
 
 
@@ -1383,8 +1441,11 @@ RELAY: tuple[Row, ...] = (
         shape=_shape_permission_answer),
     # Claim one issue of an epic on that node (issue #148): a write to GitHub made by the node, so it needs `tasks`, a signed-in person (human only, and the person is named: acting),
     # never an agent (mcp stays off: the agent path for epics is a later phase). The audit target is the repository and the issue number and nothing else.
-    Row("epic_claim", "POST", "/api/nodes/{handle}/epics/claim", "POST", "/api/node/epics/claim", "tasks", EpicClaimBody, WRITE, "claim_issue", human_only=True, acting=True,
+    Row("epic_claim", "POST", "/api/nodes/{handle}/epics/claim", "POST", "/api/node/epics/claim", "tasks", EpicClaimRequest, WRITE, "claim_issue", human_only=True, acting=True,
         timeout=CLAIM_TIMEOUT, answer_max=4 * 1024, target=lambda p: "claim", body_target=lambda p, c: f"claim {c.get('repo')}#{c.get('issue')}", shape=_shape_epic_claim),
+    # Database-only recovery of an unknown claim: tasks scope, person only, no launch and no GitHub write.
+    Row("epic_claim_status", "GET", "/api/nodes/{handle}/epics/claim/status", "GET", "/api/node/epics/claim/status", "tasks", EpicClaimQuery, READ, "claim_status", human_only=True, acting=True,
+        answer_max=4 * 1024, target=lambda p: "claim", body_target=lambda p, c: f"claim {c.get('repo')}#{c.get('issue')}", shape=_shape_claim_status),
     # Run a claimed issue as a task on that node and report back on the issue (issue #149): the claim, a task with the issue's own model line, and comments. It starts an agent, so it is
     # guarded like the other launching rows (`guard=True`), a person's act (human only, acting), never an agent's (mcp stays closed: no tool starts epic work). The audit target is the
     # repository and the issue number and nothing else; the body carries no text, only values the node validates again.
@@ -1702,13 +1763,15 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         why = _known_why(why, CLAIM_PEER_WHY, facts)
         from . import nodes_epics
         text = f"{name}: {nodes_epics.CLAIM_TEXT[why]}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
+        if why == "busy" and "claims_ahead" in facts:
+            text += f" {facts['claims_ahead']} claims ahead; try again in about {facts.get('wait_s', int(CLAIM_TIMEOUT))} s."
         raise RelayError(409, "claim_refused", text, kind="failed", why=why, **facts)
     if r.status == 409 and peer_reason == "work_refused" and row.name == "epic_work":          # the node did not run the issue: the reason comes from a closed list, the sentence is this board's
         why = r.json.get("why") if isinstance(r.json, dict) else None
         facts = _work_facts(r.json if isinstance(r.json, dict) else {})
         why = _known_why(why, WORK_PEER_WHY, facts)
         raise RelayError(409, "work_refused", _work_text(name, why, facts), kind="failed", why=why, **facts)
-    if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
+    if r.status == 409 and peer_reason in ("busy", "answered", "expired", "changed"):          # the peer's own state answers, passed on with the words it chose from a closed list
         extra = _busy_extra(r.json) if peer_reason == "busy" else {}
         raise RelayError(409, peer_reason, msg or f"{name} cannot take this now", kind="failed", **extra)
     if r.status == 429:
@@ -1776,6 +1839,7 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
     user: str | None = None
     agent: dict | None = None
     target = safe_target(row, params or {})
+    claim_id = None
     try:
         user = _caller(request, row)
         agent = mcp_identity(request)
@@ -1811,6 +1875,9 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             clean = validate(row, params or {}, body, agent=agent is not None)
         except Invalid as e:
             raise RelayError(e.status, "invalid" if e.status == 422 else "too_large", "; ".join(e.messages), kind="refused") from None
+        if row.name == "epic_claim":
+            claim_id = secrets.token_hex(16)
+            clean["claim_id"] = claim_id
         if row.fill is not None:                                   # what the hub itself holds (an epic's stored settings) replaces whatever the caller put in those fields
             clean = row.fill(clean, d)
         if agent is not None and clean.get("agent") and _not_installed(rec, clean["agent"]):          # an agent names an agent the node has: the hub's own reading of its card says so
@@ -1845,6 +1912,8 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
                 raise RelayError(502, "wrong_node" if wrong else "bad_answer", f"{name} answered with something this board will not show" + _check_note(extra, name), kind="failed",
                                  **extra) from None
     except RelayError as e:
+        if claim_id is not None:
+            e.extra["claim_id"] = claim_id
         if agent is not None:                                         # the sentence an agent reads can hold the node's name and its own words: cut, cleaned and redacted
             e.message = _cut(e.message, mcp_tools.ERROR_MAX) or e.reason
         if reg is None and e.reason in ("human_only", "forbidden", "csrf", "mcp_off", "mcp_level", "mcp_scope"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
@@ -2354,7 +2423,8 @@ def clean_line(line: str) -> str:
 def peer_task(db, params: dict, body: dict) -> dict:
     """A task's detail for a paired node: the state row (title, phase, agent, project, repo, branch, tmux, issue, updated) plus a few facts. Never the prompt,
     the result, a worktree path or a session id."""
-    from . import node_state
+    from . import main, node_state
+    main._merged_sessions()
     t = db.task_get(int(params["tid"]))
     if not t:
         raise projects.NotFound("no such task")
@@ -2744,13 +2814,13 @@ def peer_permissions(db, params: dict, body: dict) -> dict:
     from . import main
     known = known_secrets()
     out = []
-    for p in main._live_permissions():
+    for p in main._pending_permissions():
         name = p.get("tmux_name") or ""
         if permission_refusal(db, db.perm_get(int(p["id"])) or p):
             continue
         tool = str(p.get("tool_name") or "")
         out.append({"id": int(p["id"]), "tmux": name, "tool": tool if _TOOL_OUT.fullmatch(tool) else "tool", "summary": _perm_summary(p.get("summary"), known),
-                    "since": str(p.get("created_at") or "")[:40]})
+                    "since": str(p.get("created_at") or "")[:40], **_terminal_fields(p)})
     return {"permissions": out[:_PERMISSIONS_MAX]}
 
 
@@ -2759,23 +2829,71 @@ def peer_permission_answer(db, params: dict, body: dict) -> dict:
     answered (here, in the terminal, or by a timeout) is 409 `answered`, one nobody is waiting for any more is 409 `expired`; none of these writes anything."""
     from . import main
     pid, decision = int(params["pid"]), params["decision"]
-    row = db.perm_get(pid)
-    if not row or not _alive(row.get("tmux_name") or ""):
-        raise Refusal(404, "gone", GONE)
-    if row.get("decision") is not None:
-        raise Refusal(409, "answered", ANSWERED)
-    if pid not in {p["id"] for p in main._live_permissions()}:
-        raise Refusal(409, "expired", EXPIRED)
-    why = permission_refusal(db, row)                       # the session is the peer's own agent session and the request is an ordinary one: else it stays with the terminal
+    terminal = pid >= main.permissions.TERMINAL_ID_MIN
+    if terminal:
+        row = main.permissions.terminal_get(db, pid)
+        if not row:
+            raise Refusal(409, "changed", main.permissions.TERMINAL_CHANGED)
+    else:
+        row = db.perm_get(pid)
+        if not row or not _alive(row.get("tmux_name") or ""):
+            raise Refusal(404, "gone", GONE)
+        if row.get("decision") is not None:
+            raise Refusal(409, "answered", ANSWERED)
+        if pid not in {p["id"] for p in main._live_permissions()}:
+            raise Refusal(409, "expired", EXPIRED)
+    why = permission_refusal(db, row)
     if why:
         raise Refusal(409, "refused", f"{why}: answer it on {nodes.display_name()}")
     try:
         main.api_permission_decide(pid, decision, _standin())
     except projects.Conflict:
+        if terminal:
+            raise Refusal(409, "changed", main.permissions.TERMINAL_CHANGED) from None
         raise Refusal(409, "answered", ANSWERED) from None
     except projects.NotFound:
         raise Refusal(404, "gone", GONE) from None
     return {"ok": True, "id": pid, "decision": decision}
+
+
+def _claim_result_key(body):
+    return f"claim-result:{body['repo'].lower()}#{int(body['issue'])}"
+
+
+_claim_result_lock = threading.RLock()
+
+
+def _prune_claim_results(db):
+    """Bound recovery storage without another worker; callers hold _claim_result_lock."""
+    cutoff = time.time() - 86400
+    for key, value, at in db.kv_list_prefix("claim-result:"):
+        started = value.get("started_at") if isinstance(value, dict) else None
+        if not isinstance(started, (int, float)):
+            started = datetime.fromisoformat(at).timestamp()
+        if started < cutoff:
+            db.kv_del(key)
+
+
+def peer_epic_claim_status(db, params: dict, body: dict) -> dict:
+    """Read only local state. The latest marker takes precedence over earlier claim records."""
+    from . import nodes_epics
+    with _claim_result_lock:
+        _prune_claim_results(db)
+        row = db.kv_get(_claim_result_key(body))
+        result = row.get("value") if row else None
+        if not isinstance(result, dict):
+            return {"claimed": False, "reason": "unknown"}
+        identity = {"claim_id": result["claim_id"]} if result.get("claim_id") else {}
+        if result.get("reason") == "pending":
+            if time.time() - result.get("started_at", 0) > CLAIM_PENDING_MAX_AGE:
+                return {"claimed": False, "reason": "unknown", **identity}
+            return result
+        if result.get("claimed") is True:
+            records = nodes_epics.own_claims(db, [(body["repo"], int(body["issue"]))])
+            attempt = result.get("attempt")                   # already_held carries no attempt: any held record of this issue is the one it meant
+            if not any(r["state"] == "held" and (attempt is None or r["attempt"] == attempt) for r in records):
+                return {"claimed": False, "reason": "released", **identity}
+        return result
 
 
 def peer_epic_claim(db, params: dict, body: dict) -> dict:
@@ -2785,10 +2903,33 @@ def peer_epic_claim(db, params: dict, body: dict) -> dict:
     409 `claim_refused` with `why` (a word of nodes_epics.CLAIM_TEXT) and a few facts. The claim reference stays on this board (it is the fencing token), and nothing from the
     request or from GitHub is written into a comment: the comment is built from this board's own alias and node id."""
     from . import nodes_epics
+    with _claim_result_lock:
+        _prune_claim_results(db)
+    why = None
+    if not nodes_epics.github_write.writes_enabled():
+        why = "writes_off"
+    elif nodes_epics._target(body.get("repo"), body.get("issue")) is None:
+        why = "bad_request"
+    elif body["repo"].lower() not in {r.lower() for r in nodes_epics.board_repos() if isinstance(r, str)}:
+        why = "other_repo"
+    if why:
+        raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT[why], why=why)
     if not nodes_epics.claim_slots.acquire(blocking=False):          # a few claims at once; the rest are told to try again, with nothing started
-        raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy")
+        raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy", claims_ahead=nodes_epics.CLAIMS_IN_FLIGHT, wait_s=int(CLAIM_TIMEOUT))
     try:
-        res = nodes_epics.claim_issue(body["repo"], body["issue"], epic=body.get("epic"))
+        started_at = time.time()
+        claim_id = body.get("claim_id") or secrets.token_hex(16)
+        with _claim_result_lock:
+            db.kv_set(_claim_result_key(body), {"claimed": False, "reason": "pending", "started_at": started_at, "claim_id": claim_id})
+        try:
+            res = nodes_epics.claim_issue(body["repo"], body["issue"], epic=body.get("epic"))
+        except Exception:
+            res = {"claimed": False, "reason": "error"}
+        res["claim_id"] = claim_id
+        with _claim_result_lock:
+            current = db.kv_get(_claim_result_key(body))
+            if current and current["value"].get("claim_id") == claim_id:
+                db.kv_set(_claim_result_key(body), {"started_at": started_at, "claimed": res.get("claimed") is True, "reason": res.get("reason"), "repo": body["repo"], "issue": body["issue"], **_claim_facts(res)})
     finally:
         nodes_epics.claim_slots.release()
     if res.get("claimed"):
@@ -2804,7 +2945,7 @@ def peer_epic_work(db, params: dict, body: dict) -> dict:
     The task, its launch and the comments are built on this board from the issue as GitHub holds it; nothing from the request is a command, a path or a comment."""
     from . import nodes_epics, nodes_work
     if not nodes_epics.claim_slots.acquire(blocking=False):          # a few runs at once; the rest are told to try again, with nothing started
-        raise Refusal(409, "work_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy")
+        raise Refusal(409, "work_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy", claims_ahead=nodes_epics.CLAIMS_IN_FLIGHT, wait_s=int(CLAIM_TIMEOUT))
     try:
         res = nodes_work.work_issue(body["repo"], body["issue"], epic=body.get("epic"), report=body.get("report", "phase"), auto_pr=body.get("auto_pr", False),
                                     close=body.get("close", False), force=body.get("force", False))
@@ -2819,4 +2960,4 @@ def peer_epic_work(db, params: dict, body: dict) -> dict:
 
 HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
             "session_open": peer_session_open, "prompt": peer_prompt, "keys": peer_keys, "ack": peer_ack, "close": peer_close, "permissions": peer_permissions,
-            "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim, "epic_work": peer_epic_work}
+            "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim, "epic_claim_status": peer_epic_claim_status, "epic_work": peer_epic_work}

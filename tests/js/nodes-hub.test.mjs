@@ -876,3 +876,15 @@ test('key change notices identify which board changed', async () => {
     assert.match(w.run(`Nodes.can(${JSON.stringify(row)}, 'tasks')`).why, words);
   }
 });
+
+test('a failed remote task displays its workspace trust reason as text', async () => {
+  const peer = rec('worker');
+  const { w } = await ready([peer]);
+  const reason = 'Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog, then run the task again';
+  w.ctx.__task = { id: 7, node: 'worker', title: 'Check trust', project: 'shop', repo: 'api', phase: 'failed', failure_reason: reason };
+  const row = w.run('nhTaskRow(__task)');
+  assert.ok(text(row).includes(reason));
+  assert.equal(row.getAttribute('data-phase'), 'failed');
+  w.run("Nodes.get('worker').state.tasks = [__task]");
+  assert.ok(text(w.run("nodeTaskPeek(Nodes.get('worker'), 7)")).includes(reason));
+});

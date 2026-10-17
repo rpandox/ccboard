@@ -193,7 +193,7 @@ def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_no
         "prompt": ("POST", "/api/node/sessions/{name}/prompt", "sessions"), "keys": ("POST", "/api/node/sessions/{name}/keys", "sessions"),
         "ack": ("POST", "/api/node/sessions/{name}/ack", "sessions"), "close": ("DELETE", "/api/node/sessions/{name}", "sessions"),
         "permissions": ("GET", "/api/node/permissions", "permissions"), "permission_answer": ("POST", "/api/node/permissions/{pid}/{decision}", "permissions"),
-        "epic_claim": ("POST", "/api/node/epics/claim", "tasks"), "epic_work": ("POST", "/api/node/epics/work", "tasks")}
+        "epic_claim": ("POST", "/api/node/epics/claim", "tasks"), "epic_claim_status": ("GET", "/api/node/epics/claim/status", "tasks"), "epic_work": ("POST", "/api/node/epics/work", "tasks")}
     assert {r.name: r.rate_class for r in ROWS if r.peer_method != "GET"} == {n: "write" for n in ("task_create", "task_dispatch", "session_open", "prompt", "keys", "ack", "close",
                                                                                                      "permission_answer", "epic_claim", "epic_work")}
     assert nr.BY_NAME["permissions"].rate_class == "read" and nr.BY_NAME["permissions"].scope == "permissions", "the list is a read of the permissions scope, never `read`"
@@ -389,7 +389,8 @@ def test_a_wrong_method_on_a_row_is_405(lone, wide, row):
 def test_a_token_with_the_scope_reaches_the_handler_and_gets_the_handlers_own_answer(lone, wide, fake_tmux, row):
     c, db = lone
     _, tok = mint(db, [row.scope])
-    r = c.request(row.peer_method, fill(row.peer_path), headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice@example.com"}))
+    query = {"repo": "acme/shop", "issue": "205"} if row.name == "epic_claim_status" else {}
+    r = c.request(row.peer_method, fill(row.peer_path), params=query, headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice"}))
     assert r.status_code in ((200, 404) if row.peer_method == "GET" else (404, 422)) and r.headers["cache-control"] == "no-store" and r.headers["x-content-type-options"] == "nosniff"
 
 
