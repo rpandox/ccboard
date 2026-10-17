@@ -803,3 +803,16 @@ def test_tui_with_no_waiter_just_records_the_decision(lite_client, fake_tmux):
     r = lite_client.post(f"/api/permission/{pid}/tui", headers=H)
     assert r.status_code == 200 and main.db.perm_get(pid)["decision"] == "tui"
     assert lite_client.post(f"/api/permission/{pid}/tui", headers=H).status_code == 409
+
+
+def test_only_a_signed_in_person_can_answer_a_permission(lite_client, fake_tmux):
+    """The hook token is held by every agent session on the board: with it an agent could approve its own request. Allow, Deny and In terminal
+    answer only for a signed-in person; the request stays undecided otherwise."""
+    pid = main.db.perm_add("shop--api--s1", "Bash", "Bash: rm -rf build", {})
+    tok = {hooks.TOKEN_HEADER: hooks.ensure_token()}
+    for decision in ("allow", "deny", "tui"):
+        r = lite_client.post(f"/api/permission/{pid}/{decision}", headers=tok)
+        assert r.status_code == 403 and "signed-in person" in r.json()["error"]
+    assert main.db.perm_get(pid)["decision"] is None
+    assert lite_client.post(f"/api/permission/{pid}/allow", headers=H).status_code == 200
+    assert main.db.perm_get(pid)["decision"] == "allow"

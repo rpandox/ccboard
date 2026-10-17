@@ -13,6 +13,36 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.67 - 2026-10-17
+
+### Fixed
+- Removing a both-ways node pair now names the incoming pairs it revoked automatically in the answer. Settings > Nodes warns that both directions go before removal and names the revoked pairs afterwards.
+
+Upgrade: nothing to do.
+
+## v0.5.66 - 2026-10-17
+
+### Fixed
+- The test suite's real-home guard (#235) no longer fails a run because the board installed on the same machine synced its hooks while the suite ran (its auto-update restarts it, and the hook installer rewrites `~/.claude/settings.json` and `~/.codex/hooks.json`). `scripts/claude_settings.py` and `scripts/codex_hooks.py` now touch an empty `.ccboard-hook-sync` beside each file they write (best effort; a failed stamp never fails the install). The guard excuses a change to one of those two files only when that stamp moved during the run and the file changed within 15 seconds of it, and prints one warning line saying the install did it.
+- A test that really writes the real home still fails the run, as does any change to the other guarded files, or to a hook file with no fresh stamp. The stamp is written on the next hook sync.
+
+Upgrade: nothing to do.
+
+## v0.5.65a - 2026-10-17
+
+### Fixed
+- Allow, Deny and In terminal for a permission request (`POST /api/permission/<id>/<decision>`) now answer only for a signed-in person, like the other routes that change what an agent may do. The local hook token, the hub, node tokens and MCP device tokens get `403`, and the request stays undecided. The phone notification buttons and the board's pages are unchanged (they act as the signed-in person); a hub's relayed answer keeps its own path and scope rules. Found in a review of #249.
+
+Upgrade: nothing to do.
+
+## v0.5.65 - 2026-10-17
+
+### Added
+- Home now lists the sessions of the paired nodes (issue #82): a collapsible "Other nodes" block after the projects, one group per node (the box, a Mac), read only. Each row has the node chip, project and repo, session name, state glyph and age, and a tap opens the node's session page (`#/n/<handle>/s/<name>`). It uses the hub's last reading only, so Home asks no node for it: a stale node shows how old the reading is, an offline node's last reading is dimmed with its age.
+- Sessions that need you stay under "On other nodes" and are not listed twice; the Home state chips narrow the node rows too, and `?demo=1` shows them for build-box, alice-mac and old-laptop.
+
+Upgrade: nothing to do.
+
 ## v0.5.64 - 2026-10-17
 
 ### Added
