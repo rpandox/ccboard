@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.70 - 2026-10-17
+
+### Fixed
+- Claude approval dialogs remain answerable from the board and a paired hub after the hook wait ends. Needs you shows the scrubbed command or file details and numbered choices on the board, inbox, epic page and hub.
+- Only a signed-in person can answer a permission request. Allow and Deny use only the one-time choices from the same Claude dialog, rechecked against the full screen and foreground process immediately before sending. A changed prompt sends nothing.
+- Terminal approvals allow only navigation keys and a confirmed interrupt through the local keys route, and offer no redundant “In terminal” action. Waiting and attention rows share cached captures for the scan interval; answers always read the pane again.
+- Epic issues show “waiting for a person” with the same Allow and Deny actions.
+
+Upgrade: nothing to do.
+
 ## v0.5.65 - 2026-10-17
 
 ### Added

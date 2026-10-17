@@ -483,18 +483,45 @@ function epTaskHash(c) {
   try { return buildHash('node-task', { node: handle, id }); } catch (_) { return null; }
 }
 
+/* Match the issue to its task on the same node, then use that session's permission entry. */
+function epPermission(c) {
+  const t = c.task;
+  const w = c.work;
+  const match = t && typeof t.ref === 'string' ? /^(?:[a-z0-9-]+:)?([0-9]{1,12})$/.exec(t.ref) : null;
+  const id = match ? Number(match[1]) : w && w.task_id;
+  const node = t && t.node ? t.node : w ? 'local' : null;
+  if (!id || !node) return null;
+  if (node === 'local') {
+    const st = typeof state !== 'undefined' && state;
+    const task = st && (st.tasks || []).find((x) => x.id === id);
+    return task ? (st.pending_permissions || []).find((p) => p.tmux_name === task.tmux_name) || null : null;
+  }
+  if (typeof Nodes === 'undefined' || !Nodes.ready) return null;
+  const task = Nodes.tasks(node).find((x) => Number(x.id) === id);
+  return task ? Nodes.permFor(node, task.tmux) : null;
+}
+
+function epPermissionNode(p) {
+  if (!p) return null;
+  if (p.node) return nsPermNode(p);
+  return el('div', { class: 'ep-permission' }, el('p', { text: p.summary }),
+    el('p', { class: 'dim', text: (p.choices || []).map((c) => `${c.number}. ${c.label}`).join(' · ') }),
+    el('button', { class: 'primary small', text: 'Allow', onclick: () => decide(p.id, 'allow') }),
+    el('button', { class: 'small', text: 'Deny', onclick: () => decide(p.id, 'deny') }));
+}
+
 /* The phase of the work on one issue, from this board's own work record: a glyph and words, never colour alone. Null when this board holds no record (a remote node's task shows
    as "Task running on <node>"). */
 function epWorkPhaseNode(c) {
   const w = c.work;
-  if (!w || typeof w !== 'object') return null;
-  const p = ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
+  if ((!w || typeof w !== 'object') && !epPermission(c)) return null;
+  const p = epPermission(c) ? 'waiting' : ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
   const [g, words] = EP_WORK_PHASE[p];
   const attn = p === 'waiting' || p === 'lost' || p === 'failed';
   const more = [];
-  if (w.attempt > 1) more.push(`attempt ${w.attempt}`);
-  if (typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
-  if (p === 'pr' && w.pr_number) more.push(`PR #${w.pr_number}`);
+  if (w && w.attempt > 1) more.push(`attempt ${w.attempt}`);
+  if (w && typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
+  if (p === 'pr' && w && w.pr_number) more.push(`PR #${w.pr_number}`);
   return el('span', { class: 'ep-phase' + (attn ? ' warn' : ''), 'data-phase': p, title: p === 'lost' ? 'This board lost the claim. It writes nothing more for it. The task is parked and its worktree is kept.' : null },
     el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: g + ' ' }), `Work ${words}${more.length ? ' (' + more.join(', ') + ')' : ''}`);
 }
@@ -970,7 +997,7 @@ function epClaimParts(c, nowIso) {
 function epRowSig(P, c) {
   const key = `${c.repo}#${c.number}`;
   const rt = epRoute(P.data);
-  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
+  return JSON.stringify([epPermission(c), c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
     rt ? [rt.can_run, rt.blocked && rt.blocked.code] : null, P.runon.has(key), P.rnotes.get(key) || null]);
 }
 
@@ -1041,6 +1068,8 @@ function epFillRow(P, li, c) {
   const when = epSince(c.updated_at, data.server_now);
   if (when) meta.append(el('span', { class: 'dim ep-age', title: 'GitHub time of the last change', text: `updated ${when}` }));
   li.append(main, meta, epPinBox(P, c));
+  const permission = epPermissionNode(epPermission(c));
+  if (permission) li.append(permission);
 }
 
 /* ---------- the page ---------- */
@@ -1304,6 +1333,8 @@ function epMount(root, route) {
   };
   document.addEventListener('visibilitychange', P.onVis);
   epicPage.cur = P;
+  P.onNodes = () => epPaint(P);
+  if (typeof Nodes !== 'undefined') Nodes.use(() => { if (epicPage.cur === P) { Nodes.M.subs.add(P.onNodes); epPaint(P); } });
   epFetch(P);
 }
 
@@ -1314,12 +1345,13 @@ function epUnmount() {
   if (P.timer) clearTimeout(P.timer);
   P.timer = null;
   document.removeEventListener('visibilitychange', P.onVis);
+  if (typeof Nodes !== 'undefined' && Nodes.M) Nodes.M.subs.delete(P.onNodes);
 }
 
 registerPage('epic', {
   title(route) { const q = (route && route.params) || {}; return q.owner ? `${epRef(q.owner, q.repo, q.n)} · epic` : 'Epic'; },
   mount: epMount,
-  update() {},
+  update() { if (epicPage.cur) epPaint(epicPage.cur); },
   unmount: epUnmount,
 });
 

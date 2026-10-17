@@ -1,7 +1,8 @@
 /* ccboard inbox (v0.5.5): what needs you, with the context to answer it. Home's first section and #/inbox are both made of the cards below.
 
-   Inbox.kind(s, st) sorts a session into one of nine kinds, in the order the inbox lists them:
+   Inbox.kind(s, st) sorts a session into one of ten kinds, in the order the inbox lists them:
      permission     a permission is pending for it (st.pending_permissions)            Allow / Deny, only when no full terminal client is attached
+     terminal_prompt a Claude tool approval in the pane after the hook wait          Allow / Deny, including with a full terminal attached
      plan           waiting, and its last message talks about a plan (/plan|ExitPlanMode|approve/i)
      question       waiting, and its last message ends with a question or has AskUserQuestion
      needs          the Claude registry says its job needs you (flags.registry.job.needs, or tempo 'blocked'), with the suggested reply as a chip
@@ -23,17 +24,16 @@
 'use strict';
 
 const Inbox = {
-  // permission first on purpose (a pending permission blocks the agent and times out in 90 s; the Mac's bypass habit does not
-  // hold on the box), then the plan's order: plan review, question, job needs, limit, error, done-with-question
-  ORDER: ['permission', 'plan', 'question', 'needs', 'limit', 'error', 'done-question', 'waiting', 'done'],
-  LABEL: { permission: 'permission', plan: 'plan review', question: 'question', needs: 'job needs you', limit: 'limit hit', error: 'error',
+  // Requests first, then plans, questions and the remaining attention states.
+  ORDER: ['permission', 'terminal_prompt', 'plan', 'question', 'needs', 'limit', 'error', 'done-question', 'waiting', 'done'],
+  LABEL: { permission: 'permission', terminal_prompt: 'terminal prompt', plan: 'plan review', question: 'question', needs: 'job needs you', limit: 'limit hit', error: 'error',
            'done-question': 'done, asks', waiting: 'waiting', done: 'done' },
   PLAN_RE: /\bplan\b|ExitPlanMode/i,
   ASKS_RE: /\?[\s"'`)\]*_]*$|AskUserQuestion/,
   LIMIT_RE: /limit/i,
   HINT: 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys',
   // the one action each kind of card leads with (v0.5.6d): the lead card shows it filled, the others tinted
-  PRIMARY: { permission: 'allow', plan: 'reply', question: 'reply', 'done-question': 'reply', waiting: 'reply', needs: 'open', error: 'open', limit: 'ack', done: 'ack' },
+  PRIMARY: { permission: 'allow', terminal_prompt: 'allow', plan: 'reply', question: 'reply', 'done-question': 'reply', waiting: 'reply', needs: 'open', error: 'open', limit: 'ack', done: 'ack' },
   CHIPS_SHOWN: 4,                                  // quick-reply chips before the '…' that shows the rest
 };
 
@@ -77,7 +77,8 @@ Inbox.kind = function (s, st) {
   if (!s) return '';
   const msg = Inbox.message(s);
   const waiting = s.state === 'waiting';
-  if (Inbox.pending(s, st)) return 'permission';
+  const pending = Inbox.pending(s, st);
+  if (pending) return pending.kind === 'terminal_prompt' ? 'terminal_prompt' : 'permission';
   if (waiting && Inbox.PLAN_RE.test(msg)) return 'plan';
   if (waiting && Inbox.asks(msg)) return 'question';
   const job = Inbox.job(s);
@@ -123,13 +124,14 @@ Inbox.clock = clockAt;
 Inbox.context = function (s, st, kind) {
   const msg = Inbox.message(s);
   const perm = Inbox.pending(s, st);
-  if (kind === 'permission') {
-    const here = perm && inboxFullViewers(s) > 0;           // a full client has the TUI prompt: the board's buttons would answer nothing
+  if (kind === 'permission' || kind === 'terminal_prompt') {
+    const here = kind !== 'terminal_prompt' && perm && inboxFullViewers(s) > 0;           // a live hook defers to the attached terminal; a terminal_prompt answers the pane itself
     const text = String((perm && perm.summary) || msg || 'permission request').slice(0, 300);
     const tool = String((perm && perm.tool_name) || '');
     // 'Bash: npm test' already names the tool: the dim line beside it only says it when the summary does not
     const dup = !!tool && text.toLowerCase().startsWith(tool.toLowerCase());
-    return { text, mono: true, note: here ? 'a terminal is attached: answer it there' : (dup ? '' : tool), reply: '' };
+    const choices = kind === 'terminal_prompt' ? (perm.choices || []).map((c) => `${c.number}. ${c.label}`).join(' · ') : '';
+    return { text, mono: true, note: choices || (here ? 'a terminal is attached: answer it there' : (dup ? '' : tool)), reply: '' };
   }
   if (kind === 'plan') return { text: Inbox.head(msg, 700), mono: false, note: '', reply: '' };
   if (kind === 'question' || kind === 'done-question') return { text: Inbox.tail(msg, 400), mono: false, note: '', reply: '' };
@@ -157,7 +159,7 @@ Inbox.sig = function (s, st, kind) {
   const job = Inbox.job(s) || {};
   const lim = Inbox.limit(st) || {};
   return JSON.stringify([kind, s.state, s.state_at, s.needs_attention, s.name, s.agent, s.last_message, s.last_prompt, s.project, s.repo, s.folder,
-    perm && [perm.id, perm.summary, perm.tool_name], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
+    perm && [perm.id, perm.summary, perm.tool_name, perm.choices], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
     lim.session === s.tmux ? [lim.message, lim.resets_at] : null, s.task && s.task.title, limitParkedText(s)]);
 };
 
@@ -309,10 +311,10 @@ function inboxCard(s, st, opts) {
     setTextIfChanged(prompt, pt);
     prompt.classList.toggle('hidden', !pt);
     agentsAgeNode(age, sessionActivity(s2));
-    node.classList.toggle('attn', !!s2.needs_attention || kind === 'permission' || kind === 'needs');
+    node.classList.toggle('attn', !!s2.needs_attention || kind === 'permission' || kind === 'terminal_prompt' || kind === 'needs');
     const pr = Inbox.pending(s2, st2);
     cur.perm = pr;
-    cur.allow = !!pr && inboxFullViewers(s2) === 0;           // a full terminal client has the TUI prompt in front of it: no remote buttons
+    cur.allow = !!pr && (pr.kind === 'terminal_prompt' || inboxFullViewers(s2) === 0);           // terminal prompts remain answerable with a full client attached
     cur.ack = !!s2.needs_attention;
     cur.nudge = sessionNudgeable(s2);
     if (cur.allow) cur.permSig = `${pr.id}:${pr.summary || ''}`;
