@@ -57,13 +57,13 @@ def test_lines_are_data_never_shell(tmp_path):
     marker = tmp_path / "pwned"
     body = (f"PROJECTS_DIR=$(touch {marker})\n"
             f"CCBOARD_PUBLIC_URL=`touch {marker}`; touch {marker}\n"
-            f"CCBOARD_NODE_NAME=a b $HOME \"q\" 'r'\n")
+            f"CCBOARD_NODES=a b $HOME \"q\" 'r'\n")
     f = write_env(tmp_path, body)
     s = Settings({"CCBOARD_ENV_FILE": str(f)})
     assert not marker.exists()
     assert s.projects_dir == Path(f"$(touch {marker})")             # the text itself, nothing expanded or run
     assert s.public_url == f"`touch {marker}`; touch {marker}"
-    assert s.node_name == "a b $HOME \"q\" 'r'"                     # quotes are part of the value, as install.sh treats them
+    assert s.nodes_raw == "a b $HOME \"q\" 'r'"                      # quotes are part of the value, as install.sh treats them
 
 
 def test_lines_split_at_the_first_equals_and_comments_are_skipped(tmp_path):

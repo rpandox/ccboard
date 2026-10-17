@@ -71,7 +71,7 @@ def test_installer_approval_timeout_bounds(script, value):
     import subprocess
     from pathlib import Path
     source = (Path(__file__).resolve().parent.parent / script).read_text()
-    check = next(line for line in source.splitlines() if line.startswith('[[ "$CCBOARD_APPROVE_TIMEOUT"'))
+    check = next(line for line in source.splitlines() if 'CCBOARD_APPROVE_TIMEOUT must be a whole number' in line)
     result = subprocess.run(['bash', '-c', 'die() { exit 1; }; ' + check],
                             env={**os.environ, 'CCBOARD_APPROVE_TIMEOUT': value}, capture_output=True)
     assert (result.returncode == 0) == (value in ('1', '9999'))

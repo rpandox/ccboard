@@ -5,6 +5,7 @@ import hashlib
 import json
 import ipaddress
 import logging
+import math
 import os
 import re
 import stat
@@ -574,11 +575,11 @@ class Settings:
         self.bind_host = uvicorn_host(sys.argv)
         self.forwarded_allow_argv = uvicorn_forwarded_allow(sys.argv)      # issue #136: a widened uvicorn proxy trust keeps the whois modes off
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
-        # The hub read model: at most an hour between polls; invalid values use the default.
+        # The hub read model: never below 5 s (a smaller number is raised to 5, as always); over an hour or not a number: the default.
         self.nodes_poll_bad = False
         try:
             poll = float((env.get("CCBOARD_NODES_POLL") or "").strip() or 20)
-            if not 5 <= poll <= 3600:
+            if not math.isfinite(poll) or poll > 3600:
                 raise ValueError("outside poll bounds")
             self.nodes_poll = max(5.0, poll)
         except ValueError:

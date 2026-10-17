@@ -529,7 +529,8 @@ async def _node_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path == "/api/settings/options" and request.method == "PUT":
+    if request.url.path == "/api/settings/options" and request.method == "PUT" and not _node_bearer(request):
+        # A node token goes to the node check below, which refuses this unlisted route like every other; anything else is refused here.
         from urllib.parse import urlsplit
         user = identify(request.headers, settings)
         origin = request.headers.get("origin")
