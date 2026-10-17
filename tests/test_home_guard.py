@@ -19,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # file -> why it may touch the home directly. app/config.py is allowed without an entry (it owns the path defaults).
 HOME_USE_ALLOWED = {
     "bin/ccboard-open": "finds the local hook-token file under the default data dir (~/.local/share/ccboard on every system, as the hook scripts do) when CCBOARD_DATA_DIR is unset",
+    "app/bare.py": "the repo-listing script runs on the device over SSH, so its $HOME is the device's home; nothing on this machine is read",
     "app/platform.py": "owns the per-system path defaults (default_projects_dir, default_data_dir) that app/config.py reads; nothing is read or written here",
     "app/backup.py": "expands a user-given backup path (~/x) typed into the settings form",
     "app/tailscale.py": "shows the user's name in a `tailscale set --operator` hint only (it moved here from app/previews.py)",
