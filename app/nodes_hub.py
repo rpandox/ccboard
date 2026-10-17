@@ -91,13 +91,13 @@ def _s(v, n: int = node_state.STR_MAX):
     return node_state.clean(v, n)
 
 
-def _trust_reason(value, project, repo) -> str | None:
-    """Accept only the exact board sentence for this row's cleaned folder names."""
-    from .tasks import workspace_trust_reason
+def _trust_reason(value, project, repo, *, warning: bool = False) -> str | None:
+    """Accept only the exact board sentence (the failure, or the warning before a first task) for this row's cleaned folder names."""
+    from .tasks import workspace_trust_reason, workspace_trust_warning
     project, repo = _s(project), _s(repo)
     if not project or not repo:
         return None
-    reason = workspace_trust_reason(project, repo)
+    reason = (workspace_trust_warning if warning else workspace_trust_reason)(project, repo)
     return reason if value == reason else None
 
 
@@ -174,7 +174,7 @@ def clean_state(body, row: dict) -> dict:
     for p in _rows(body.get("projects"), node_state.PROJECTS_MAX):
         repos = [{"name": _s(r.get("name")), "slug": _s(r.get("slug")) if node_state._SLUG.fullmatch(str(r.get("slug"))) else None,
                   "branch": _s(r.get("branch")), "dirty": _b(r.get("dirty")),
-                  **({"claude_trust_warning": reason} if (reason := _trust_reason(r.get("claude_trust_warning"), p.get("name"), r.get("name"))) else {})} for r in _rows(p.get("repos"), node_state.REPOS_MAX)]
+                  **({"claude_trust_warning": reason} if (reason := _trust_reason(r.get("claude_trust_warning"), p.get("name"), r.get("name"), warning=True)) else {})} for r in _rows(p.get("repos"), node_state.REPOS_MAX)]
         projects.append({"name": _s(p.get("name")), "repos": repos})
     sessions = [{"tmux": _s(r.get("tmux")), "project": _s(r.get("project")), "repo": _s(r.get("repo")), "session": _s(r.get("session")),
                  "agent": _s(r.get("agent"), 20), "state": _s(r.get("state"), 20), "needs_you": bool(r.get("needs_you")), "kind": _s(r.get("kind"), 20),

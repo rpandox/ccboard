@@ -681,7 +681,7 @@ test('demo: a repo the node does not list is the missing-repo refusal, played by
 test('remote task launcher warns from the selected node repository history', async () => {
   const peer = node('worker');
   const repo = peer.state.projects[0].repos[0];
-  const reason = `Claude has not been trusted in this folder yet: open a session in ${peer.state.projects[0].name}/${repo.name} once and accept the trust dialog, then run the task again`;
+  const reason = `Claude has not been trusted in this folder yet: open a session in ${peer.state.projects[0].name}/${repo.name} once and accept the trust dialog before its first task`;
   repo.claude_trust_warning = reason;
   const { w } = await lWorld({ nodes: [peer], answers: { '/api/nodes/worker/agents': ENVELOPE('worker', AGENTS()) } });
   open(w, { mode: 'task' });

@@ -530,8 +530,8 @@ function lxnForm(opt, handle, hooks) {
 
   composerBind(promptEl, { maxRows: 10, onSend: () => submit() });
   const form = el('form', { class: 'form lx-form lx-remote' + (session ? '' : ' task-form'), 'data-node': handle, onsubmit: (e) => { e.preventDefault(); submit(); } },
-    placeField, dispatch ? [whereField, sessField] : null, agentField, modelField, modelNote, effortField, reasonField, permField, cxField, noBypass, nameField, noPrompt,
-    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, trustWarning, why, status, foot);
+    placeField, dispatch ? [whereField, sessField] : null, trustWarning, agentField, modelField, modelNote, effortField, reasonField, permField, cxField, noBypass, nameField, noPrompt,
+    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, why, status, foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });
   form.focusFirst = () => focusFine(mode === 'task' ? promptEl : (session ? nameIn : null));
   paint();

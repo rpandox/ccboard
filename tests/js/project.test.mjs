@@ -1263,7 +1263,7 @@ test('issue #107: a job with no schedule that has not been asked to run reads pa
 test('project page shows the repository trust warning before a first task', async () => {
   const state = projectState();
   const repo = state.projects.find((p) => p.name === 'phasezero').repos[0];
-  const reason = `Claude has not been trusted in this folder yet: open a session in phasezero/${repo.name} once and accept the trust dialog, then run the task again`;
+  const reason = `Claude has not been trusted in this folder yet: open a session in phasezero/${repo.name} once and accept the trust dialog before its first task`;
   repo.claude_trust_warning = reason;
   const env = projectWorld({ state });
   await go(env, `#/p/phasezero/${repo.name}?tab=tasks`);

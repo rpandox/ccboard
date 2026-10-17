@@ -1830,7 +1830,7 @@ test('a fourth fallback model is stopped in the form: an inline error, no comman
 
 test('task launch warns about workspace trust for Claude, without blocking or answering it', () => {
   const state = STATE();
-  const reason = 'Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog, then run the task again';
+  const reason = 'Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog before its first task';
   state.projects[0].repos[0].claude_trust_warning = reason;
   const w = lWorld({ state });
   open(w, { mode: 'task' });

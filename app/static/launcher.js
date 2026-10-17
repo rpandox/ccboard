@@ -2782,6 +2782,7 @@ function launcherForm(o) {
     mode === 'task' ? [whenField, lede] : null,
     mode === 'dispatch' ? whereField : null,
     mode === 'dispatch' ? sessField : null,
+    trustWarning,                                                                               // up top: on a phone the foot's Start sits far below the fields (#247)
     agentField,
     presetField,
     launchField, resumeField, prField,
@@ -2794,7 +2795,6 @@ function launcherForm(o) {
     cmdBox,
     jx.fableRow,
     teamKit.on ? teamKit.node : null,
-    trustWarning,
     status,
     foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });

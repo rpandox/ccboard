@@ -26,6 +26,12 @@ def workspace_trust_reason(project: str, repo: str) -> str:
     return f"Claude has not been trusted in this folder yet: open a session in {folder} once and accept the trust dialog, then run the task again"
 
 
+def workspace_trust_warning(project: str, repo: str) -> str:
+    """The note shown before a first task, when nothing has failed yet."""
+    folder = project if repo == projects.ROOT else f"{project}/{repo}"
+    return f"Claude has not been trusted in this folder yet: open a session in {folder} once and accept the trust dialog before its first task"
+
+
 def trust_failure(task: dict) -> str | None:
     """Only the board's own trust failure is shared with a hub; task output stays private."""
     reason = workspace_trust_reason(task.get("project") or "", task.get("repo") or "")

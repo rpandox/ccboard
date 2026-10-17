@@ -11,6 +11,8 @@ TRUST_ERROR = ("Error creating worktree: Workspace trust not yet accepted. Run '
                "and accept the trust dialog, then retry with --worktree.")
 REASON = ("Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog, "
           "then run the task again")
+WARNING = ("Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog "
+           "before its first task")
 
 
 def age_session(db, name, seconds=25):
@@ -63,7 +65,7 @@ def test_trust_refusal_fails_task_and_session_once(launched, fake_tmux, monkeypa
     assert remote["sessions"][0]["state"] == "errored" and remote["sessions"][0]["needs_you"]
     cleaned = nodes_hub.clean_state(remote, {})
     assert cleaned["tasks"][0]["failure_reason"] == REASON
-    assert cleaned["projects"][0]["repos"][0]["claude_trust_warning"] == REASON
+    assert cleaned["projects"][0]["repos"][0]["claude_trust_warning"] == WARNING
 
 
 @pytest.mark.parametrize("command,screen", [
@@ -103,17 +105,17 @@ def warning():
 
 
 def test_warning_uses_ended_interactive_claude_history(launched):
-    assert warning() == REASON  # starting a task does not count as accepting trust
+    assert warning() == WARNING  # starting a task does not count as accepting trust
     for agent, launcher in (("shell", "shell"), ("codex", "codex")):
         main.db.add_session(tmux_name=f"shop--api--{agent}", project="shop", repo="api", name=agent, launcher=launcher, agent=agent)
-    assert warning() == REASON
+    assert warning() == WARNING
     main.db.add_session(tmux_name="shop--api--first", project="shop", repo="api", name="first", launcher="claude")
     main.db.end("shop--api--first", "exited")
     assert warning() is None
 
 
 def test_warning_clears_after_done_claude_task(launched):
-    assert warning() == REASON
+    assert warning() == WARNING
     main.db.task_update(launched["id"], phase="done")
     assert warning() is None
 
@@ -122,7 +124,7 @@ def test_warning_clears_after_done_claude_task(launched):
 def test_warning_clears_after_claude_hook_state(launched, launcher):
     name = "shop--api--hooked"
     main.db.add_session(tmux_name=name, project="shop", repo="api", name="hooked", launcher=launcher, agent="claude")
-    assert warning() == REASON
+    assert warning() == WARNING
     main.db.set_state(name, "working", "UserPromptSubmit")
     assert warning() is None
 
@@ -130,9 +132,9 @@ def test_warning_clears_after_claude_hook_state(launched, launcher):
 def test_trust_failure_and_done_codex_task_do_not_clear_warning(launched):
     main.db.set_state(launched["tmux"], "errored", "AgentExited", message=REASON)
     main.db.task_update(launched["id"], phase="failed", result=REASON)
-    assert warning() == REASON
+    assert warning() == WARNING
     main.db.task_update(launched["id"], phase="done", agent="codex")
-    assert warning() == REASON
+    assert warning() == WARNING
 
 
 @pytest.mark.parametrize("phase,state", [("done", "done"), ("running", "working")])
@@ -195,9 +197,10 @@ def test_peer_failure_reason_is_exact_and_scoped(shape, phase, reason, expected)
 
 @pytest.mark.parametrize("reason,expected", [
     ("private peer output", None),
-    (REASON, REASON),
-    (tasks.workspace_trust_reason("other", "api"), None),
-    (REASON + "\n", None),
+    (WARNING, WARNING),
+    (REASON, None),
+    (tasks.workspace_trust_warning("other", "api"), None),
+    (WARNING + "\n", None),
 ])
 def test_peer_repo_warning_is_exact_and_scoped(reason, expected):
     body = {"node": {"id": "n_" + "a" * 16}, "projects": [{"name": "shop\x00", "repos": [

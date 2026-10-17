@@ -821,7 +821,7 @@ def _scan_entry() -> dict:
         for p in st["projects"]:
             for r in [p.get("root"), *p.get("repos", [])]:
                 if r is not None:
-                    r["claude_trust_warning"] = (tasks.workspace_trust_reason(p["name"], r["name"])
+                    r["claude_trust_warning"] = (tasks.workspace_trust_warning(p["name"], r["name"])
                                                   if r.get("state") == "ok" and (p["name"], r["name"]) not in opened else None)
         _scan_cache = (time.monotonic(), st)
         return dict(st)
