@@ -552,11 +552,66 @@ function nhTaskRow(t) {
 }
 function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.failure_reason, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
 
+const NH_HOME_ROWS = 10;                                     // sessions of one node on Home before "Show all" (its node page)
+
+/* The sessions of the paired nodes for Home (issue #82), one group for each node that has any: [{handle, name, href, view, rows, total}]. Rows are read from the model alone (the hub's
+   last reading, which is as old as its `age_s`): a node that is not online marks each row stale with the age of that reading, so its row is dimmed and says so. Left out: the sessions that
+   need you (Nodes.attention lists them in the inbox), a node whose address now belongs to another device, and, with a Home state chip on, every session of another state. `rows` is cut
+   to `limit`; `total` is the number before the cut. Order inside a node: waiting, errored, working, idle, done, the rest; newest first inside each. */
+Nodes.homeGroups = function (filter, limit) {
+  const now = Date.now();
+  const owned = new Set(Nodes.attention().map((s) => `${s.node}/${s.tmux}`));
+  const out = [];
+  for (const rec of Nodes.M.recs) {
+    const v = Nodes.view(rec, now);
+    if (v.identity) continue;
+    const rank = (s) => (ownKey(NH_RANK, s.state) ? NH_RANK[s.state] : 5);
+    const all = Nodes.sessions(rec.handle).filter((s) => !owned.has(`${s.node}/${s.tmux}`) && !(s.needs_you && !s.pending)
+      && (!filter || (ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown') === filter))
+      .sort((a, b) => rank(a) - rank(b) || String(b.since || '').localeCompare(String(a.since || '')));
+    if (!all.length) continue;
+    const stale = v.status !== 'online';
+    out.push({ handle: rec.handle, name: nhName(rec), href: Ref.hash(Ref.node(rec.handle)) || '#/', view: v, total: all.length,
+      rows: all.slice(0, limit).map((s) => (stale ? { ...s, stale: true, readAge: v.age } : s)) });
+  }
+  return out;
+};
+
+function nhHomeGroupNode(g) {
+  const name = el('a', { class: 'pg-name nd-ngn' });
+  const sg = el('span', { class: 'nd-sg', 'aria-hidden': 'true' });
+  const word = el('span', { class: 'nd-ngw' });
+  const ago = el('span', { class: 'dim nd-ngago' });
+  const more = el('a', { class: 'btn small nd-ngmore hidden' });
+  const list = el('div', { class: 'pg-list nd-list' });
+  const node = el('div', { class: 'pgroup nd-ngrp', role: 'group' }, el('div', { class: 'pgroup-head' }, sg, name, word, ago), list, more);
+  const rows = nhList(list, (s) => Ref.key({ tmux: s.tmux, node: s.node }) || `${s.node}/${s.id || s.session}`, nhSessionRow, nhSessionSig);
+  node.ccPatch = (g2) => {
+    const off = g2.view.status !== 'online';
+    node.setAttribute('data-node', g2.handle);
+    node.setAttribute('data-status', g2.view.status);
+    node.setAttribute('aria-label', `${g2.name}: ${g2.view.word}`);
+    node.classList.toggle('stale', off);
+    setTextIfChanged(sg, g2.view.glyph);
+    setTextIfChanged(name, g2.name);
+    name.setAttribute('href', g2.href);
+    setTextIfChanged(word, g2.view.word);
+    word.className = 'nd-ngw ' + g2.view.tone;
+    setTextIfChanged(ago, off && g2.view.age !== null ? `last reading ${nhSpan(g2.view.age)} ago` : '');
+    rows.update(g2.rows);
+    const rest = g2.total - g2.rows.length;
+    more.classList.toggle('hidden', rest <= 0);
+    if (rest > 0) { setTextIfChanged(more, `Show all ${g2.total}`); more.setAttribute('href', g2.href); }
+  };
+  node.ccPatch(g);
+  return node;
+}
+
 /* ---------- slots: the sections other pages host ---------- */
 
 Nodes.hosts = new Set();
 
-/* Nodes.slot(name, anchor, opts): make (once) and repaint a section next to `anchor`: 'strip' (Home, after the away line), 'inbox' (Home and #/inbox, after the local cards), 'tasks' (the filter
+/* Nodes.slot(name, anchor, opts): make (once) and repaint a section next to `anchor`: 'strip' (Home, after the away line), 'inbox' (Home and #/inbox, after the local cards), 'sessions' (Home, after the projects), 'tasks' (the filter
    before the board, the tasks of other nodes after it), 'notify' (Settings > Notifications, a row for each node). The section registers its repaint, which the poll calls every 6 s. */
 Nodes.slot = function (name, anchor, opts) {
   if (!anchor || !anchor.parentNode || !Nodes.SLOTS[name]) return;                 // an anchor that left the page while the bundle loaded (a panel rebuilt) gets nothing
@@ -684,6 +739,32 @@ Nodes.SLOTS = {
       const any = total > 0 || stubs.length > 0;
       host.classList.toggle('hidden', !any);
       if (opts.none) opts.none.classList.toggle('hidden', !!opts.local || any);      // "Nothing needs you" is not true while another node's items wait
+    } };
+  },
+
+  /* Home, after the projects (issue #82): the sessions of the paired nodes that do not need you, read only, in one collapsible block "Other nodes", a group for each node under its name.
+     It reads the model the strip and the inbox already read (Nodes.M, the hub's trimmed state) and asks nobody. The sessions that need you are in "On other nodes" above and are left out
+     here, so nothing is counted twice. opts: {filter: the Home state chip, collapsed, toggle: a function that remembers the choice (Home's collapsed set, key 'x:nodes')}. */
+  sessions(anchor, opts) {
+    const toggle = el('button', { class: 'minimal small pb-toggle', type: 'button', 'aria-expanded': 'true', onclick: () => { if (typeof opts.toggle === 'function') opts.toggle(); } });
+    const count = el('span', { class: 'pb-count dim' });
+    const body = el('div', { class: 'pb-body' });
+    const host = el('section', { class: 'pblock pb-nodes nd-others hidden', 'aria-label': 'Sessions on other nodes' },
+      el('header', { class: 'pb-head' }, toggle, el('h2', { class: 'pb-name', text: 'Other nodes' }), count), body);
+    nhInsertAfter(anchor, host);
+    const groups = makeKeyedList(body, { key: (g) => g.handle, create: (g) => nhHomeGroupNode(g), patch: (n, g) => n.ccPatch(g) });
+    return { hosts: [host], paint() {
+      const gs = Nodes.M.loaded ? Nodes.homeGroups(opts.filter || '', NH_HOME_ROWS) : [];
+      const total = gs.reduce((n, g) => n + g.total, 0);
+      const collapsed = !!opts.collapsed;
+      host.classList.toggle('hidden', !gs.length);
+      host.classList.toggle('collapsed', collapsed);
+      setTextIfChanged(toggle, collapsed ? '▸' : '▾');
+      toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      toggle.setAttribute('aria-label', `${collapsed ? 'expand' : 'collapse'} other nodes`);
+      setTextIfChanged(count, `${total} session${total === 1 ? '' : 's'} on ${gs.length} node${gs.length === 1 ? '' : 's'}`);
+      body.classList.toggle('hidden', collapsed);
+      groups.update(collapsed ? [] : gs);
     } };
   },
 

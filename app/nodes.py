@@ -2416,7 +2416,8 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
     the other board is off. A node id is only a claim, so another active incoming pair that names the same node id (from another address, or never
     confirmed) is NOT revoked here: it is returned in `other_pairs` ({peer_id, name, url, verified}), and the person can revoke exactly the ones they
     list in `also_revoke` (peer ids). Every id in `also_revoke` must be an active incoming pair with the removed node's node id, else ValueError and
-    nothing at all happens (the other board is not told either). Returns {removed, peer_told, also_revoked, other_pairs}. LookupError for an unknown pair."""
+    nothing at all happens (the other board is not told either). Returns {removed, peer_told, auto_revoked, also_revoked, other_pairs}; auto_revoked
+    names each incoming pair actually revoked by the removal itself ({peer_id, name}). LookupError for an unknown pair."""
     d = _db(db)
     p = peer(ident, d)
     if p is None:
@@ -2431,13 +2432,15 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
             if r is None or r["revoked_at"] or r["peer_node_id"] != p["node_id"]:
                 raise ValueError("only an active pair with the same node id can be revoked together with this node")
     told = False
+    auto_revoked = []
     if p["direction"] == "out":
         tk = None if p["legacy"] else _load_outgoing(p["peer_id"])
         told = bool(tk and p["url"] and _remote_unpair(p["url"], tk))
         tk = None
         auto, _ = _claimants(d, p)                                    # the pair that board holds for us: confirmed, same node id and the same address
         for q in auto:
-            revoke(q["peer_id"], db=d, why="the pair was removed on this node")
+            if revoke(q["peer_id"], db=d, why="the pair was removed on this node"):
+                auto_revoked.append({"peer_id": q["peer_id"], "name": q["name"]})
     revoked = []
     for w in wanted:
         if revoke(w, db=d, why="revoked together with the node it names"):
@@ -2446,7 +2449,7 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
     if p["direction"] == "out":
         audit("out", p["peer_id"], "unpair", told, "the other node was told" if told else "the other node was not told", node_name=p["name"], db=d)
     _, others = _claimants(d, p)
-    return {"removed": True, "peer_told": told, "also_revoked": revoked,
+    return {"removed": True, "peer_told": told, "auto_revoked": auto_revoked, "also_revoked": revoked,
             "other_pairs": [{k: o[k] for k in ("peer_id", "name", "url", "verified")} for o in others]}
 
 
