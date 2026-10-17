@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -540,13 +541,13 @@ def test_run_job_hands_the_subagent_env_to_the_subprocess_only_when_set(client, 
     make_repo(projects_dir)
     monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
     seen = []
-    real = scheduler.subprocess.run
+    real = scheduler.plat.run_group
 
     def spy(cmd, *a, **k):
         if "-p" in cmd:
             seen.append(k.get("env"))
         return real(cmd, *a, **k)
-    monkeypatch.setattr(scheduler.subprocess, "run", spy)
+    monkeypatch.setattr(scheduler.plat, "run_group", spy)
     job = {"id": 1, "name": "n", "project": "shop", "repo": "api", "agent": "claude", "prompt": "x", "permission_mode": "acceptEdits"}
     monkeypatch.setattr(main.settings, "subagent_model", "")
     scheduler.run_job(main.db, {**job, "id": main.db.job_add(project="shop", repo="api", name="n", prompt="x")}, main.db.run_start(1))
@@ -664,18 +665,18 @@ def test_starting_an_agent_is_tried_again_while_its_binary_is_busy_and_other_err
         if len(calls) < 3:
             raise OSError(26, "Text file busy")
         return "done"
-    monkeypatch.setattr(scheduler.subprocess, "run", flaky)
+    monkeypatch.setattr(scheduler.plat, "run_group", flaky)
     monkeypatch.setattr(scheduler, "BUSY_PAUSE", 0)
     assert scheduler._run_agent(["claude"], cwd=".") == "done" and len(calls) == 3
     calls.clear()
-    monkeypatch.setattr(scheduler.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError(26, "Text file busy")))
+    monkeypatch.setattr(scheduler.plat, "run_group", lambda cmd, **kw: (_ for _ in ()).throw(OSError(26, "Text file busy")))
     with pytest.raises(OSError):
         scheduler._run_agent(["claude"])                    # still busy after BUSY_TRIES: raised, never looped for ever
     seen = []
     def missing(cmd, **kw):
         seen.append(1)
         raise FileNotFoundError(2, "No such file")
-    monkeypatch.setattr(scheduler.subprocess, "run", missing)
+    monkeypatch.setattr(scheduler.plat, "run_group", missing)
     with pytest.raises(FileNotFoundError):
         scheduler._run_agent(["claude"])
     assert len(seen) == 1, "another error is not retried"
@@ -728,3 +729,39 @@ def test_a_stored_job_with_an_empty_mode_runs_with_auto_not_bypass(client, codex
     task = main.db.task_get(main.db.run_get(rid)["task_id"])
     args = (repo / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
     assert "--permission-mode auto" in args and "bypassPermissions" not in args and "--dangerously-skip-permissions" not in args
+
+# ---- #116 slice 8: a timeout ends the agent's whole process group
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_timed_out_agent_takes_its_grandchildren_with_it(tmp_path, monkeypatch):
+    """Before slice 8 subprocess.run killed only the direct child, so a node grandchild of a timed-out claude kept running."""
+    from app import platform as plat
+    monkeypatch.setattr(plat, "GROUP_GRACE", 0.5)
+    pidfile = tmp_path / "grandchild.pid"
+    script = f"sleep 30 & echo $! > {pidfile}; wait"
+    with pytest.raises(subprocess.TimeoutExpired):
+        scheduler._run_agent(["sh", "-c", script], capture_output=True, text=True, timeout=1, stdin=subprocess.DEVNULL)
+    pid = int(pidfile.read_text().strip())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("the grandchild outlived the timeout")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_run_group_returns_what_subprocess_run_returns_and_never_signals_the_board(monkeypatch):
+    from app import platform as plat
+    cp = plat.run_group(["sh", "-c", "echo out; echo err >&2; exit 3"], capture_output=True, text=True, timeout=10)
+    assert (cp.returncode, cp.stdout, cp.stderr) == (3, "out\n", "err\n")
+    assert plat.run_group(["cat"], input="hi", capture_output=True, text=True, timeout=10).stdout == "hi"
+    killed = []
+    monkeypatch.setattr(plat.os, "killpg", lambda *a: killed.append(a))
+    monkeypatch.setattr(plat.os, "getpgid", lambda pid: plat.os.getpgrp())       # a child that somehow shares the board's group
+    with pytest.raises(subprocess.TimeoutExpired):
+        plat.run_group(["sleep", "5"], timeout=0.2)
+    assert killed == [], "the board's own process group is never signalled"
