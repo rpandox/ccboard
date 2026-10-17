@@ -16,6 +16,7 @@ from pathlib import Path
 from croniter import croniter
 
 from . import agents, claude_auth, devguard, notify, projects, tasks
+from . import platform as plat
 from .agents import codex as codex_agent
 from .agents.claude import BARE_REFUSAL, FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
@@ -249,12 +250,12 @@ BUSY_PAUSE = 0.05     # seconds between them
 
 
 def _run_agent(cmd, **kw):
-    """subprocess.run for an agent binary, tried again when the kernel says the file is busy (ETXTBSY). That happens when another process still has
+    """platform.run_group (subprocess.run in its own process group, the whole group ended on a timeout) for an agent binary, tried again when the kernel says the file is busy (ETXTBSY). That happens when another process still has
     the binary open for writing at the moment of the exec: an installer or an update that just wrote it, or (in the tests) a fork that inherited the
     descriptor a fake binary was written through. It clears within milliseconds; any other error, and a busy file after BUSY_TRIES, is raised as it is."""
     for i in range(BUSY_TRIES):
         try:
-            return subprocess.run(cmd, **kw)
+            return plat.run_group(cmd, **kw)
         except OSError as e:
             if e.errno != 26 or i == BUSY_TRIES - 1:          # 26: ETXTBSY
                 raise
@@ -269,7 +270,7 @@ def codex_command(job: dict, wt: Path, out_file: Path, extra: list[str]) -> list
     extra = list(extra)
     if "--skip-git-repo-check" not in extra:
         extra.append("--skip-git-repo-check")              # a worktree is a repo; the flag only removes a way for the run to refuse to start
-    return agents.get("codex").headless_argv(job["prompt"], mode=job.get("permission_mode") or "acceptEdits", max_turns=0, budget=None, extra=extra,
+    return agents.get("codex").headless_argv(job["prompt"], mode=job.get("permission_mode") or "auto", max_turns=0, budget=None, extra=extra,
                                              cwd=None, slug="", last_message_file=str(out_file), opts=job_opts(job))
 
 
@@ -347,7 +348,7 @@ FALLBACK_MODE = "auto"     # what a stored job whose mode is no headless mode ru
 def headless_mode(job: dict) -> str:
     """The permission mode this stored job may run in: its own when the agent's HEADLESS_MODES have it, else FALLBACK_MODE with a warning. A hand-edited
     row (bypassPermissions, a typo) must never reach the argv: the API refuses those modes, the database does not."""
-    mode = job.get("permission_mode") or "acceptEdits"
+    mode = job.get("permission_mode") or "auto"
     allowed = codex_agent.HEADLESS_MODES if (job.get("agent") or "claude") == "codex" else HEADLESS_MODES
     if mode in allowed:
         return mode

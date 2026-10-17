@@ -433,7 +433,7 @@ Dnd.prefsOf = function (t, agent) {
 Dnd.summary = function (t, agent) {
   const src = (t && t.spec && typeof t.spec === 'object' ? t.spec : null) || Dnd.prefsOf(t, agent) || {};
   const model = src.model_sel === 'custom' ? src.model_id : (src.model_sel || src.model || '');
-  const bits = [model, src.effort || src.reasoning_effort, src.permission_mode].filter(Boolean);
+  const bits = [model, src.effort || src.reasoning_effort, src.permission_mode === 'manual' ? 'ask' : src.permission_mode].filter(Boolean);
   return bits.length ? bits.join(' · ') : 'repo defaults';
 };
 
@@ -463,7 +463,7 @@ Dnd.confirm = function (plan, at) {
       if (hook) { Dnd.closePop(); launch(taskLaunchOpts(t, { agent: plan.agent, auto_close: auto.checked })); return; }
       opened = !opened;
       if (opened && !lc) {
-        lc = launchControls(Dnd.prefsOf(t, plan.agent) || {}, typeof PERMS !== 'undefined' ? PERMS : [['', 'ask (default)']]);
+        lc = launchControls(Dnd.prefsOf(t, plan.agent) || {}, typeof PERMS !== 'undefined' ? PERMS : [['', 'ask']]);
         optsHost.append(lc.grid);
       }
       optsHost.classList.toggle('hidden', !opened);

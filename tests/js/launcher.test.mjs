@@ -354,9 +354,14 @@ test('Claude defaults: model opus and effort high, chips ordered opus, fable, so
   typeInto(id, 'claude-fable-5-1');
   assert.match(previewOf(f), /--model claude-fable-5-1/);
   const perm = fieldOf(f, /^Permissions$/).querySelector('select');
-  assert.deepEqual(perm.children.map((o) => o.getAttribute('value')), ['', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
+  assert.deepEqual(perm.children.map((o) => o.getAttribute('value')), ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
+  assert.equal(perm.value, 'auto', 'issue #83: a form with nothing remembered opens on auto');
+  assert.match(previewOf(f), /--permission-mode auto/);
+  assert.equal(perm.children.find((o) => o.getAttribute('value') === 'auto').textContent, "auto (default): Claude's safety checks");
   choose(perm, 'plan');
   assert.match(previewOf(f), /--permission-mode plan/);
+  choose(perm, 'manual');
+  assert.doesNotMatch(previewOf(f), /--permission-mode/, 'ask sends no flag, as it always did');
 });
 
 test('Advanced is collapsed and holds the rest of the Claude fields; siblings are pre-checked for --add-dir, other projects\' repos are not; the devcontainer shows only where the repo has one', () => {
@@ -443,7 +448,7 @@ test('Codex: ONE mode picker (default, auto, read-only, custom; no bypass, owner
   const f = form(w);
   assert.deepEqual(pressed(f, 'Agent'), ['◇ Codex']);
   assert.deepEqual(labels(f, 'Codex mode'), ['default', 'auto', 'read-only', 'custom']);
-  assert.deepEqual(pressed(f, 'Codex mode'), ['default']);
+  assert.deepEqual(pressed(f, 'Codex mode'), ['auto'], 'issue #83: auto is the start; the server maps it to the default pair where this Codex has no --approve-for-me');
   assert.equal(hidden(f.querySelector('.lx-custom')), true);
   btn(f, 'Codex mode', 'custom').click();
   assert.equal(hidden(f.querySelector('.lx-custom')), false);
@@ -484,11 +489,11 @@ test('the Codex sheet\'s command preview follows the capabilities GET /api/agent
   const w = lWorld({ answers: { '/api/agents': schema } });
   open(w, { agent: 'codex' });
   await tick(); await tick();
-  assert.equal(previewOf(form(w)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request');
+  assert.equal(previewOf(form(w)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --approve-for-me -s workspace-write');
   const w0 = lWorld({ answers: { '/api/agents': { __error: 'offline' } } });
   open(w0, { agent: 'codex' });
   await tick();
-  assert.equal(previewOf(form(w0)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request', 'before the box answers: the embedded baseline, like the adapter\'s BASELINE_CAPS');
+  assert.equal(previewOf(form(w0)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --approve-for-me -s workspace-write', 'before the box answers: the embedded baseline, like the adapter\'s BASELINE_CAPS');
 });
 
 test('Codex reasoning levels are disabled per model from reasoning_by_model (an injected schema), each with its reason, and a level the new model lacks is dropped', async () => {
@@ -532,7 +537,8 @@ test('GET /api/agents is read once per page load, never by a poll; its models, e
   const f = form(w);
   assert.deepEqual(group(f, 'Model').querySelectorAll('button').filter(off).map((b) => text(b).trim()), ['fable', 'sonnet'], 'a chip the schema does not list is disabled');
   assert.deepEqual(labels(f, 'Effort'), ['default', 'low', 'high']);
-  assert.deepEqual(fieldOf(f, /^Permissions$/).querySelector('select').children.map((o) => o.getAttribute('value')), ['', 'plan']);
+  assert.deepEqual(fieldOf(f, /^Permissions$/).querySelector('select').children.map((o) => o.getAttribute('value')), ['manual', 'plan']);
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'manual', 'this Claude Code lists no auto: the form asks instead of failing');
   assert.equal(hidden(fieldOf(f.querySelector('details[data-agent=claude]'), /^Fallback model$/)), true, 'an advanced field the schema does not list is not shown');
   assert.equal(hidden(fieldOf(f.querySelector('details[data-agent=claude]'), /^Allowed tools$/)), true);
   open(w, {});
@@ -609,6 +615,71 @@ test('remembered per repo AND agent: a launch saves ccboard:launch:<p>/<r>:<agen
   assert.deepEqual(store(w, 'ccboard:launch:shop/api:claude'), { model: 'fable', effort: 'max', permission_mode: 'acceptEdits' }, 'Claude\'s memory is untouched');
 });
 
+// ---------------------------------------------------------------- issue #83: auto is the default for new work
+
+test('issue #83: a session, a task and a dispatch with nothing remembered carry auto for Claude and auto for Codex; bypass is never the start', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'claude' }, '/api/tasks': { id: 5, slug: 'x', tmux: 'x', branch: 'b' } } });
+  open(w, {});
+  let f = form(w);
+  const perm = () => fieldOf(f, /^Permissions$/).querySelector('select');
+  assert.equal(perm().value, 'auto');
+  submit(f);
+  await tick(); await tick();
+  const sb = posts(w, /\/sessions$/)[0].body;
+  assert.equal(sb.permission_mode, 'auto');
+  assert.ok(!('bypass' in sb) && sb.mode === undefined, 'no bypass spelling anywhere');
+  open(w, { mode: 'task' });
+  f = form(w);
+  typeInto(f.querySelector('textarea.lx-prompt'), 'do it');
+  submit(f);
+  await tick(); await tick();
+  assert.equal(posts(w, /\/api\/tasks$/)[0].body.permission_mode, 'auto');
+  // Codex: auto in the session body too (the server maps it to the default pair where this Codex has no --approve-for-me)
+  const w2 = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'codex' } } });
+  open(w2, { agent: 'codex' });
+  assert.deepEqual(pressed(form(w2), 'Codex mode'), ['auto']);
+  submit(form(w2));
+  await tick(); await tick();
+  const b = posts(w2, /\/sessions$/)[0].body;
+  assert.deepEqual([b.mode, b.permission_mode, b.bypass], ['auto', 'auto', undefined]);
+});
+
+test('issue #83: a saved choice still wins over the auto default: acceptEdits, plan, dontAsk, and a remembered ask (which sends no flag)', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'claude' } } });
+  const perm = () => fieldOf(form(w), /^Permissions$/).querySelector('select');
+  for (const mode of ['acceptEdits', 'plan', 'dontAsk']) {
+    w.localStorage.setItem('ccboard:launch:shop/api:claude', JSON.stringify({ model: 'opus', permission_mode: mode }));
+    open(w, {});
+    assert.equal(perm().value, mode);
+    assert.match(previewOf(form(w)), new RegExp(`--permission-mode ${mode}`));
+  }
+  // a person who chose ask: remembered as such (not as nothing), shown as ask, sent as nothing
+  w.localStorage.setItem('ccboard:launch:shop/api:claude', JSON.stringify({ model: 'opus' }));
+  open(w, {});
+  assert.equal(perm().value, 'auto');
+  choose(perm(), 'manual');
+  submit(form(w));
+  await tick(); await tick();
+  assert.equal(store(w, 'ccboard:launch:shop/api:claude').permission_mode, 'manual', 'ask is a choice and is remembered');
+  assert.ok(!('permission_mode' in posts(w, /\/sessions$/)[0].body), 'ask sends no flag, as it always did');
+  open(w, {});
+  assert.equal(perm().value, 'manual');
+  assert.doesNotMatch(previewOf(form(w)), /--permission-mode/);
+  // the older forms wrote an empty word for ask
+  w.localStorage.setItem('ccboard:launch:shop/api:claude', JSON.stringify({ model: 'opus', permission_mode: '' }));
+  open(w, {});
+  assert.equal(perm().value, 'manual');
+});
+
+test('issue #83: a Backlog card dispatched from the sheet keeps the permission it was created with, not the default', () => {
+  const task = { id: 7, title: 'Fix it', prompt: 'fix it', project: 'shop', repo: 'api', agent: 'claude', phase: 'backlog', spec: { permission_mode: 'plan' } };
+  const w = lWorld();
+  open(w, { mode: 'dispatch', task });
+  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'plan');
+  open(w, { mode: 'dispatch', task: { ...task, id: 8, spec: {} } });
+  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'auto');
+});
+
 test('a bypass-class choice is never remembered: the next sheet starts from the default again (the devcontainer switch is)', async () => {
   const w = lWorld({ answers: { '/api/projects/shop/repos/web/sessions': { tmux: 'shop--web--s2' } } });
   open(w, { repo: 'web' });
@@ -622,7 +693,7 @@ test('a bypass-class choice is never remembered: the next sheet starts from the 
   assert.equal(store(w, 'ccboard:launch:shop/web:claude').permission_mode, undefined);
   assert.equal(store(w, 'ccboard:launch:shop/web:claude').devcontainer, true);
   open(w, { repo: 'web' });
-  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, '');
+  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'auto', 'back to the default (auto), never bypass');
 });
 
 // ---------------------------------------------------------------- bypass only inside the devcontainer (owner decision on #104)
@@ -710,7 +781,7 @@ test('the bypass drop note names the mode the sheet really fell back to: auto wh
   await w.run('launcherSchemaLoad()');                        // the schema is in before the sheet builds, as on every open after the first
   open(w, { repo: 'web' });
   const f = form(w);
-  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, '', 'no auto here: the default (ask) it is');
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'manual', 'no auto here: the default (ask) it is');
   assert.match(permNote(f), /so the mode is now ask\./);
   assert.doesNotMatch(permNote(f), /now auto/);
   const w2 = lWorld({ answers: claude(['manual', 'auto', 'bypassPermissions']) });
@@ -770,11 +841,11 @@ test('task and dispatch mode never offer bypass: no bypass permission, no bypass
     const f = form(w);
     const perm = fieldOf(f, /^Permissions$/).querySelector('select');
     assert.ok(!perm.children.some((o) => o.getAttribute('value') === 'bypassPermissions'), `${mode}: no bypass permission`);
-    assert.equal(perm.value, '', `${mode}: a remembered bypass is back to ask`);
+    assert.equal(perm.value, 'auto', `${mode}: a remembered bypass is back to the default, which is auto`);
     assert.ok(!labels(f, 'Codex mode').includes('bypass'), `${mode}: no bypass button`);
     assert.ok(!fieldOf(f, /^Sandbox$/).querySelector('select').children.some((o) => o.getAttribute('value') === 'danger-full-access'), `${mode}: no danger sandbox`);
     btn(f, 'Agent', '◇ Codex').click();
-    assert.deepEqual(pressed(f, 'Codex mode'), ['default'], `${mode}: the remembered Codex bypass is back to default`);
+    assert.deepEqual(pressed(f, 'Codex mode'), ['auto'], `${mode}: the remembered Codex bypass is back to the default, which is auto`);
     assert.equal(hidden(f.querySelector('.lx-danger')), true);
     assert.equal(f.querySelectorAll('.lx-ack').length, 1);
     assert.equal(hidden(f.querySelector('.lx-ack')), true);
@@ -925,7 +996,7 @@ test('Start & open posts the body to the repo\'s sessions route, takes the respo
   assert.ok(off(start(f)), 'a second tap during the request does nothing');
   await tick(); await tick();
   assert.deepEqual(posts(w, /\/sessions$/).map((c) => [c.path, c.body]), [['/api/projects/shop/repos/api/sessions', {
-    launcher: 'claude', agent: 'claude', prompt: 'fix the login redirect', model: 'sonnet', effort: 'high', add_dirs: ['shop/web'] }]]);
+    launcher: 'claude', agent: 'claude', prompt: 'fix the login redirect', model: 'sonnet', effort: 'high', permission_mode: 'auto', add_dirs: ['shop/web'] }]]);
   assert.equal(previewOf(f), 'claude --session-id u --name s2 --model opus --effort high', 'the response\'s cmd replaced the approximation');
   assert.equal(w.get('__opened')[0].location, '/term/shop--api--s2');
   assert.equal(sheet(w).open, false);
@@ -1220,11 +1291,11 @@ test('task mode: Run Now | Later | Schedule, title, prompt, from-GitHub-issue an
   btn(f, 'Model', 'sonnet').click();
   submit(f);
   await tick(); await tick();
-  assert.deepEqual(posts(w, /\/api\/tasks$/).map((c) => c.body), [{ project: 'shop', repo: 'api', agent: 'claude', model: 'sonnet', effort: 'high', title: 'Fix the login redirect', prompt: 'Fix the login redirect\nmore detail', when: 'now' }],
+  assert.deepEqual(posts(w, /\/api\/tasks$/).map((c) => c.body), [{ project: 'shop', repo: 'api', agent: 'claude', model: 'sonnet', effort: 'high', permission_mode: 'auto', title: 'Fix the login redirect', prompt: 'Fix the login redirect\nmore detail', when: 'now' }],
     'a task does not start with its sibling repos checked (the old task form did not either): no add_dirs');
   assert.equal(sheet(w).open, false);
   assert.ok(plain(w.get('__toasts')).some((t) => /started fix-login/.test(t.text)));
-  assert.deepEqual(store(w, 'ccboard:task:shop/api'), { model: 'sonnet', effort: 'high', when: 'now', auto_close: true, cron: '', job_mode: 'acceptEdits', max_turns: 30 }, 'Claude keeps the bare key components.js and dnd.js read');
+  assert.deepEqual(store(w, 'ccboard:task:shop/api'), { model: 'sonnet', effort: 'high', permission_mode: 'auto', when: 'now', auto_close: true, cron: '', job_mode: 'auto', max_turns: 30 }, 'Claude keeps the bare key components.js and dnd.js read');
   assert.equal(w.localStorage.getItem('ccboard:task:last:shop'), 'api');
 });
 
@@ -1281,7 +1352,7 @@ test('task mode, Schedule: a headless run through POST /jobs (name, cron presets
   f.querySelectorAll('button.chip-btn').find((b) => text(b) === 'nightly 02:30').click();
   submit(f);
   await tick(); await tick();
-  assert.deepEqual(posts(w, /\/jobs$/).map((c) => c.body), [{ name: 'Run the audit', prompt: 'Run the audit', permission_mode: 'acceptEdits', max_turns: 30, run_now: false, cron: '30 2 * * *' }]);
+  assert.deepEqual(posts(w, /\/jobs$/).map((c) => c.body), [{ name: 'Run the audit', prompt: 'Run the audit', permission_mode: 'auto', max_turns: 30, run_now: false, cron: '30 2 * * *' }]);
   const w2 = lWorld();
   open(w2, { mode: 'task', agent: 'codex' });
   assert.ok(!off(btn(form(w2), 'Run', 'Schedule')));
@@ -1305,7 +1376,7 @@ test('task mode, Schedule with Codex: model and reasoning only, no turns or budg
   submit(f);
   await tick(); await tick();
   const body = posts(w, /\/jobs$/)[0].body;
-  assert.deepEqual(body, { name: 'Review main', prompt: 'Review main', permission_mode: 'acceptEdits', run_now: false, cron: '0 9 * * 1-5', agent: 'codex', model: 'gpt-6-sol', reasoning_effort: 'high' });
+  assert.deepEqual(body, { name: 'Review main', prompt: 'Review main', permission_mode: 'auto', run_now: false, cron: '0 9 * * 1-5', agent: 'codex', model: 'gpt-6-sol', reasoning_effort: 'high' });
   const kept = store(w, 'ccboard:task:shop/api:codex');
   assert.equal(kept.model, 'gpt-6-sol');
   assert.equal(kept.reasoning_effort, 'high');
@@ -1395,7 +1466,7 @@ test('dispatch mode: a new session of either agent with the launch choices (task
   btn(f, 'Effort', 'low').click();
   submit(f);
   await tick(); await tick();
-  assert.deepEqual(posts(w, /\/dispatch$/).map((c) => c.body), [{ mode: 'lane', model: 'haiku', effort: 'low' }], 'Claude and auto-close on are the server\'s defaults: not sent');
+  assert.deepEqual(posts(w, /\/dispatch$/).map((c) => c.body), [{ mode: 'lane', model: 'haiku', effort: 'low', permission_mode: 'auto' }], 'Claude and auto-close on are the server\'s defaults: not sent; the permission is the board\'s default (auto, issue #83) and goes with it');
   // a Codex lane with the switch off, then a running session
   open(w, { mode: 'dispatch', task });
   f = form(w);

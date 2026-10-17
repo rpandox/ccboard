@@ -904,7 +904,7 @@ class CodexAgent(Agent):
                      "(owner decision, #104), and Codex never runs there.", "advanced", True),
             OptField("permission_mode", "Permission mode (Claude's words)", "select", list(PERMISSION_MODES), None,
                      "The same choice as Mode in Claude's words: default and acceptEdits: -s workspace-write -a on-request. plan: -s read-only. "
-                     "dontAsk: -a never. auto: automatic approval review. bypassPermissions is refused (bypass is allowed only for Claude inside the devcontainer, #104). "
+                     "dontAsk: -a never. auto (the board's default): automatic approval review where this Codex has --approve-for-me, else exactly default. bypassPermissions is refused (bypass is allowed only for Claude inside the devcontainer, #104). "
                      "Mode wins when both are sent.", "advanced"),
             OptField("add_dirs", "Extra directories", "dirs", None, None,
                      "--add-dir: sibling repos (project/repo) the session may write.", "advanced"),
@@ -1106,7 +1106,7 @@ class CodexAgent(Agent):
     @staticmethod
     def _perm_choice(full: dict, caps: dict | None = None) -> tuple[str | None, str | None, bool, bool]:
         """(sandbox, approval, approve_for_me, approval_first) the validated options ask for. `auto` is --approve-for-me where `caps`
-        says this codex has it (or caps is None); an older one gets on-failure first or on-request instead."""
+        says this codex has it (or caps is None); one without it gets exactly what `default` gets: workspace-write and on-request."""
         mode = full.get("permission_mode")
         sandbox: str | None = None
         approval: str | None = None
@@ -1122,10 +1122,8 @@ class CodexAgent(Agent):
             sandbox = "workspace-write"
             if caps is None or caps.get("approve_for_me"):
                 approve_for_me = True
-            elif caps.get("approval_on_failure"):
-                approval, approval_first = "on-failure", True
             else:
-                approval = "on-request"
+                approval = "on-request"             # no --approve-for-me here: exactly the default mapping, never wider (not on-failure either)
         if full.get("sandbox"):
             sandbox = full["sandbox"]
         if full.get("approval"):

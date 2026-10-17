@@ -189,7 +189,8 @@ test('Now with the options set posts them; blank options are left out', async ()
   submit(f);
   await tick();
   const plainBody = posts(w, '/api/tasks')[0].body;
-  for (const k of ['model', 'effort', 'permission_mode', 'args']) assert.ok(!(k in plainBody), `${k} is not sent when it is blank`);
+  for (const k of ['model', 'effort', 'args']) assert.ok(!(k in plainBody), `${k} is not sent when it is blank`);
+  assert.equal(plainBody.permission_mode, 'auto', 'issue #83: a form with nothing remembered carries the board default, auto');
   openTask(w, { project: 'shop', repo: 'web' });
   const g = form(w);
   type(g, 'Fix web', 'go');
@@ -748,7 +749,7 @@ test('Now with steps posts ONE chain: step 1 is the form\'s prompt with its laun
   assert.equal(p.length, 1);
   assert.deepEqual(p[0].body, {
     steps: [
-      { title: 'Audit the cache rules', prompt: 'Audit the service worker cache rules and list the findings', agent: 'claude', model: 'opus' },
+      { title: 'Audit the cache rules', prompt: 'Audit the service worker cache rules and list the findings', agent: 'claude', model: 'opus', permission_mode: 'auto' },
       { title: 'Fix each finding below', prompt: 'Fix each finding below.\n\n{{result}}', agent: 'codex' },
       { title: 'Review', prompt: 'Review the diff and list anything risky.', agent: 'claude' }],
     dispatch: true,

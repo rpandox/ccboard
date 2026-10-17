@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.62 - 2026-10-16
+## v0.5.62 - 2026-10-17
 
 ### Changed
 - Bypass permissions is now allowed only inside the repo's devcontainer (owner decision on #104). An interactive Claude session can choose it only when it is launched with *Run in the devcontainer*; every other request, whatever its spelling or launch kind, is a 400: "bypass is allowed only inside the repo's devcontainer (owner decision, #104); choose auto or turn on Run in the devcontainer".
@@ -10,6 +10,23 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - The launcher shows the bypass choice only while *Run in the devcontainer* is on; otherwise it is disabled with its reason, and Codex has no bypass choice. A saved default or preset that holds a bypass falls back to auto with a note.
 - Hardening. Inside the devcontainer every bypass spelling now needs the acknowledgement `bypass: true`, not only `mode: "bypass"`: `permission_mode: bypassPermissions`, `mode: bypassPermissions`, `--dangerously-skip-permissions` or `--permission-mode bypassPermissions` in `args`, and a resume or continue with a bypass mode. Without it the answer is a 400 "bypass skips every approval: send bypass: true with the acknowledgement". This changes the flat compat body (`permission_mode: bypassPermissions` plus `devcontainer: true` used to launch alone); the launcher sheet already sent the acknowledgement. A stored schedule whose permission mode is not a headless mode (a hand-edited `bypassPermissions`, a typo) no longer runs in it: the run falls back to `auto` and logs a warning.
 - The task, dispatch and schedule refusals now say "bypass is only for an interactive Claude session in the repo's devcontainer (#104)" instead of sending you to start a session and choose bypass. Codex sessions get their own sentence, "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto", since Codex cannot use the devcontainer. When a saved bypass falls back in the launcher, the note names the real mode (ask, where this Claude has no auto).
+Upgrade: nothing to do.
+
+## v0.5.61 - 2026-10-17
+
+### Changed
+- The default permission mode for new work is now `auto` for Claude (issue #83): a session, task or dispatch opened from the launcher, and a schedule or batch started without a mode, run with Claude's safety checks instead of asking or accepting edits. The form shows it as *auto (default): Claude's safety checks*; *ask* is one tap away.
+- Codex opens on `auto` too, but only gets `--approve-for-me` where its installed binary has the flag. Without it `auto` is exactly the old default (`-s workspace-write -a on-request`; the older `on-failure` fallback is gone), and a headless run is unchanged.
+- A saved choice still wins: a per-repo or project default, a preset, a Backlog card's own mode and an issue's model line. A remembered *ask* is now kept as a choice. A Claude Code too old to start in `auto` opens on *ask* instead of failing.
+- Jobs already stored keep their mode; only the fallback for a new job with none changed (`POST /jobs`, `POST /api/batch`).
+- Bypass is never a default, and a request from another node still never carries `auto`, bypass or `dontAsk`.
+
+Upgrade: nothing to do.
+
+## v0.5.60 - 2026-10-16
+
+### Fixed
+- A scheduled or headless agent run that times out now ends its whole process tree (#116, slice 8). The run starts in its own process group; on a timeout the board sends SIGTERM to the group, waits 5 seconds, then SIGKILL. Before, only the direct child was killed and its node grandchildren kept running (Linux too). The board never signals its own group. On Windows the child is started in a new process group and killed. Environment handling is unchanged.
 
 Upgrade: nothing to do.
 

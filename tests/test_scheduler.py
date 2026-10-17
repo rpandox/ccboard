@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -77,7 +78,7 @@ def test_job_lifecycle(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     task = main.db.task_get(run["task_id"])
     assert task["claude_session_id"].startswith("2222") and task["branch"].startswith("worktree-nightly-tests-") and task["cost_usd"] == 0.42
     args = (repo / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
-    assert "--permission-mode acceptEdits" in args and "--max-turns 30" in args and "--output-format json" in args
+    assert "--permission-mode auto" in args and "--max-turns 30" in args and "--output-format json" in args
     job = main.db.job_get(j["id"])
     assert job["last_status"] == "ok" and job["next_run_at"] > main.db_now()   # cron rescheduled
     st = client.get("/api/state", headers=H).json()
@@ -540,13 +541,13 @@ def test_run_job_hands_the_subagent_env_to_the_subprocess_only_when_set(client, 
     make_repo(projects_dir)
     monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
     seen = []
-    real = scheduler.subprocess.run
+    real = scheduler.plat.run_group
 
     def spy(cmd, *a, **k):
         if "-p" in cmd:
             seen.append(k.get("env"))
         return real(cmd, *a, **k)
-    monkeypatch.setattr(scheduler.subprocess, "run", spy)
+    monkeypatch.setattr(scheduler.plat, "run_group", spy)
     job = {"id": 1, "name": "n", "project": "shop", "repo": "api", "agent": "claude", "prompt": "x", "permission_mode": "acceptEdits"}
     monkeypatch.setattr(main.settings, "subagent_model", "")
     scheduler.run_job(main.db, {**job, "id": main.db.job_add(project="shop", repo="api", name="n", prompt="x")}, main.db.run_start(1))
@@ -580,7 +581,7 @@ def test_a_stored_job_with_a_non_headless_mode_runs_in_auto_and_never_in_bypass(
         assert built[-1][0] == "auto", bad
         assert not any("bypass" in a.lower() or "dangerously" in a.lower() for c in [built[-1][1], *seen] for a in c), "no bypass spelling in any argv"
         assert any("not a headless mode" in r.message and bad in r.message for r in caplog.records)
-    assert scheduler.headless_mode({"permission_mode": "plan"}) == "plan" and scheduler.headless_mode({}) == "acceptEdits"
+    assert scheduler.headless_mode({"permission_mode": "plan"}) == "plan" and scheduler.headless_mode({}) == "auto"
     assert scheduler.headless_mode({"agent": "codex", "permission_mode": "bypassPermissions"}) == "auto"
 
 
@@ -692,18 +693,103 @@ def test_starting_an_agent_is_tried_again_while_its_binary_is_busy_and_other_err
         if len(calls) < 3:
             raise OSError(26, "Text file busy")
         return "done"
-    monkeypatch.setattr(scheduler.subprocess, "run", flaky)
+    monkeypatch.setattr(scheduler.plat, "run_group", flaky)
     monkeypatch.setattr(scheduler, "BUSY_PAUSE", 0)
     assert scheduler._run_agent(["claude"], cwd=".") == "done" and len(calls) == 3
     calls.clear()
-    monkeypatch.setattr(scheduler.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError(26, "Text file busy")))
+    monkeypatch.setattr(scheduler.plat, "run_group", lambda cmd, **kw: (_ for _ in ()).throw(OSError(26, "Text file busy")))
     with pytest.raises(OSError):
         scheduler._run_agent(["claude"])                    # still busy after BUSY_TRIES: raised, never looped for ever
     seen = []
     def missing(cmd, **kw):
         seen.append(1)
         raise FileNotFoundError(2, "No such file")
-    monkeypatch.setattr(scheduler.subprocess, "run", missing)
+    monkeypatch.setattr(scheduler.plat, "run_group", missing)
     with pytest.raises(FileNotFoundError):
         scheduler._run_agent(["claude"])
     assert len(seen) == 1, "another error is not retried"
+
+
+# ---- issue #83: a new job or batch the person gave no permission mode runs with auto; a saved choice wins; bypass is never a default
+
+def test_new_job_and_batch_without_a_mode_get_auto(client, codex_box):
+    main, repo, _ = codex_box
+    jid = post_job(client, run_now=False).json()["id"]
+    assert main.db.job_get(jid)["permission_mode"] == "auto"
+    cid = post_job(client, run_now=False, agent="codex").json()["id"]
+    assert main.db.job_get(cid)["permission_mode"] == "auto"
+    b = client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"]}).json()
+    assert main.db.job_get(b["jobs"][0])["permission_mode"] == "auto"
+    assert main.db.job_get(main.db.job_add(project="shop", repo="api", name="old", prompt="p"))["permission_mode"] == "acceptEdits"   # rows keep their own: the column default is only for rows written without one
+
+
+def test_a_chosen_mode_still_wins_over_the_auto_default(client, codex_box):
+    main, repo, _ = codex_box
+    for mode in ("acceptEdits", "default", "plan", "dontAsk", "auto"):
+        jid = post_job(client, run_now=False, permission_mode=mode).json()["id"]
+        assert main.db.job_get(jid)["permission_mode"] == mode
+    b = client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"], "permission_mode": "plan"}).json()
+    assert main.db.job_get(b["jobs"][0])["permission_mode"] == "plan"
+    # a stored job keeps its mode when it runs (its own acceptEdits is not rewritten to auto)
+    job = {"name": "n", "prompt": "do it", "permission_mode": "acceptEdits"}
+    argv = scheduler.codex_command(job, repo, repo / "o.txt", [])
+    assert argv[:5] == ["codex", "exec", "--json", "-s", "workspace-write"]
+
+
+def test_bypass_is_never_a_default_or_accepted_for_a_job(client, codex_box):
+    main, repo, _ = codex_box
+    assert "bypassPermissions" not in scheduler.MODES
+    assert main.JobIn(name="n", prompt="p").permission_mode == "auto" and main.BatchIn(prompt="p", repos=[]).permission_mode == "auto"
+    assert post_job(client, run_now=False, permission_mode="bypassPermissions").status_code == 400
+    assert client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"], "permission_mode": "bypassPermissions"}).status_code == 400
+
+
+def test_a_stored_job_with_an_empty_mode_runs_with_auto_not_bypass(client, codex_box):
+    main, repo, _ = codex_box
+    jid = main.db.job_add(project="shop", repo="api", name="blank", prompt="run tests", permission_mode="")
+    started = client.post(f"/api/jobs/{jid}/run", headers=H).json()["started"]
+    w = scheduler.Worker(main.db)
+    run_all(w)
+    for t in list(main.sched.running.values() if main.sched else []):
+        t.join(timeout=30)
+    rid = started[0] if started else w.tick()[0]
+    run_all(w)
+    task = main.db.task_get(main.db.run_get(rid)["task_id"])
+    args = (repo / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
+    assert "--permission-mode auto" in args and "bypassPermissions" not in args and "--dangerously-skip-permissions" not in args
+
+# ---- #116 slice 8: a timeout ends the agent's whole process group
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_timed_out_agent_takes_its_grandchildren_with_it(tmp_path, monkeypatch):
+    """Before slice 8 subprocess.run killed only the direct child, so a node grandchild of a timed-out claude kept running."""
+    from app import platform as plat
+    monkeypatch.setattr(plat, "GROUP_GRACE", 0.5)
+    pidfile = tmp_path / "grandchild.pid"
+    script = f"sleep 30 & echo $! > {pidfile}; wait"
+    with pytest.raises(subprocess.TimeoutExpired):
+        scheduler._run_agent(["sh", "-c", script], capture_output=True, text=True, timeout=1, stdin=subprocess.DEVNULL)
+    pid = int(pidfile.read_text().strip())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("the grandchild outlived the timeout")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_run_group_returns_what_subprocess_run_returns_and_never_signals_the_board(monkeypatch):
+    from app import platform as plat
+    cp = plat.run_group(["sh", "-c", "echo out; echo err >&2; exit 3"], capture_output=True, text=True, timeout=10)
+    assert (cp.returncode, cp.stdout, cp.stderr) == (3, "out\n", "err\n")
+    assert plat.run_group(["cat"], input="hi", capture_output=True, text=True, timeout=10).stdout == "hi"
+    killed = []
+    monkeypatch.setattr(plat.os, "killpg", lambda *a: killed.append(a))
+    monkeypatch.setattr(plat.os, "getpgid", lambda pid: plat.os.getpgrp())       # a child that somehow shares the board's group
+    with pytest.raises(subprocess.TimeoutExpired):
+        plat.run_group(["sleep", "5"], timeout=0.2)
+    assert killed == [], "the board's own process group is never signalled"

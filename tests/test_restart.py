@@ -205,7 +205,7 @@ def test_the_launch_line_is_unchanged_by_the_permission_refactor(fake_codex):
     args = lambda full, c: ag._perm_args(full, c, bypass=False)       # noqa: E731
     assert args({"permission_mode": "default"}, caps) == ["-s", "workspace-write", "-a", "on-request"]
     assert args({"permission_mode": "auto"}, caps) == ["--approve-for-me", "-s", "workspace-write"]
-    assert args({"permission_mode": "auto"}, old) == ["-a", "on-failure", "-s", "workspace-write"]
+    assert args({"permission_mode": "auto"}, old) == ["-s", "workspace-write", "-a", "on-request"], "#83: auto is the default now, so without --approve-for-me it is the old default, never on-failure"
     assert args({"permission_mode": "auto", "approval": "never"}, caps) == ["-s", "workspace-write", "-a", "never"]
     assert args({"permission_mode": "plan", "approval": "never"}, caps) == ["-s", "read-only", "-a", "never"]
 

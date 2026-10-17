@@ -187,7 +187,7 @@ test('Reset to my defaults restores what the person had, and keeps the prompt an
   reset(f).click();
   assert.deepEqual(pressed(f, 'Model'), ['haiku']);
   assert.deepEqual(pressed(f, 'Effort'), ['low']);
-  assert.equal(permSel(f).value, '');
+  assert.equal(permSel(f).value, 'auto', 'back to what the form started with: the default, auto');
   assert.match(f.querySelector('textarea.lx-prompt').value, /Closes #47/);
   assert.ok(hidden(reset(f)));
 });

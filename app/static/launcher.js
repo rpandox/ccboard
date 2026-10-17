@@ -4,7 +4,8 @@
 const LAUNCH_KEY = (p, r) => `ccboard:launch:${p.name}/${r.name}`;
 const MODELS = [['', 'default (settings)'], ['fable', 'fable'], ['opus', 'opus'], ['sonnet', 'sonnet'], ['haiku', 'haiku'], ['custom', 'custom id…']];
 const EFFORTS = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
-const PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', 'auto'], ['dontAsk', "don't ask: deny prompts"]];
+const PERM_DEFAULT = 'auto';                                              // the owner's call (issue #83): what a form starts with when nothing is remembered; 'ask' is one tap away
+const PERMS = [['', 'ask'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', "auto (default): Claude's safety checks"], ['dontAsk', "don't ask: deny prompts"]];
 const PERMS_HOST = PERMS;                                                  // no bypass here: it is allowed only inside the repo's devcontainer (owner decision, #104), and the launcher sheet offers it there
 const BYPASS_WARNING = 'Claude runs every command and edit without asking, as your user, on this box. Claude Code asks you to confirm once in the terminal.';
 
@@ -15,7 +16,7 @@ function launchControls(saved, permOptions) {
     class: saved.model_sel === 'custom' ? '' : 'hidden', value: saved.model_id || '' });
   model.addEventListener('change', () => { modelId.classList.toggle('hidden', model.value !== 'custom'); if (model.value === 'custom') modelId.focus(); });
   const effort = selectEl(EFFORTS, saved.effort || '');
-  const perm = selectEl(permOptions, saved.permission_mode || '');
+  const perm = selectEl(permOptions, typeof saved.permission_mode === 'string' ? saved.permission_mode : PERM_DEFAULT);      // a remembered '' is the person's 'ask' and wins; nothing remembered is auto
   if (!perm.value) perm.value = '';                                       // a remembered choice that no longer exists
   const warn = el('div', { class: 'bad hidden', role: 'alert', text: BYPASS_WARNING });
   const syncWarn = () => warn.classList.toggle('hidden', perm.value !== 'bypassPermissions');
@@ -163,6 +164,8 @@ const TASK_LEDE = {
 const TASK_LEDE_CODEX_SCHEDULE = 'A headless run (codex exec) in its own worktree, on a cron or once now; the result becomes a task card.';
 const TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
 const JOB_MODES = ['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'];
+const JOB_MODE_DEFAULT = 'auto';
+const JOB_MODE_OPTIONS = JOB_MODES.map((m) => [m, m === JOB_MODE_DEFAULT ? "auto (default): Claude's safety checks" : m]);      // the value stays the mode's own word
 /* The title a task gets when none was typed: the first line of the prompt, whitespace collapsed, cut at a word near 80 characters. */
 function taskTitleFrom(prompt) {
   const line = String(prompt || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
@@ -275,7 +278,7 @@ function launcherIssueChoices(who, o) {
     if (c.effort) { if (sch.efforts.includes(c.effort) && c.effort !== 'ultracode') { pick.effort = c.effort; parts.push(c.effort); } else out.skipped.push(`effort ${c.effort}`); }
     if (c.permission_mode) {
       const m = c.permission_mode;
-      if (m === 'default' || m === 'manual') { pick.permission_mode = ''; parts.push('ask'); }
+      if (m === 'default' || m === 'manual') { pick.permission_mode = 'manual'; parts.push('ask'); }
       else if (m !== 'bypassPermissions' && sch.permission_modes.includes(m)) { pick.permission_mode = m; parts.push(m); }
       else out.skipped.push(`permissions ${m}`);
     }
@@ -491,7 +494,7 @@ function taskForm(p, r, opts) {
         else { setSel(lc.model, 'custom'); lc.modelId.value = c.model; lc.modelId.classList.remove('hidden'); }
       }
       if (c.effort) setSel(lc.effort, c.effort);
-      if ('permission_mode' in c) setSel(lc.perm, c.permission_mode);
+      if ('permission_mode' in c) setSel(lc.perm, c.permission_mode === 'manual' ? '' : c.permission_mode);          // this older form says ask with an empty word
       optNoteSync();
     },
     restore: () => {
@@ -511,7 +514,7 @@ function taskForm(p, r, opts) {
   const boxes = [];
   const checks = el('div', { class: 'checks' });
   for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', {}, cb, x.id)); }
-  const jobMode = selectEl(JOB_MODES.map((m) => [m, m]), JOB_MODES.includes(saved.job_mode) ? saved.job_mode : 'acceptEdits');
+  const jobMode = selectEl(JOB_MODE_OPTIONS, JOB_MODES.includes(saved.job_mode) ? saved.job_mode : JOB_MODE_DEFAULT);
   const turns = el('input', { type: 'number', value: String(saved.max_turns || 30), min: '1', max: '500', inputmode: 'numeric' });
   const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal' });
 
@@ -1022,7 +1025,7 @@ function jobForm(p, r) {
   };
   cron.addEventListener('input', syncGo);
   syncGo();
-  const mode = selectEl(JOB_MODES.map((m) => [m, m]), JOB_MODES.includes(saved.mode) ? saved.mode : 'acceptEdits');
+  const mode = selectEl(JOB_MODE_OPTIONS, JOB_MODES.includes(saved.mode) ? saved.mode : JOB_MODE_DEFAULT);
   const turns = el('input', { type: 'number', value: String(saved.turns || 30), min: '1', max: '500', inputmode: 'numeric' });
   const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
   const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', autocomplete: 'off', autocapitalize: 'off' });
@@ -1114,7 +1117,7 @@ function batchForm(opts) {
   const ag = jobAgentPick(null, null, saved.agent, () => paintAgent(), { model: saved.cx_model, reasoning_effort: saved.cx_reasoning });
   const name = el('input', { type: 'text', placeholder: 'optional', maxlength: 60, autocomplete: 'off', autocapitalize: 'off' });
   const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…' });
-  const mode = selectEl(JOB_MODES.map((x) => [x, x]), JOB_MODES.includes(saved.mode) ? saved.mode : 'acceptEdits');
+  const mode = selectEl(JOB_MODE_OPTIONS, JOB_MODES.includes(saved.mode) ? saved.mode : JOB_MODE_DEFAULT);
   const turns = el('input', { type: 'number', value: String(saved.turns || 30), min: '1', max: '500', inputmode: 'numeric' });
   const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
@@ -1285,7 +1288,7 @@ const LX_APPROVALS = ['on-request', 'never'];                                 //
    slugs as termkit.js TK_CODEX_MODELS (tests/test_static_codex.py compares all three). ultra only where the fallback lists it (gpt-6.1-sol). */
 const LX_CODEX_MODELS = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'];
 const LX_CONFIG_RE = /^[A-Za-z0-9_.]+=.+$/;                                  // one -c line; the server's blocklist still wins
-const LX_PERM_LABEL = { manual: 'ask (default)', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', dontAsk: "don't ask: deny prompts", bypassPermissions: 'bypass: never ask (dangerous)' };
+const LX_PERM_LABEL = { manual: 'ask', acceptEdits: 'accept edits', plan: 'plan', auto: "auto (default): Claude's safety checks", dontAsk: "don't ask: deny prompts", bypassPermissions: 'bypass: never ask (dangerous)' };
 const BYPASS_WARNING_CODEX = 'Codex runs every command and edit without asking and without its sandbox, as your user, on this box.';
 /* Bypass is allowed only for Claude inside the repo's devcontainer (owner decision on #104): the choice is offered while "Run in the devcontainer" is on and disabled, with its reason, while it is off. */
 const LX_BYPASS_OFF = 'bypass: only inside the devcontainer';
@@ -1435,7 +1438,7 @@ function launcherLegacyPrefs(old) {
   if (o.model_sel === 'custom' && o.model_id) { v.model = 'custom'; v.model_custom = String(o.model_id); }
   else if (typeof o.model_sel === 'string') v.model = o.model_sel;
   if (typeof o.effort === 'string') v.effort = o.effort;
-  if (typeof o.permission_mode === 'string' && o.permission_mode !== 'bypassPermissions') v.permission_mode = o.permission_mode;
+  if (typeof o.permission_mode === 'string' && o.permission_mode !== 'bypassPermissions') v.permission_mode = o.permission_mode || 'manual';      // the old form's empty word was ask
   for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt', 'args']) if (typeof o[k] === 'string' && o[k]) v[k] = o[k];
   return v;
 }
@@ -1491,11 +1494,16 @@ function launcherPresetDrop(p, r, agent, name) {
 
 /* ---------- the values of the form, and what they mean ---------- */
 
-/* The values a form starts from, per agent. Claude: model opus, effort high (the brief's F7); everything else empty until remembered. */
+/* The values a form starts from, per agent. Claude: model opus, effort high (the brief's F7), permissions auto (the owner's call, issue #83: Claude's classifier-checked mode); Codex: auto
+   too (--approve-for-me where this Codex has it, else the server maps it to exactly the default pair: workspace-write, on-request). Everything else empty until remembered. 'manual' is the
+   explicit 'ask' (sent as nothing, as before) so that a remembered 'ask' can tell itself from 'nothing remembered'. */
+const LX_PERM_DEFAULT = 'auto';
+const LX_CX_DEFAULT = 'auto';
+function lxPermFallback() { return launcherSchema('claude').permission_modes.includes(LX_PERM_DEFAULT) ? LX_PERM_DEFAULT : 'manual'; }      // a Claude Code too old for auto as a starting mode keeps asking
 function launcherDefaults(agent) {
-  if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: '', tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
+  if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: LX_PERM_DEFAULT, tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
     agent_name: '', fallback_model: '', subagent_model: '', subagent_custom: '', subagent_force: false, autocompact: '', mcp_config: '', devcontainer: false };
-  if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: 'default', sandbox: 'workspace-write', approval: 'on-request', search: false, config: '', profile: '', no_scrollback: false };
+  if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: LX_CX_DEFAULT, sandbox: 'workspace-write', approval: 'on-request', search: false, config: '', profile: '', no_scrollback: false };
   return {};
 }
 
@@ -1524,7 +1532,7 @@ function launcherRemember(v) {
   }
   if (v.agent === 'claude' && out.permission_mode === 'bypassPermissions') delete out.permission_mode;
   if (v.agent === 'codex') {
-    if (out.cx_mode === 'bypass' || (out.cx_mode === 'custom' && out.sandbox === 'danger-full-access')) { out.cx_mode = 'default'; delete out.sandbox; delete out.approval; }
+    if (out.cx_mode === 'bypass' || (out.cx_mode === 'custom' && out.sandbox === 'danger-full-access')) { out.cx_mode = LX_CX_DEFAULT; delete out.sandbox; delete out.approval; }
     else if (out.cx_mode !== 'custom') { delete out.sandbox; delete out.approval; }
   }
   return out;
@@ -1911,13 +1919,12 @@ function launcherForm(o) {
   /* A saved default, a preset or a remembered form that holds a bypass never launches one on the host (the server refuses it, owner decision on #104): it falls back to auto, and the
      sheet says so (drops[agent] -> the note under the mode). Claude keeps its bypass only while the same values turn the repo's devcontainer on. */
   const drops = { claude: false, codex: false };
-  const lxAuto = () => (launcherSchema('claude').permission_modes.includes('auto') ? 'auto' : '');
-  const lxFallbackName = () => lxAuto() || 'ask';       // '' is Claude's own default, which asks
+  const lxFallbackName = () => (lxPermFallback() === 'auto' ? 'auto' : 'ask');       // 'manual' is the sheet's word for ask
   const safeBypass = (agent, v) => {
     if (agent === 'claude') {
-      if (v.permission_mode === 'bypassPermissions' && !(session && v.devcontainer && r.devcontainer)) { v.permission_mode = session ? lxAuto() : ''; drops.claude = session && lxFallbackName(); }
+      if (v.permission_mode === 'bypassPermissions' && !(session && v.devcontainer && r.devcontainer)) { v.permission_mode = lxPermFallback(); drops.claude = session && lxFallbackName(); }
     } else if (agent === 'codex') {
-      if (v.cx_mode === 'bypass' || (v.cx_mode === 'custom' && v.sandbox === 'danger-full-access')) { v.cx_mode = session ? 'auto' : 'default'; v.sandbox = 'workspace-write'; drops.codex = session; }
+      if (v.cx_mode === 'bypass' || (v.cx_mode === 'custom' && v.sandbox === 'danger-full-access')) { v.cx_mode = LX_CX_DEFAULT; v.sandbox = 'workspace-write'; drops.codex = session; }
       else if (v.sandbox === 'danger-full-access') v.sandbox = 'workspace-write';
     }
     return v;
@@ -1930,10 +1937,13 @@ function launcherForm(o) {
     if (agent === 'claude') {
       const sc = (lxHas('claude', 'subagent_model') ? (launcherSchema('claude').options.find((x) => x.key === 'subagent_model').choices || []) : ['inherit', 'haiku', 'sonnet', 'opus']);
       if (typeof v.subagent_model === 'string' && v.subagent_model && v.subagent_model !== 'custom' && !sc.includes(v.subagent_model)) { v.subagent_custom = v.subagent_model; v.subagent_model = 'custom'; }
-      if (v.permission_mode === 'manual') v.permission_mode = '';
+      const own = mode === 'dispatch' && task && task.spec && typeof task.spec === 'object' ? task.spec.permission_mode : '';       // the card's own choice beats the repo memory and the default: sending auto would override it
+      if (typeof own === 'string' && own && own !== 'bypassPermissions') v.permission_mode = own;
+      if (v.permission_mode === '' || v.permission_mode === 'default') v.permission_mode = 'manual';           // an older memory said ask with an empty word
+      if (v.permission_mode === 'auto' && !launcherSchema('claude').permission_modes.includes('auto')) v.permission_mode = 'manual';
     }
     safeBypass(agent, v);
-    if (agent === 'codex' && !LX_CX_MODES.some(([k]) => k === v.cx_mode)) v.cx_mode = 'default';
+    if (agent === 'codex' && !LX_CX_MODES.some(([k]) => k === v.cx_mode)) v.cx_mode = LX_CX_DEFAULT;
     return { worktree: false, worktree_name: '', fork_session: false, args: '', ...v };
   };
   const first = [opt.agent, mode === 'dispatch' ? (preset.agent || task.agent) : '', launcherAgentPref(p.name, r.name), 'claude', 'codex', 'shell'].find((a) => agentsHere.includes(a) && lxInstalled(a)) || 'claude';
@@ -2133,11 +2143,12 @@ function launcherForm(o) {
   const fast = check('Fast mode', () => C.fast, (x) => { C.fast = x; }, 'The board types /fast on once the session is up (it needs usage credits on the account).');
   const ultra = check('Ultracode', () => C.ultracode, (x) => { C.ultracode = x; }, 'Ultracode sets xhigh and turns workflows on, for this session only. The board types /effort ultracode on once the session is up (or starts it with --effort ultracode where this box takes the flag). It has no effect under -p.');
   const switchRow = checksRow(fast, ultra);
-  const permSel = selectEl([['', 'ask (default)']], '');
+  const permSel = selectEl([['manual', LX_PERM_LABEL.manual]], 'manual');
   const paintPermOptions = () => {
     permSel.textContent = '';
     const modes = launcherSchema('claude').permission_modes.filter((m) => m !== 'manual' && m !== 'default' && (session || m !== 'bypassPermissions'));
-    for (const [v, t] of [['', 'ask (default)'], ...modes.map((m) => [m, LX_PERM_LABEL[m] || m])]) permSel.append(el('option', { value: v, text: t }));
+    if (C.permission_mode === 'auto' && !modes.includes('auto')) C.permission_mode = 'manual';        // this Claude Code cannot start in auto: ask, never an error
+    for (const [v, t] of [['manual', LX_PERM_LABEL.manual], ...modes.map((m) => [m, LX_PERM_LABEL[m] || m])]) permSel.append(el('option', { value: v, text: t }));
     syncBypass();
     permSel.value = C.permission_mode;
   };
@@ -2150,7 +2161,7 @@ function launcherForm(o) {
   syncBypass = () => {
     const ok = bypassOk();
     for (const o of permSel.children) if (o.getAttribute('value') === 'bypassPermissions') { lxDisable(o, !ok); o.textContent = ok ? (LX_PERM_LABEL.bypassPermissions) : LX_BYPASS_OFF; }
-    if (!ok && C.permission_mode === 'bypassPermissions') { C.permission_mode = session ? lxAuto() : ''; drops.claude = session && lxFallbackName(); permSel.value = C.permission_mode; }
+    if (!ok && C.permission_mode === 'bypassPermissions') { C.permission_mode = lxPermFallback(); drops.claude = session && lxFallbackName(); permSel.value = C.permission_mode; }
     const hasOpt = session && Array.from(permSel.children).some((o) => o.getAttribute('value') === 'bypassPermissions');
     permNote.textContent = drops.claude && C.permission_mode !== 'bypassPermissions' ? lxBypassDropped(drops.claude) : (hasOpt && !ok ? (r.devcontainer ? LX_BYPASS_HINT : LX_BYPASS_HINT_NONE) : '');
     hide(permNote, !permNote.textContent);
@@ -2193,7 +2204,7 @@ function launcherForm(o) {
   const approvalSel = selectEl([['on-request', 'on-request']], 'on-request');
   const paintModeItems = () => {
     const caps = launcherSchema('codex').capabilities || {};
-    const tips = { default: 'sandboxed to the repo, asks before anything else', auto: caps.approve_for_me ? 'auto-review: Codex approves what it judges safe' : 'auto-review: this Codex has no --approve-for-me, so it asks on request',
+    const tips = { default: 'sandboxed to the repo, asks before anything else', auto: caps.approve_for_me ? 'auto (default): Codex approves what it judges safe' : 'auto (default): this Codex has no --approve-for-me, so it runs exactly like default: sandboxed, asks on request',
       'read-only': 'read-only sandbox, asks before anything else', bypass: 'no approvals and no sandbox', custom: 'choose the sandbox and the approval policy yourself' };
     const seg = lxSeg(LX_CX_MODES.filter(([k]) => k !== 'bypass').map(([k, label]) => [k, label, { title: tips[k] }]), (k) => { X.cx_mode = k; drops.codex = false; seg.set(k); edit(); }, 'Codex mode', 'lx-modes');
     seg.set(X.cx_mode);
@@ -2211,7 +2222,7 @@ function launcherForm(o) {
   sandboxSel.addEventListener('change', () => { X.sandbox = sandboxSel.value; edit(); });
   approvalSel.addEventListener('change', () => { X.approval = approvalSel.value; edit(); });
   const customRow = el('div', { class: 'grid lx-custom' }, field('Sandbox', sandboxSel), field('Approval policy', approvalSel));
-  const modeField = field('Mode', modeHost, 'default asks on request inside a sandbox; auto asks Codex to review its own approvals.');
+  const modeField = field('Mode', modeHost, 'auto (default) has Codex review its own approvals where this Codex can, else it is the same as default: asks on request inside a sandbox.');
   const cxNote = el('p', { class: 'dim lx-hint lx-bypass-note hidden' });
 
   /* ---- the first prompt ---- */
@@ -2359,7 +2370,7 @@ function launcherForm(o) {
 
   /* ---- task mode: run when, title, issue, chain, close when finished ---- */
   const T = { when: ['now', 'later', 'schedule'].includes(carry.when || opt.when) ? (carry.when || opt.when) : (() => { const s = lxJson(lxGet(LX_TASK_KEY(p.name, r.name, 'claude'))); return s && (s.when === 'now' || s.when === 'later') ? s.when : 'now'; })(),
-    title: String(carry.title || ''), autoClose: true, cron: carry.cron || '', jobMode: 'acceptEdits', turns: '30', budget: '', schedName: String(carry.name || '') };
+    title: String(carry.title || ''), autoClose: true, cron: carry.cron || '', jobMode: JOB_MODE_DEFAULT, turns: '30', budget: '', schedName: String(carry.name || '') };
   const taskSaved = lxJson(lxGet(LX_TASK_KEY(p.name, r.name, 'claude'))) || {};
   if (taskSaved.auto_close === false) T.autoClose = false;
   if (JOB_MODES.includes(taskSaved.job_mode)) T.jobMode = taskSaved.job_mode;
@@ -2418,7 +2429,7 @@ function launcherForm(o) {
   const presetCron = CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, 'aria-pressed': 'false', 'data-cron': value, title: value ? `cron ${value}` : 'blank cron: run once, now',
     onclick: () => { T.cron = value; cronEl.value = value; syncCron(); } }));
   const syncCron = () => { const v = T.cron.trim(); for (const b of presetCron) b.setAttribute('aria-pressed', b.getAttribute('data-cron') === v ? 'true' : 'false'); cronNote.textContent = cronNoteText(v); };
-  const jobModeSel = pick(JOB_MODES.map((m) => [m, m]), () => T.jobMode, (x) => { T.jobMode = x; });
+  const jobModeSel = pick(JOB_MODE_OPTIONS, () => T.jobMode, (x) => { T.jobMode = x; });
   const turnsIn = text(() => T.turns, (x) => { T.turns = x; }, { type: 'number', min: '1', max: '500', inputmode: 'numeric' });
   const budgetIn = text(() => T.budget, (x) => { T.budget = x; }, { type: 'number', step: '0.5', min: '0', inputmode: 'decimal', placeholder: 'optional' });
   const turnsF = field('Max turns', turnsIn);
