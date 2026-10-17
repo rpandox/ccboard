@@ -26,6 +26,7 @@ REAL_API = github.api
 REAL_GRAPHQL = github.graphql
 REAL_GRAPHQL_EDITORS = github.graphql_editors
 REAL_GRAPHQL_EDITOR = github.graphql_editor
+REAL_GRAPHQL_EDIT_HISTORY = github.graphql_edit_history
 REAL_IDENTITY = team_github.identity
 REAL_TRANSPORT = github_write.transport
 REAL_GH_LOGIN = nodes_epics._gh_login
@@ -81,6 +82,7 @@ class FakeGitHub:
         monkeypatch.setattr(github, "graphql", REAL_GRAPHQL)
         monkeypatch.setattr(github, "graphql_editors", REAL_GRAPHQL_EDITORS)
         monkeypatch.setattr(github, "graphql_editor", REAL_GRAPHQL_EDITOR)
+        monkeypatch.setattr(github, "graphql_edit_history", REAL_GRAPHQL_EDIT_HISTORY)
         monkeypatch.setattr(team_github, "identity", REAL_IDENTITY)
         return self
 
@@ -141,12 +143,20 @@ class FakeGitHub:
                 self.mem_calls[-1]["status"] = resp.status
             headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
             return resp.status, headers, resp.body
+        def graphql_edit_history(node_id, cursor=None):
+            if hook:
+                hook("read", "POST", "graphql")
+            with self.mem_lock:
+                self.mem_calls.append({"argv": github.graphql_edit_history_argv(node_id, cursor, "gh")[1:], "stdin": ""})
+                resp, _ = gh_server.handle_graphql_edit_history(self.world, node_id, cursor)
+                return resp.status, resp.headers, resp.body
+
+        monkeypatch.setattr(github, "graphql_edit_history", graphql_edit_history)
         monkeypatch.setattr(github, "api", api)
         monkeypatch.setattr(github, "graphql", graphql)
         monkeypatch.setattr(github, "graphql_editors", graphql_editors)
         monkeypatch.setattr(github, "graphql_editor", graphql_editor)
         monkeypatch.setattr(github_write, "transport", transport)
-        monkeypatch.setattr(nodes_epics, "_gh_login", lambda: self.world.get("login"))
 
         def identity():
             """Like the real probe: the answer, and prpoll's cache filled with it (the node card reads only that cache)."""
@@ -155,6 +165,7 @@ class FakeGitHub:
             prpoll._gh_login = (time.monotonic() + prpoll.GH_LOGIN_TTL, got[0], got[1])          # conftest restores it after the test
             return got
         monkeypatch.setattr(team_github, "identity", identity)
+        monkeypatch.setattr(nodes_epics, "_gh_login", lambda: self.world.get("login") if prpoll.gh_identity_cached()[0] == self.world.get("login") else identity()[0])
         return self
 
     def save(self) -> None:
@@ -328,6 +339,7 @@ class FakeGitHub:
         created = created_at or iso(self.world["now"] - 60)
         self.world["comments"].setdefault(issue, []).append({"id": cid, "body": body, "user": user, "created_at": created, "updated_at": updated_at or created,
                                                              "assoc": assoc, "user_type": user_type})
+        gh_server._touch(self.world, issue)
         self.save()
         return cid
 
@@ -351,8 +363,17 @@ class FakeGitHub:
             it["body"] = body
         if title is not None:
             it["title"] = title
+        it.setdefault("history", []).append({"editor": by, "at": iso(self.world["now"])})
         it["editor"], it["last_edited_at"], it["updated_at"] = by, iso(self.world["now"]), iso(self.world["now"])
         self.save()
+
+    def rename(self, issue: str, title: str, *, by: str) -> None:
+        self.reload()
+        old = self.world["issues"][issue].get("title", "")
+        self.world["issues"][issue]["title"] = title
+        self.world["issues"][issue]["updated_at"] = iso(self.world["now"])
+        self.save()
+        self.event(issue, "renamed", None, by=by, rename={"from": old, "to": title}, at=self.world["now"])
 
     def edit_as(self, issue: str, cid: int, body: str, by: str) -> None:
         """Somebody (`by`, e.g. a maintainer) edits comment `cid` in place: the body changes, `updated_at` moves and GraphQL's `editor` names them (issue #198)."""

@@ -13,6 +13,26 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.72 - 2026-10-17
+
+### Fixed
+- Every epic work start checks the full visible edit history and title renames of the issue and its epic before claiming. An outsider edit still blocks after an allowed person's edit; unreadable or incomplete history refuses work, including a newest revision missing from the visible edit and rename timestamps (with one-second tolerance).
+- Epic rows show stored edit refusals and disable Work with a reason. Add an editor to `CCBOARD_EPIC_AUTHORS`, or copy the text into a new issue by an allowed author. Checkbox edits count too when GitHub reports them.
+- A permanent unknown editor or history holds only that issue; the worker continues to the next ready candidate in the same cycle. Checks rest the worker only with a wait or reset time.
+- Checks cache unchanged text and account pins, record GitHub's reported cost and rest on low budget. Matching cache hits write no audit or KV records. Older deleted revisions that disappear and compromised allowed accounts remain limits; real-token behaviour is still unverified.
+
+Upgrade: nothing to do.
+
+## v0.5.71 - 2026-10-17
+
+### Added
+- Settings > Options lists all startup options in nine groups, with values, defaults, sources, restart badges and a key or label filter.
+- One registry describes the options; the read-only API is for signed-in people, hides secrets and masks URL userinfo and credential query values in displayed values and copy lines.
+- Empty environment values report the default source; Linux silently skips service files it cannot safely inspect. Empty values use type-specific wording, with automatic behavior shown only where documented by the option.
+- The demo includes every group, and the settings tables record each option's editing class.
+
+Upgrade: nothing to do.
+
 ## v0.5.70 - 2026-10-17
 
 ### Fixed

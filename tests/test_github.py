@@ -54,3 +54,32 @@ def test_bulk_queue_cap(client, projects_dir, fake_tmux, monkeypatch):
     assert client.post("/api/clone-queue/clear", headers=H).status_code == 200
     # bad url in a batch -> 400, nothing queued
     assert client.post("/api/projects/imported/repos/bulk", headers=H, json={"repos": [{"url": "--evil"}]}).status_code == 400
+
+
+def test_edit_history_query_is_constant_and_only_passes_checked_strings():
+    import pytest
+    args = github.graphql_edit_history_argv("I_kw1234", "Y3Vyc29yOjEwMA==", "fake-gh")
+    assert args == ["fake-gh", "api", "graphql", "--include", "-f", "query=" + github.GQL_EDIT_HISTORY,
+                    "-f", "id=I_kw1234", "-f", "cursor=Y3Vyc29yOjEwMA=="]
+    assert all(w not in github.GQL_EDIT_HISTORY.lower() for w in github.GQL_WORDS)
+    for node, cursor in [("bad id", None), ("I_kw1234", "x\nquery"), ("I_kw1234", "x&y"), ("I_kw1234", "x" * 257), ("I_kw1234", 1)]:
+        with pytest.raises(github.GhReadError):
+            github.graphql_edit_history_argv(node, cursor)
+
+
+def test_edit_history_query_runs_through_fake_gh_with_pagination(tmp_path, monkeypatch):
+    from tests.fake_github import FakeGitHub
+    from tests.gh_server import issue_id
+    fake = FakeGitHub(tmp_path).install(monkeypatch)
+    k = fake.add_issue("acme/shop", 1)
+    for _ in range(101):
+        fake.edit_issue(k, by="alice")
+    node = "I_kw%d" % issue_id(k)
+    status, _, data = github.graphql_edit_history(node)
+    assert status == 200 and github.graphql_reason(data) is None
+    page = github.parse_edit_history(data, issue_id(k))
+    assert page["complete"] and len(page["edits"]) == 100 and page["has_next"]
+    status, _, data = github.graphql_edit_history(node, page["next_cursor"])
+    page = github.parse_edit_history(data, issue_id(k))
+    assert page["complete"] and len(page["edits"]) == 1 and not page["has_next"]
+    assert not fake.writes()
