@@ -46,6 +46,9 @@ EXPECTED = {
     # Bare devices (#273): person-only management, with CSRF on mutations; no hook or node tokens.
     ("GET", "/api/bare"): "identity",
     ("POST", "/api/bare"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/sessions"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/sessions/read"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/sessions/{session}/stop"): "identity+csrf",
     ("POST", "/api/bare/{tid}/check"): "identity+csrf",
     ("POST", "/api/bare/{tid}/forget-host-key"): "identity+csrf",
     ("DELETE", "/api/bare/{tid}"): "identity+csrf",
@@ -265,7 +268,7 @@ EXPECTED = {
 }
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
-FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
+FILL = {"session": "bare-" + "a" * 32, "agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
         "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef", "owner": "o", "n": "1", "issue": "1"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 

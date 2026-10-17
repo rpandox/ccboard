@@ -648,12 +648,15 @@ function lxnAuto(opt, ctl, hooks) {
 /* Called by openLauncher (launcher.js) with the options, the local controller (null when there is no local place) and the mode. null: no picker (the hub view is off, no node is
    online, or a dispatch of a task that lives on this node). Otherwise {pick, host, choose(handle), current(), title(), ctl: the remote controller, setTitle}. */
 function lxnKit(opt, ctl, mode) {
-  if (typeof Nodes === 'undefined' || !Nodes.enabled() || !Nodes.ready) return null;
+  const devices = mode === 'session' && typeof state !== 'undefined' ? (state.bare_devices || []).filter((d) => d.check && d.check.ok) : [];
+  const hubReady = typeof Nodes !== 'undefined' && Nodes.enabled() && Nodes.ready;
+  if (!hubReady && !devices.length) return null;
   const remoteTask = mode === 'dispatch' && opt.remoteTask && typeof opt.remoteTask === 'object' ? opt.remoteTask : null;
   if (mode === 'dispatch' && !remoteTask) return null;
-  const recs = Nodes.list().filter((r) => r && !r.legacy && Ref.isHandle(r.handle));
-  if (!recs.some((r) => r.status === 'online' || r.status === 'stale')) return null;
-  const start = remoteTask ? remoteTask.node : (typeof opt.node === 'string' && recs.some((r) => r.handle === opt.node) ? opt.node : '');
+  const recs = (hubReady ? Nodes.list() : []).filter((r) => r && !r.legacy && Ref.isHandle(r.handle));
+  if (!devices.length && !recs.some((r) => r.status === 'online' || r.status === 'stale')) return null;
+  const bareOf = (h) => devices.find((d) => 'bare:' + d.ts_id === h);
+  const start = !ctl && devices.length ? 'bare:' + devices[0].ts_id : remoteTask ? remoteTask.node : (typeof opt.node === 'string' && recs.some((r) => r.handle === opt.node) ? opt.node : '');
   if (remoteTask && !recs.some((r) => r.handle === remoteTask.node)) return null;
   if (!ctl && !start) return null;                                      // nothing local to go back to and no node chosen: the sheet has nothing to show
   const forms = new Map();
@@ -667,9 +670,10 @@ function lxnKit(opt, ctl, mode) {
   const autoItem = rpAuto && rpAuto.r && !rpAuto.r.root ? [[LXN_AUTO, 'Auto', { title: 'The board picks the node that has this repository, the agent ready, a free lane and room in its rate-limit window' }]] : [];
   const items = [['', 'This node', !ctl ? { disabled: true, title: 'There is no repo on this node to start in' } : remoteTask ? { disabled: true, title: `This task lives on ${Nodes.nameOf(remoteTask.node)}` } : null],
     ...autoItem,
+    ...devices.map((d) => ['bare:' + d.ts_id, d.name + ' (no board)']),
     ...recs.map((r) => [r.handle, label(r), remoteTask && r.handle !== remoteTask.node ? { disabled: true, title: `This task lives on ${Nodes.nameOf(remoteTask.node)}` } : { title: Nodes.view(r).word }])];
   const titleOf = (h) => {
-    const n = h === LXN_AUTO ? 'Auto' : Nodes.nameOf(h);
+    const n = bareOf(h) ? bareOf(h).name + ' (no board)' : h === LXN_AUTO ? 'Auto' : Nodes.nameOf(h);
     return mode === 'task' ? `New task · ${n}` : mode === 'dispatch' ? `Start “${String(remoteTask.title || `Task ${remoteTask.id}`).slice(0, 60)}” on ${n}` : `New session · ${n}`;
   };
   const choose = (h) => {
@@ -685,7 +689,7 @@ function lxnKit(opt, ctl, mode) {
       if (!r) {
         const carry = ctl && from === '' ? { title: ctl.T ? ctl.T.title : '', prompt: ctl.V.common.prompt, name: ctl.V.common.name } : {};
         const hk = { carry, close: () => { ui.openForm = null; closeSheet(); }, cancel: typeof opt.onCancel === 'function' ? opt.onCancel : null };
-        r = h === LXN_AUTO ? lxnAuto({ ...opt, mode }, ctl, hk) : lxnForm({ ...opt, mode }, h, hk);
+        r = bareOf(h) ? lxbForm(bareOf(h), hk) : h === LXN_AUTO ? lxnAuto({ ...opt, mode }, ctl, hk) : lxnForm({ ...opt, mode }, h, hk);
         forms.set(h, r);
       } else r.refresh();
       host.append(r.form);
@@ -712,4 +716,50 @@ function lxnKit(opt, ctl, mode) {
   kit.focus = () => { if (cur && kit.ctl && kit.ctl.form.focusFirst) kit.ctl.form.focusFirst(); else if (ctl && ctl.form.focusFirst) ctl.form.focusFirst(); };
   choose(start);
   return kit;
+}
+
+
+/* Bare devices have their own small form; none of the local launch preferences apply. */
+function lxbForm(device, hooks) {
+  const repo = selectEl((device.check.repos || []).map((r) => [r, r]));
+  const available = (a) => a === 'shell' || device.check.rows.some((r) => r.key === a && r.ok);
+  const agent = selectEl([['claude', 'Claude'], ['codex', 'Codex'], ['shell', 'Shell']].filter(([a]) => available(a)));
+  const mode = el('select', { 'aria-label': 'Permissions' });
+  const model = el('input', { type: 'text', placeholder: 'Default model', maxlength: '80' });
+  const effort = selectEl([['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']]);
+  const agentFields = el('div', {}, field('Permissions', mode), field('Model', model), field('Effort', effort));
+  const status = el('p', { role: 'status', 'aria-live': 'polite', class: 'dim' });
+  const go = el('button', { type: 'submit', class: 'primary', text: 'Start on ' + device.name });
+  let sent = false;
+  const paint = () => {
+    mode.textContent = '';
+    const modes = agent.value === 'codex' ? [['workspace-write', 'Ask · workspace write'], ['read-only', 'Read only']] : [['default', 'Default'], ['manual', 'Ask'], ['acceptEdits', 'Accept edits'], ['plan', 'Plan']];
+    for (const [value, text] of modes) mode.append(el('option', { value, text }));
+    mode.value = modes[0][0];
+    agentFields.classList.toggle('hidden', agent.value === 'shell');
+    go.disabled = sent || !repo.value;
+  };
+  agent.addEventListener('change', paint);
+  const body = () => ({ repo: repo.value, agent: agent.value, ...(agent.value === 'shell' ? {} : { mode: mode.value, model: model.value.trim(), effort: effort.value }) });
+  const submit = async () => {
+    if (sent || !repo.value) return;
+    sent = true; go.disabled = true; status.textContent = 'Starting on ' + device.name + '…';
+    try {
+      const r = await api('POST', '/api/bare/' + encodeURIComponent(device.ts_id) + '/sessions', body());
+      status.textContent = r.status === 'unconfirmed' ? 'Unconfirmed: the device may have started it. Read the device; this start will not be retried.' : 'Started on ' + device.name;
+      if (r.session) {
+        const current = (state.bare_devices || []).find((d) => d.ts_id === device.ts_id) || device;
+        current.sessions = [...(current.sessions || []), r.session];
+        if (typeof Shell !== 'undefined') Shell.patchTrees();
+      }
+    } catch (e) {
+      if (e && e.status >= 400 && e.status < 500 && e.body && e.body.error) { sent = false; go.disabled = false; status.textContent = String(e.body.error); }
+      else status.textContent = 'Unconfirmed: the answer did not arrive. Read the device; this start will not be retried.';
+    }
+  };
+  const form = el('form', { class: 'form lx-form', onsubmit: (e) => { e.preventDefault(); submit(); } },
+    field('Repository', repo), field('Agent', agent), agentFields,
+    el('p', { class: 'dim', text: 'Read the device to update session status. Terminal attachment and replies are not available yet.' }), status, go);
+  paint();
+  return { form, submit, go, status, body, refresh: () => {}, gate: () => !sent && !!repo.value };
 }

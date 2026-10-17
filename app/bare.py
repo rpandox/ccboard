@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import selectors
+import secrets
 import time
 import re
 import shlex
@@ -13,12 +14,18 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
-from . import nodes, nodes_discovery as discovery
+from . import nodes, nodes_discovery as discovery, nodes_relay
 from .auth import normalize
 from .config import settings
 
 PREFIX = "bare:device:"
 LOCK = threading.Lock()
+
+
+class DeviceBusy(ValueError):
+    """A device cannot be removed while it still owns open sessions."""
+
+
 CHECKS = ("ssh", "user", "groups", "system", "tmux", "claude", "codex", "repos")
 REPOS = (r'cd "$HOME/$1" || exit 1; find . -maxdepth 4 '
          r'\( -name node_modules -o -name .venv \) -prune -o -name .git -prune -print')
@@ -114,14 +121,15 @@ def _control_path(host, user):
     return settings.data_dir / "bare-ssh" / key
 
 
-def forget_host_key(host, user):
+def forget_host_key(host, user, *, close_master=True):
     """Only local trust state and the local master socket; never open a connection."""
     validate(user, "projects")
     if not _host_ok(host):
         raise ValueError("Refresh the device list before forgetting its host key.")
     try:
-        runner(["ssh", "-F", "/dev/null", "-o", "ControlPath=" + shlex.quote(str(_control_path(host, user))),
-                "-O", "exit", user + "@" + host], stdin=None)
+        if close_master:
+            runner(["ssh", "-F", "/dev/null", "-o", "ControlPath=" + shlex.quote(str(_control_path(host, user))),
+                    "-O", "exit", user + "@" + host], stdin=None)
     except (OSError, subprocess.TimeoutExpired):
         pass  # The master may already have exited or SSH may have been uninstalled.
     known = settings.data_dir / "bare-ssh" / "known_hosts"
@@ -139,7 +147,7 @@ def forget_host_key(host, user):
         known.write_text("".join(lines))
 
 
-def argv(device: dict, user: str, check: str, folder: str = "projects") -> list[str]:
+def argv(device: dict, user: str, check: str, folder: str = "projects", *, session=None, agent=None, mode=None, repo=None, model="", effort="") -> list[str]:
     """Fixed verbs, a validated tailnet destination, and one quoted remote command."""
     validate(user, folder)
     host = device["dns_name"]
@@ -151,6 +159,8 @@ def argv(device: dict, user: str, check: str, folder: str = "projects") -> list[
     commands = {"ssh": ["true"], "user": ["id", "-u"], "groups": ["id", "-Gn"], "system": ["uname"],
                 "tmux": ["tmux", "-V"], "agents": ["command", "-v", "claude", "codex"],
                 "repos": ["sh", "-c", REPOS, "bare-repos", folder]}
+    if check in ("start", "list", "stop", "kill"):
+        commands[check] = session_command(check, session=session, agent=agent, mode=mode, folder=folder, repo=repo, model=model, effort=effort)
     remote = shlex.join(commands[check])
     directory = settings.data_dir / "bare-ssh"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -299,7 +309,7 @@ def listing(db, owner: str) -> dict:
     return {"candidates": candidates(status, owner), "devices": devices, "tailscale": info}
 
 
-def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects") -> dict:
+def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects", *, confirm=False, discard_sessions=False) -> dict:
     ok = False
     with LOCK:
         try:
@@ -311,14 +321,21 @@ def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects
             if saved and saved.get("owner") != owner:
                 raise ValueError("This device was added by another person.")
             if verb == "remove":
+                if discard_sessions:
+                    if not saved or not confirm:
+                        raise ValueError("Confirm removing this device and forgetting its sessions here with a second tap.")
+                    db.bare_forget(tid)
+                    nodes.audit("out", tid, "bare_forget", True, user=owner, db=db)
+                elif db.bare_open_rows(tid):
+                    raise DeviceBusy("Stop its sessions first, or refresh the list, or remove it and forget its sessions here (they keep running on the device).")
                 if saved:
                     host = saved.get("dns_name")
-                    if not host:  # Records made before aliases were saved.
+                    if not host and not discard_sessions:  # Records made before aliases were saved.
                         status, _ = discovery.read_tailscale(fresh=True)
                         host = next((p.get("DNSName", "").rstrip(".") for p in discovery._peers(status)
                                      if p.get("ID") == tid), None)
                     if host:
-                        forget_host_key(host, saved["user"])
+                        forget_host_key(host, saved["user"], close_master=not discard_sessions)
                 db.kv_del(key)
                 ok = True
                 return {"ok": True}
@@ -354,3 +371,203 @@ def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects
         finally:
             if verb != "check" or not locals().get("result"):
                 nodes.audit("out", tid, "bare_" + verb, ok, user=owner, db=db)
+
+
+# All device session commands, including the nested login-shell command, live here.
+START = 'cd "$HOME/$1" || exit 1; shift; exec "$@"'
+MODES = {"claude": ("default", "manual", "acceptEdits", "plan"), "codex": ("workspace-write", "read-only")}
+
+
+def launch_line(agent, mode, model="", effort=""):
+    # Check the mode before constructing even the agent argv. Defaults belong at the API boundary.
+    if agent not in (*MODES, "shell"):
+        raise ValueError("Choose Claude, Codex or a shell.")
+    if agent == "shell":
+        if mode is not None or model or effort:
+            raise ValueError("Shell sessions do not take agent options.")
+        return "sh -l"
+    if mode not in MODES[agent]:
+        raise ValueError("Choose an explicit permission mode for this agent.")
+    if model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}", model):
+        raise ValueError("Choose a valid model name.")
+    if effort and effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise ValueError("Choose a supported effort.")
+    parts = (["claude", "--permission-mode", mode] if agent == "claude" else
+             ["codex", "-s", mode, "-a", "on-request", "-c", "check_for_update_on_startup=false"])
+    if model:
+        parts += ["--model" if agent == "claude" else "-m", model]
+    if effort:
+        parts += (["--effort", effort] if agent == "claude" else ["-c", 'model_reasoning_effort="' + effort + '"'])
+    line = shlex.join(parts)
+    why = nodes_relay.launch_line_refusal(agent, line)
+    if why:
+        raise ValueError("This launch was refused: " + why + ".")
+    return line
+
+
+def session_command(verb, *, session=None, agent=None, mode=None, folder="projects", repo=None, model="", effort=""):
+    line = launch_line(agent, mode, model, effort) if verb == "start" else None
+    if verb != "list" and (not isinstance(session, str) or not re.fullmatch(r"bare-[a-f0-9]{32}", session)):
+        raise ValueError("Choose a session started by this board.")
+    if verb == "start":
+        validate("ccagent", folder)
+        if repo != ".":
+            validate("ccagent", repo or "")
+    socket = "ccboard-bare-" + hashlib.sha256(nodes.node_id().encode()).hexdigest()[:8]
+    prefix = ["tmux", "-L", socket]
+    if verb == "start":
+        command = shlex.join(["sh", "-c", START, "bare-start", (folder if repo == "." else folder + "/" + repo), *shlex.split(line)])
+        return prefix + ["new-session", "-d", "-s", session, command]
+    if verb == "list":
+        return prefix + ["list-sessions", "-F", "#{session_name}"]
+    if verb == "stop":
+        if agent not in ("claude", "codex", "shell"):
+            raise ValueError("Unknown session agent.")
+        exit_line = {"claude": "/exit", "codex": "/quit", "shell": "exit"}[agent]
+        return prefix + ["send-keys", "-t", "=" + session + ":", "-l", exit_line, ";", "send-keys", "-t", "=" + session + ":", "Enter"]
+    if verb == "kill":
+        return prefix + ["kill-session", "-t", "=" + session]
+    raise ValueError("Unknown device operation.")
+
+
+def stored_devices(db, owner):
+    """Local-only view: the ordinary board refresh never contacts a device."""
+    return [{**v, "sessions": list(db.bare_open_rows(host=v["ts_id"]).values())}
+            for _, v, _ in db.kv_list_prefix(PREFIX) if v.get("owner") == owner]
+
+
+def _ready(db, owner, tid):
+    saved = db.kv_get(PREFIX + tid)
+    saved = saved["value"] if saved else None
+    if not saved or saved.get("owner") != owner:
+        raise ValueError("Add and check your device first.")
+    if not saved.get("check", {}).get("ok"):
+        raise ValueError("Check this device successfully before using it.")
+    status, _ = discovery.read_tailscale(fresh=True)
+    device = next((r for r in candidates(status, owner, online=False) if r["ts_id"] == tid), None)
+    if not device:
+        raise ValueError("This device is no longer yours or tagged on your tailnet.")
+    if not device["online"]:
+        raise ValueError("This device is offline. Wake it and try again.")
+    return saved, device
+
+
+def _session_run(saved, device, verb, **kw):
+    return runner(argv(device, saved["user"], verb, saved["folder"], **kw), stdin=None)
+
+
+def _alive(saved, device):
+    p = _session_run(saved, device, "list")
+    if p.returncode == 1 and ("no server running on" in p.stderr or "No such file or directory" in p.stderr):
+        return set()
+    if p.returncode or any(not re.fullmatch(r"[A-Za-z0-9_-]+", n) for n in p.stdout.splitlines()):
+        raise ValueError("The device could not be read; its sessions may still run.")
+    return set(p.stdout.splitlines())
+
+
+def session_action(db, owner, tid, verb, *, session=None, repo=None, agent="claude", mode=None, model="", effort="", confirm=False):
+    result_status = "failed"
+    with LOCK:
+        try:
+            if verb == "start":
+                launch_line(agent, mode, model, effort)  # gate before any device argv
+            saved, device = _ready(db, owner, tid)
+            if verb == "list":
+                before = datetime.now(timezone.utc).isoformat()
+                alive = _alive(saved, device)
+                db.bare_reconcile(tid, alive, before)
+                for name, row in db.bare_open_rows(host=tid).items():
+                    if name in alive and row["state"] in ("alive", "unconfirmed"):
+                        db.bare_set_state(tid, name, "alive", "bare_list")
+                result_status = "ok"
+                return {"sessions": list(db.bare_open_rows(host=tid).values())}
+            if verb == "start":
+                if len(db.bare_open_rows(host=tid)) >= 20:
+                    raise DeviceBusy("This device already has 20 open sessions; stop some first.")
+                if repo not in saved["check"].get("repos", []):
+                    raise ValueError("Choose a repository from this device's check.")
+                if agent != "shell" and not any(r["key"] == agent and r["ok"] for r in saved["check"]["rows"]):
+                    raise ValueError("The agent is not on this device's PATH. Install it and check again.")
+                # Recheck privilege immediately before a start, even if the saved check passed.
+                uid = _session_run(saved, device, "user")
+                groups = _session_run(saved, device, "groups")
+                if (uid.returncode or not uid.stdout.strip().isdigit() or int(uid.stdout.strip()) == 0 or groups.returncode
+                        or not groups.stdout.strip() or not re.fullmatch(r"[A-Za-z0-9_ .-]+", groups.stdout.strip())
+                        or set(groups.stdout.split()) & {"sudo", "wheel", "admin"}):
+                    raise ValueError("Use a non-root account outside sudo, wheel and admin; check again.")
+                session = "bare-" + secrets.token_hex(16)
+                command = argv(device, saved["user"], "start", saved["folder"], session=session, agent=agent,
+                               mode=mode, repo=repo, model=model, effort=effort)
+                db.add_bare_session(tmux_name=session, repo=repo, agent=agent,
+                               host=tid, cmd=launch_line(agent, mode, model, effort))
+                db.bare_set_state(tid, session, "unconfirmed", "bare_start")  # durable before sending; never replayed
+                try:
+                    p = runner(command, stdin=None)
+                except subprocess.TimeoutExpired:
+                    result_status = "unconfirmed"
+                except OSError:
+                    db.bare_end(tid, session, "start_failed")
+                    raise ValueError("SSH could not start. Nothing was started.") from None
+                else:
+                    if p.returncode == 0:
+                        result_status = "alive"
+                    elif p.returncode == 255:
+                        result_status = "unconfirmed"
+                    else:
+                        db.bare_end(tid, session, "start_failed")
+                        raise ValueError("The device refused the start. Check it and try again.")
+                db.bare_set_state(tid, session, result_status, "bare_start")
+                return {"session": db.bare_open_rows(host=tid)[session], "status": result_status}
+            row = db.bare_open_rows(host=tid).get(session)
+            if verb != "stop" or not row:
+                raise ValueError("Choose an open session on this device.")
+            if not confirm:
+                raise ValueError("Confirm Stop on this device with a second tap.")
+            if row.get("state") == "stopping":
+                return {"status": "stopping"}
+            try:
+                p = _session_run(saved, device, "stop", session=session, agent=row["agent"])
+            except subprocess.TimeoutExpired:
+                rc = 255  # The exit command may have arrived despite the lost acknowledgement.
+            else:
+                rc = p.returncode
+            if rc not in (0, 255):
+                raise ValueError("Stop failed; read the device before trying again.")
+            db.bare_set_state(tid, session, "stopping", "bare_stop")
+            timer = threading.Timer(10, finish_stop, args=(db, owner, tid, session))
+            timer.daemon = True
+            timer.start()
+            if rc == 255:
+                raise ValueError("Stop was not confirmed; read the device before trying again.")
+            result_status = "ok"
+            return {"status": "stopping"}
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError("The device did not answer; its session may still run.") from None
+        finally:
+            nodes.audit("out", tid, "bare_" + verb, result_status in ("ok", "alive"), user=owner,
+                        status=result_status if result_status == "unconfirmed" else None, db=db)
+
+
+def finish_stop(db, owner, tid, session):
+    """One delayed check, never a poller. A failed read never authorizes a kill."""
+    attempted = False
+    ok = False
+    status = None
+    try:
+        with LOCK:
+            if session not in db.bare_open_rows(host=tid):
+                return
+            attempted = True
+            saved, device = _ready(db, owner, tid)
+            if session in _alive(saved, device):
+                if _session_run(saved, device, "kill", session=session).returncode:
+                    return
+                ok = True
+            else:
+                status = "already_ended"
+            db.bare_end(tid, session, "bare_stop")
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        pass  # Leave stopping visible for the next explicit read.
+    finally:
+        if attempted:
+            nodes.audit("out", tid, "bare_kill", ok, user=owner, status=status, db=db)

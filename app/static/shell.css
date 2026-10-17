@@ -441,3 +441,16 @@ dialog.dnd-pop { position:fixed; inset:auto; margin:0; z-index:60; width:min(360
 .dnd-pop-actions { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:8px; }
 .dnd-pop-actions .bp5-button { min-height:var(--tap); justify-content:center; }
 @media (prefers-reduced-motion:reduce) { .dnd-switch input::after { transition:none; } }
+
+/* Device rows also fit the phone drawer; names keep room as controls wrap below. */
+.bare-tree .s-row { cursor:default; gap:6px; }
+.bare-tree .tn-name { flex:1 1 0; }
+.bare-tree .tw { flex:none; }
+.bare-status:empty { display:none; }
+.bare-status:not(:empty) { padding:4px 14px; font-size:11px; }
+.bare-badge { flex:none; padding:2px 6px; border:1px solid var(--line); border-radius:999px; background:var(--panel); color:var(--dim); font-size:10px; line-height:1.4; white-space:nowrap; }
+.bare-controls { display:flex; flex:none; align-items:center; gap:4px; margin-left:auto; }
+.bare-controls .tn-add:not(.icon) { padding:0 3px; font-size:11px; color:var(--fg-2); }
+.bare-controls .tn-add.danger { padding:0 6px; color:#fff; background:var(--bad-solid); border:1px solid var(--bad-solid); border-radius:3px; font-weight:600; }  /* the armed second tap, as other destructive confirms */
+.bare-controls .hidden, .bare-controls [hidden] { display:none !important; }
+@media (max-width:600px) { .bare-tree .s-row { flex-wrap:wrap; } }
