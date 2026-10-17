@@ -179,6 +179,29 @@ def test_cli_refuses_a_settings_file_it_cannot_read(tmp_path):
     assert r.returncode != 0 and "hooks.Stop is not a list" in r.stderr
 
 
+def test_a_write_touches_an_empty_hook_sync_stamp_beside_the_file_after_writing_it(tmp_path):
+    """Issue #235: tests/conftest.py's home guard tells the install's hook sync from a test by this stamp."""
+    f = tmp_path / "cfg" / "settings.json"
+    cs.save(f, {"model": "opus"})
+    stamp = tmp_path / "cfg" / ".ccboard-hook-sync"
+    assert stamp.is_file() and stamp.read_bytes() == b""
+    assert stamp.stat().st_mtime_ns >= f.stat().st_mtime_ns, "touched right after the write"
+
+
+def test_cli_install_and_remove_stamp_the_config_dir_of_claude_config_dir(tmp_path):
+    stamp = tmp_path / ".ccboard-hook-sync"
+    assert run_script("install", "--app-dir", str(APP), env_extra={"CLAUDE_CONFIG_DIR": str(tmp_path)}).returncode == 0 and stamp.is_file()
+    stamp.unlink()
+    assert run_script("remove", env_extra={"CLAUDE_CONFIG_DIR": str(tmp_path)}).returncode == 0 and stamp.is_file()
+
+
+def test_a_stamp_that_cannot_be_written_never_fails_the_install(tmp_path, monkeypatch):
+    f = tmp_path / "settings.json"
+    monkeypatch.setattr(Path, "touch", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    cs.save(f, {"model": "opus"})
+    assert json.loads(f.read_text()) == {"model": "opus"}
+
+
 def test_cli_default_path_follows_claude_config_dir(tmp_path):
     r = run_script("install", "--app-dir", str(APP), env_extra={"CLAUDE_CONFIG_DIR": str(tmp_path)})
     assert r.returncode == 0 and (tmp_path / "settings.json").is_file()

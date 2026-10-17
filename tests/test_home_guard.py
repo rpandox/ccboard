@@ -125,7 +125,7 @@ def _run_guard(tmp_path, body):
     proj.mkdir()
     shutil.copy(ROOT / "tests" / "conftest.py", proj / "conftest.py")
     (proj / "test_probe.py").write_text(body)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CCBOARD_", "PYTEST_"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CCBOARD_", "PYTEST_")) or k == "CCBOARD_SCRIPTS"}
     env["CCBOARD_GUARD_REAL_HOME"] = str(fake_real)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(ROOT)                  # the copied conftest's autouse fixtures import app
@@ -146,3 +146,97 @@ def test_a_test_that_stays_in_its_sandbox_passes(tmp_path):
     r, fake_real = _run_guard(tmp_path, GOOD)
     assert r.returncode == 0, r.stdout + r.stderr
     assert not (fake_real / ".claude").exists()
+
+
+# ---- issue #235: the ccboard install syncing its own hooks mid-run is not a test touching the home --------------------------------------
+S = 1_000_000_000                                   # one second in ns
+CL, CLS = ".claude/settings.json", ".claude/.ccboard-hook-sync"
+CX, CXS = ".codex/hooks.json", ".codex/.ccboard-hook-sync"
+
+
+def _snap(**over):
+    """A fake snapshot with nothing present; `over` maps a key to (exists, size, mtime_ns)."""
+    from tests.conftest import GUARDED, HOOK_STAMP, LIVE
+    snap = {rel: (False, 0, 0) for rel in GUARDED + LIVE + tuple(HOOK_STAMP.values())}
+    snap.update(over)
+    return snap
+
+
+def test_a_hook_file_changed_within_the_window_of_a_moved_stamp_is_the_install_not_a_test():
+    from tests.conftest import split_changes
+    before = _snap(**{CL: (True, 10, 100 * S), CLS: (True, 0, 100 * S), CX: (True, 10, 100 * S)})
+    after = _snap(**{CL: (True, 99, 5000 * S), CLS: (True, 0, 5002 * S), CX: (True, 99, 5000 * S), CXS: (True, 0, 5008 * S)})
+    touched, synced = split_changes(before, after)
+    assert touched == [] and synced == [(CL, 5002 * S), (CX, 5008 * S)]
+
+
+def test_the_window_is_fifteen_seconds_each_way_and_the_stamp_may_come_after_or_before():
+    from tests.conftest import split_changes
+    before = _snap(**{CL: (True, 10, 100 * S), CLS: (True, 0, 100 * S)})
+    for file_at, ok in ((5015, True), (4985, True), (5016, False), (4984, False)):
+        after = _snap(**{CL: (True, 99, file_at * S), CLS: (True, 0, 5000 * S)})
+        touched, synced = split_changes(before, after)
+        assert (touched, synced) == (([], [(CL, 5000 * S)]) if ok else ([CL], [])), file_at
+
+
+def test_a_changed_hook_file_with_a_stamp_that_did_not_move_still_fails():
+    from tests.conftest import split_changes
+    stamp = (True, 0, 100 * S)
+    before = _snap(**{CL: (True, 10, 100 * S), CLS: stamp})
+    after = _snap(**{CL: (True, 99, 101 * S), CLS: stamp})
+    assert split_changes(before, after) == ([CL], [])
+
+
+def test_a_stamp_that_moved_but_a_file_changed_far_outside_the_window_still_fails():
+    from tests.conftest import split_changes
+    before = _snap(**{CL: (True, 10, 100 * S), CLS: (True, 0, 100 * S)})
+    after = _snap(**{CL: (True, 99, 200 * S), CLS: (True, 0, 5000 * S)})
+    assert split_changes(before, after) == ([CL], [])
+
+
+def test_a_changed_hook_file_with_no_stamp_at_all_still_fails():
+    from tests.conftest import split_changes
+    before = _snap(**{CX: (True, 10, 100 * S)})
+    after = _snap(**{CX: (True, 99, 5000 * S)})
+    assert split_changes(before, after) == ([CX], [])
+
+
+def test_the_stamp_excuses_only_the_files_the_hook_installers_write():
+    from tests.conftest import split_changes
+    before = _snap(**{CLS: (True, 0, 100 * S)})
+    after = _snap(**{CLS: (True, 0, 5000 * S), ".claude/settings.local.json": (True, 5, 5000 * S), ".codex/auth.json": (True, 5, 5000 * S),
+                     ".codex/config.toml": (True, 5, 5000 * S), ".claude/.credentials.json": (True, 5, 5000 * S)})
+    touched, synced = split_changes(before, after)
+    assert synced == [] and touched == [".claude/settings.local.json", ".claude/.credentials.json", ".codex/config.toml", ".codex/auth.json"]
+
+
+def test_a_deleted_hook_file_is_never_excused_and_the_stamp_alone_is_not_a_change():
+    from tests.conftest import home_changes, split_changes
+    before = _snap(**{CL: (True, 10, 100 * S), CLS: (True, 0, 100 * S)})
+    after = _snap(**{CLS: (True, 0, 5000 * S)})
+    assert split_changes(before, after) == ([CL], [])
+    assert home_changes(_snap(), _snap(**{CLS: (True, 0, 5000 * S), CXS: (True, 0, 5000 * S)})) == []
+
+
+SYNC = '''
+import os, pathlib, subprocess, sys
+
+def test_the_install_syncs_its_hooks_in_the_real_home():
+    real = pathlib.Path(os.environ["CCBOARD_GUARD_REAL_HOME"])
+    for script, flag, rel in (("claude_settings.py", "--settings", ".claude/settings.json"), ("codex_hooks.py", "--hooks", ".codex/hooks.json")):
+        r = subprocess.run([sys.executable, os.environ["CCBOARD_SCRIPTS"] + "/" + script, "install", flag, str(real / rel), "--app-dir", "/opt/ccboard"],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+'''
+
+
+def test_an_install_that_syncs_hooks_during_the_run_passes_with_one_warning_line_per_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCBOARD_SCRIPTS", str(ROOT / "scripts"))
+    r, fake_real = _run_guard(tmp_path, SYNC)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert (fake_real / ".claude" / ".ccboard-hook-sync").is_file() and (fake_real / ".codex" / ".ccboard-hook-sync").is_file()
+    lines = [l for l in out.splitlines() if "the ccboard install on this machine synced its hooks" in l]
+    assert len(lines) == 2 and "~/.claude/settings.json changed during the run" in lines[0] and "(stamp " in lines[0] and "; not a test" in lines[0], out
+    assert "~/.codex/hooks.json changed during the run" in lines[1], out
+    assert str(fake_real) not in out
