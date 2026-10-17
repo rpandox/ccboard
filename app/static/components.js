@@ -31,17 +31,17 @@ function confirmArm(key) {
   if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true);
 }
 
-function confirmButton(key, label, action, quiet) {
+function confirmButton(key, label, action, quiet, onChange) {
   // Two taps: the first turns the button into "Confirm …" + Cancel. A destructive button rests red-outlined (style.css); only the armed
   // "Confirm …" is filled red. `quiet` renders the resting state as a minimal (borderless-fill) button for rows crowded with everyday actions.
   // Repaint whichever page is mounted (a keyed roster row, the peek, the board): never a home-only renderer, so it is safe off the board.
-  const repaint = () => { if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); };
+  const repaint = () => { if (onChange) onChange(); else if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); };
   if (ui.confirm === key) {
     return el('span', { class: 'row' },
       el('button', { class: 'danger confirm', onclick: async () => { ui.confirm = null; try { await action(); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: `Confirm ${label}` }),
       el('button', { onclick: () => { ui.confirm = null; repaint(); }, text: 'Cancel' }));
   }
-  return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => confirmArm(key), text: label });
+  return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => { if (onChange) { ui.confirm = key; repaint(); } else confirmArm(key); }, text: label });
 }
 
 /* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and

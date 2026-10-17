@@ -433,6 +433,8 @@ Palette.catalog = function (ctx, query) {
   // a real match): Enter on the best match then runs that match, and "search transcripts for ..." is the last row.
   const routes = Palette.ROUTES.filter((r) => r[1] !== '#/search' || !query).map(([label, hash, kbd]) => ({ id: 'r:' + hash, label, hint: hash === '#/search' ? 'transcripts' : '', kbd,
     run: () => { close(); Palette.go(hash === '#/quad' && typeof Shell !== 'undefined' && Shell && typeof Shell.quadHref === 'function' ? Shell.quadHref() : hash); } }));      // the quad opens the scope last used
+  if (typeof state !== 'undefined' && state?.restart) routes.push({ id: 'settings:restart', label: 'Restart board', hint: 'Settings > Options, then confirm',
+    run: () => { close(); Palette.go('#/settings?sec=options'); } });
   groups.push({ id: 'routes', title: 'Routes', items: routes });
   if (hub) {
     const items = [];

@@ -2,12 +2,20 @@
 
 Working rules: one phase at a time; each item is one commit; tick items as they land.
 
+## v0.5.78 - Restart board (P3)
+
+- [x] Person-only restart route, runtime-specific board commands, readiness warnings, persistent minute limit and audit.
+- [x] Two-tap controls, palette entry, boot polling, timeout recovery commands and Docker file guidance.
+- [x] Doctor method line and fake-only process-control tests.
+- [ ] Human checks: Docker exit-zero restart, equal tmux counts, terminal reconnect and measured outage on Docker, launchd and available systemd; WSL without systemd.
+- [x] Local demo screenshots: banner, armed warnings and restarting at 1280, 1024 coarse and 390 coarse; no horizontal overflow, touch buttons 44 px.
+
 ## v0.5.76 - Page-saved options (P2)
 
 - [x] Person-only saves for the page class, startup validation, private atomic overrides and stale-tab conflicts.
 - [x] Save and refusal audit, running versus next-start values, boot identity and pending banners on Options and Home.
 - [x] Inline editors, reset to file, demo controls and the settings-page doctor check.
-- [ ] P3: restart button. P4: typed confirmation and file-only master switch for widening options.
+- [ ] P4: typed confirmation and file-only master switch for widening options.
 
 ## v0.5.71 - Settings option registry (P1)
 

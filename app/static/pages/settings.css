@@ -270,3 +270,12 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 #page .settings-restart > p, #page .set-options-guidance > p { margin:0 0 8px; }
 #page .settings-restart > a { display:inline-block; margin-top:8px; }
 #page .settings-restart .doc-cmd, #page .set-options-guidance .doc-cmd { white-space:pre-wrap; max-width:100%; box-sizing:border-box; }
+
+.set-restart-header { display: flex; flex-wrap: wrap; align-items: start; gap: 12px; margin-block: 12px; }
+.set-restart-control { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.set-restart-control > .set-restart-blocker { display: block; max-width: 100%; }
+.set-restart-control .row { flex-wrap: wrap; }
+.set-restart-control p { margin-block: 6px; }
+.set-restart-control button { min-height: 28px; }
+html.force-coarse .set-restart-control button { min-height: 44px; }
+@media (pointer: coarse) { .set-restart-control button { min-height: 44px; } }

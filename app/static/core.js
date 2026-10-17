@@ -405,7 +405,10 @@ async function demoApi(method, path, body) {
     for (const [k, m] of Object.entries(data.meta)) meta[k] = m && typeof m.resets_at === 'number' ? { ...m, resets_at: m.resets_at + dt } : m;
     return { ...data, meta };
   }
-  if (name === 'state') return demoTaskEpic(demoMadeState(demoUsageRefresh(demoRebase(data))));                 // the usage reading's own time follows the make-believe refresh above
+  if (name === 'state') {
+    const st = demoTaskEpic(demoMadeState(demoUsageRefresh(demoRebase(data))));
+    return typeof settingsRestartDemoState === 'function' ? settingsRestartDemoState(st) : st;
+  }                 // the usage reading's own time follows the make-believe refresh above
   return name === 'usage_summary' ? demoRebase(data) : data;                         // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 
