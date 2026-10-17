@@ -1436,6 +1436,14 @@ A session on a paired node is one tap from its own terminal, and the quad and th
 
 To verify in the two-node check (#155): opening a remote terminal from a phone and a desktop, a tagged device's `403`, typing into a remote tile on real nodes, and the screens at 1280, 1024 and 390 pixels.
 
+#### Devices without a board (phase 1)
+
+**Settings > Nodes > Devices without a board** lists your online Tailscale devices and tagged devices in your tailnet, never shared-in devices. Choose a device, a dedicated non-root account (default `ccagent`), and a projects folder relative to that account's home (default `projects`). **Add and check** tests SSH, the numeric user ID, groups, system, tmux, Claude and Codex on PATH, and repositories below the projects folder. Each row has a pass or fail mark, a plain sentence and a fix when needed. CLI presence does not establish sign-in. Linux and macOS are supported targets; macOS needs open-source `tailscaled` with Tailscale SSH enabled.
+
+The board refuses accounts in `sudo`, `wheel` or `admin`, and never proceeds past an unreadable identity or groups check. A device with missing tools can be saved so you can fix it and **Check again**. **Remove device** forgets its saved record even while it is offline. This phase does not start, attach to, or poll sessions. Devices are separate from paired boards and receive no board token or relay access.
+
+Enable Tailscale SSH on the target and grant only the board device access to that dedicated user: use an SSH ACL `check` rule (12-hour check period) for an untagged board, or `accept` for a tagged board. Never include root in the ACL's users. A check prompt offers only a Tailscale login link and **Retry**. The board pins the first host key in its data directory under `bare-ssh`; a changed key is refused until you verify it. No passwords or private keys are stored. **Activity** records `bare_check`, `bare_add` and `bare_remove` with the acting person, without command output or prompts. Tests replace the process runner; real check prompts, sleep/wake and macOS target behavior remain device checks for the owner.
+
 #### Using nodes from an agent (issue #152; phase P10)
 
 An agent session on this board (Claude Code or Codex, through the stdio `ccboard` server or through `/mcp`) can list the paired nodes, read their projects and tasks and, at the higher level, create a task on one and start it in a new session there. It is **off** until the board's owner sets `CCBOARD_MCP_NODES`; Settings > Agents shows the level in words, read-only, with the env value, next to the MCP block.

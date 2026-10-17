@@ -43,6 +43,12 @@ NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 
 EXPECTED = {
+    # Bare devices (#273): person-only management, with CSRF on mutations; no hook or node tokens.
+    ("GET", "/api/bare"): "identity",
+    ("POST", "/api/bare"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/check"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/forget-host-key"): "identity+csrf",
+    ("DELETE", "/api/bare/{tid}"): "identity+csrf",
     ("GET", "/auth/local"): "local-gate",
     ("GET", "/auth/local/script.js"): "local-gate",
     ("POST", "/auth/local/token"): "local-gate+hook-token",

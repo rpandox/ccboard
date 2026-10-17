@@ -1604,6 +1604,7 @@ function settingsNdUi() {
     el('div', { class: 'nd-sec-head' }, settingsHead('Found on your tailnet'), ui.refresh),
     el('div', { class: 'dim set-note', text: 'Finding a device gives it no access to this board: only pairing does. "On the tailnet" means the device is connected to Tailscale, not that ccboard answers there.' }),
     ui.status, ui.problem, ui.empty, ui.list,
+    settingsBareFrame(),
     el('div', { class: 'nd-sec-head' }, settingsHead('Who can control this node'), ui.codeBtn),
     el('div', { class: 'dim set-note', text: 'Nodes that hold a token for this board, and what each may do. Revoke cuts one off at once.' }),
     ui.inList, ui.inEmpty,
@@ -1613,6 +1614,153 @@ function settingsNdUi() {
     ui.auditBar, ui.auditList, ui.auditEmpty);
   settingsNd.ui = ui;
   return ui;
+}
+
+/* Demo device writes stay in this page's memory, just like demo pairing. Only the static fixture is fetched. */
+let settingsDemoBare = null;
+async function demoBare(method, path, body = {}) {
+  if (!settingsDemoBare) {
+    const r = await fetch('/static/demo/bare.json');
+    if (!r.ok) throw new Error(`demo fixture bare.json: ${r.status} ${r.statusText}`);
+    const data = await r.json();
+    settingsDemoBare = { data, template: JSON.parse(JSON.stringify(data.devices[0])) };
+  }
+  const { data, template } = settingsDemoBare;
+  const route = path.split('?')[0];
+  if (method === 'GET' && route === '/api/bare') return data;
+  const match = /^\/api\/bare\/([^/]+)(?:\/(check|forget-host-key))?$/.exec(route);
+  const id = match ? decodeURIComponent(match[1]) : body.ts_id;
+  const saved = data.devices.find((d) => d.ts_id === id);
+  const candidate = data.candidates.find((d) => d.ts_id === id);
+  if (!candidate) throw demoError(404, 'No such demo device.');
+  if (method === 'DELETE' && match && !match[2]) {
+    data.devices = data.devices.filter((d) => d.ts_id !== id);
+    return { ok: true };
+  }
+  if (method === 'POST' && match && match[2] === 'forget-host-key') {
+    if (saved) saved.check = { ok: false, rows: [{ key: 'ssh', ok: false,
+      message: "Host key forgotten. Check again to pin the device's current key.", fix: 'Check again.' }], repos: [], login_url: null };
+    return { ok: true };
+  }
+  if (method !== 'POST' || (route !== '/api/bare' && (!match || match[2] !== 'check'))) throw demoError(404, 'No such demo action.');
+  const user = saved ? saved.user : body.user || 'ccagent', folder = saved ? saved.folder : body.folder || 'projects';
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user) || user === 'root') throw demoError(400, 'Choose a dedicated non-root user, such as ccagent.');
+  const check = JSON.parse(JSON.stringify(template.check));
+  const wording = (s) => s.replaceAll(template.name, candidate.name).replaceAll(template.user, user).replaceAll('~/projects', `~/${folder}`).replaceAll('Darwin (macOS)', candidate.os === 'Linux' ? 'Linux' : 'Darwin (macOS)');
+  check.rows = check.rows.map((row) => ({ ...row, message: wording(row.message), fix: wording(row.fix) }));
+  const device = { ...candidate, user, folder, owner: template.owner, check };
+  data.devices = [...data.devices.filter((d) => d.ts_id !== id), device];
+  return { added: true, device, check };
+}
+
+/* Bare devices are checked only when asked. Keep the form and results mounted across board polls. */
+const settingsBare = { data: null, busy: false, seq: 0, result: null, err: '', ui: null };
+
+function settingsBareFrame() {
+  const B = settingsBare;
+  const ui = { list: el('div', { class: 'bare-list' }), status: el('p', { class: 'dim', role: 'status', 'aria-live': 'polite' }),
+    candidate: el('select', { 'aria-label': 'Device without a board' }),
+    user: el('input', { 'aria-label': 'Device user', autocomplete: 'off' }),
+    folder: el('input', { 'aria-label': 'Projects folder', autocomplete: 'off' }) };
+  ui.user.value = 'ccagent'; ui.folder.value = 'projects';
+  ui.refresh = el('button', { type: 'button', text: 'Refresh devices', onclick: () => settingsBareLoad() });
+  ui.add = el('button', { type: 'button', text: 'Add and check', onclick: () => settingsBareAction('POST', '/api/bare', { ts_id: ui.candidate.value, user: ui.user.value, folder: ui.folder.value }) });
+  ui.root = el('section', { class: 'bare-section', 'aria-label': 'Devices without a board' },
+    el('div', { class: 'nd-sec-head' }, settingsHead('Devices without a board'), ui.refresh),
+    el('p', { class: 'dim set-note', text: 'Your online devices and tagged devices on your tailnet. Shared-in devices are excluded. Use a dedicated non-root user outside sudo, wheel and admin. Sessions on this device come in a later version.' }),
+    el('div', { class: 'bare-form' }, el('label', {}, 'Device', ui.candidate), el('label', {}, 'User', ui.user),
+      el('label', {}, 'Projects folder (under user’s home)', ui.folder), ui.add), ui.status, ui.list);
+  B.ui = ui;
+  settingsBarePaint();
+  return ui.root;
+}
+
+function settingsBareMessage(device, row) {
+  if (row.key !== 'ssh' || !Object.prototype.hasOwnProperty.call(row, 'last_seen')) return row.message;
+  const timestamp = row.last_seen ? Date.parse(row.last_seen) : NaN;
+  let age = 'unknown';
+  if (Number.isFinite(timestamp)) {
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    const [duration, unit] = [[86400, 'd'], [3600, 'h'], [60, 'min'], [1, 'sec']].find(([size]) => seconds >= size || size === 1);
+    age = `${Math.floor(seconds / duration)} ${unit} ago`;
+  }
+  return `${device.name} is offline (last seen ${age}). Nothing was started.`;
+}
+
+function settingsBarePaint() {
+  const B = settingsBare, ui = B.ui;
+  if (!ui) return;
+  ui.status.textContent = B.busy ? 'Checking the devices…' : B.err || (B.data && B.data.tailscale && B.data.tailscale.reason) || '';
+  ui.refresh.disabled = ui.add.disabled = B.busy;
+  ui.candidate.disabled = ui.user.disabled = ui.folder.disabled = B.busy;
+  const selected = ui.candidate.value;
+  ui.candidate.textContent = '';
+  const saved = B.data && Array.isArray(B.data.devices) ? B.data.devices : [];
+  const candidates = B.data && Array.isArray(B.data.candidates) ? B.data.candidates.filter((r) => !saved.some((s) => s.ts_id === r.ts_id)) : [];
+  for (const r of candidates) ui.candidate.append(el('option', { value: r.ts_id, text: `${r.name} · ${r.os || 'unknown system'} · online${r.tags && r.tags.length ? ' · ' + r.tags.join(', ') : ''}` }));
+  if (candidates.some((r) => r.ts_id === selected)) ui.candidate.value = selected;
+  if (!candidates.length) { ui.candidate.append(el('option', { value: '', text: 'No online devices to add' })); ui.add.disabled = true; }
+  ui.list.textContent = '';
+  const devices = saved.slice();
+  if (B.result && !devices.some((d) => d.ts_id === B.result.device.ts_id)) devices.push(B.result.device);
+  for (const d of devices) {
+    const recent = B.result && B.result.device.ts_id === d.ts_id ? B.result : null;
+    const check = recent ? recent.check : d.check;
+    const added = saved.some((r) => r.ts_id === d.ts_id);
+    const body = el('article', { class: 'bare-device' }, el('h3', { text: `${d.name} · ${d.user}` }));
+    const actions = el('div', { class: 'bare-actions' });
+    const retry = el('button', { type: 'button', text: check && check.login_url ? 'Retry' : 'Check again', disabled: B.busy,
+      onclick: () => added ? settingsBareAction('POST', `/api/bare/${encodeURIComponent(d.ts_id)}/check`, {})
+        : settingsBareAction('POST', '/api/bare', { ts_id: d.ts_id, user: d.user, folder: d.folder }) });
+    actions.append(retry);
+    if (check && Array.isArray(check.rows) && check.rows.some((r) => r.key === 'ssh' && !r.ok && r.action === 'forget_host_key'))
+      actions.append(el('button', { type: 'button', text: 'Forget host key', disabled: B.busy,
+        onclick: () => settingsBareAction('POST', `/api/bare/${encodeURIComponent(d.ts_id)}/forget-host-key`, { user: d.user, folder: d.folder }) }));
+    if (added) actions.append(el('button', { type: 'button', text: 'Remove device', disabled: B.busy,
+      onclick: () => settingsBareAction('DELETE', `/api/bare/${encodeURIComponent(d.ts_id)}`) }));
+    const refused = check && Array.isArray(check.rows) && check.rows.some((r) => ['user', 'groups'].includes(r.key) && !r.ok && !r.skipped);
+    body.append(el('p', { class: 'dim', text: added ? 'Saved device. Nothing was started.' : refused
+      ? 'Device was refused and was not added.' : 'Not added yet: fix the rows marked ✕ and check again.' }), actions);
+    for (const r of check && Array.isArray(check.rows) ? check.rows : []) {
+      body.append(el('div', { class: 'bare-check' }, el('span', { class: r.ok ? 'ok' : 'bad', text: r.ok ? '✓' : '✕', 'aria-label': r.ok ? 'Passed' : 'Failed' }),
+        el('div', {}, el('div', { text: settingsBareMessage(d, r) }), r.fix ? el('div', { class: 'dim', text: r.fix }) : null)));
+    }
+    if (check && check.login_url) {
+      try {
+        const url = new URL(check.login_url);
+        if (url.protocol === 'https:' && url.host === 'login.tailscale.com' && !url.username && !url.password)
+          body.append(el('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', text: 'Open Tailscale check' }));
+      } catch (_) { /* An invalid link is never offered. */ }
+    }
+    if (check && Array.isArray(check.repos) && check.repos.length) body.append(el('ul', { class: 'bare-repos' }, check.repos.map((repo) => el('li', { text: repo }))));
+    ui.list.append(body);
+  }
+}
+
+async function settingsBareLoad() {
+  const B = settingsBare;
+  if (B.busy) return;
+  const seq = ++B.seq;
+  B.busy = true; B.err = ''; settingsBarePaint();
+  try { const data = await api('GET', '/api/bare'); if (seq === B.seq) B.data = data; }
+  catch (e) { if (seq === B.seq) B.err = e.message || 'Could not read the devices. Try Refresh devices.'; }
+  finally { if (seq === B.seq) { B.busy = false; settingsBarePaint(); } }
+}
+
+async function settingsBareAction(method, path, body) {
+  const B = settingsBare;
+  if (B.busy) return;
+  const seq = ++B.seq;
+  B.busy = true; B.err = ''; settingsBarePaint();
+  try {
+    const answer = await api(method, path, body);
+    if (seq !== B.seq) return;
+    B.result = answer && answer.device ? answer : null;
+    const data = await api('GET', '/api/bare');
+    if (seq === B.seq) B.data = data;
+    settingsNdLoadPeers();
+  } catch (e) { if (seq === B.seq) B.err = e.message || 'The device did not answer. Check again.'; }
+  finally { if (seq === B.seq) { B.busy = false; settingsBarePaint(); } }
 }
 
 function settingsNodes(p) {
@@ -1658,6 +1806,7 @@ async function settingsNdLoad(refresh) {
 
 /* The tab was opened (mount or a tab switch): look once if nothing was fetched yet or the last answer is older than the stale mark. */
 function settingsNdOpen() {
+  settingsBareLoad();
   settingsNdOpenPeers();
   settingsNdWorkerOpen();
   if (!settingsNd.authBusy && (!settingsNd.auth || Date.now() - settingsNd.authAt >= NodeView.STALE_S * 1000)) settingsNdAuthLoad(false);
@@ -1668,6 +1817,10 @@ function settingsNdOpen() {
 
 /* The page goes away: an answer still on its way is dropped and the frame is built again with the next visit. */
 function settingsNdDispose() {
+  settingsBare.seq++;
+  settingsBare.busy = false;
+  settingsBare.ui = settingsBare.data = settingsBare.result = null;
+  settingsBare.err = '';
   settingsNdSheetClose();
   const P = settingsNdPeers;
   P.seq++;

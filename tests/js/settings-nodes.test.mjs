@@ -41,10 +41,10 @@ const chips = (r) => r.querySelectorAll('.nd-chips .badge').map(text);
 
 // ---------------------------------------------------------------- the three sections
 
-test('six labelled sections in order: This node, Paired nodes, Found on your tailnet, Who can control this node, Device check, Activity', async () => {
+test('seven labelled sections include devices without a board', async () => {
   const w = nodesWorld();
   await tick();
-  assert.deepEqual(panel(w).querySelectorAll('h2.set-h').map(text), ['This node', 'Paired nodes', 'Found on your tailnet', 'Who can control this node', 'Device check', 'Activity']);
+  assert.deepEqual(panel(w).querySelectorAll('h2.set-h').map(text), ['This node', 'Paired nodes', 'Found on your tailnet', 'Devices without a board', 'Who can control this node', 'Device check', 'Activity']);
 });
 
 test('This node: name, short node id with a Copy, system, agents and free lanes, all from state.node', async () => {

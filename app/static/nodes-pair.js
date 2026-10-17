@@ -326,6 +326,9 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
    read_task, read_pane, read_agents, scope_refused, route_refused, method_refused): the first rule that matches the action's name gives [words when it worked, words when
    it did not]. An action this table does not know is its name with the underscores and dots turned into spaces, and 'failed' after it when it did not work. */
 NodeView.AUDIT_WORDS = [
+  [/^bare_check$/, 'Device checked', 'Device check failed'],
+  [/^bare_add$/, 'Device added', 'Device not added'],
+  [/^bare_remove$/, 'Device removed', 'Device not removed'],
   [/^key_pinned$/, 'Key pinned', 'Key not pinned'],
   [/^key_changed$/, 'Key changed', 'Key changed, pair again'],
   [/^key_rotated$/, 'Key rotated', 'Key not rotated'],

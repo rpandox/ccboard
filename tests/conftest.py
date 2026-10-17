@@ -1073,3 +1073,33 @@ def split_boards(two_nodes, fake_tmux, tmp_path):
     wrap(two_nodes.b, pb, sb)
     two_nodes.a_projects, two_nodes.b_projects, two_nodes.tmux_a, two_nodes.tmux_b = pa, pb, sa, sb
     return two_nodes
+
+
+@pytest.fixture(autouse=True)
+def _no_real_bare(monkeypatch):
+    from app import bare
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("A bare-device test must install the scripted runner")
+
+    monkeypatch.setattr(bare, "runner", refuse)
+
+
+@pytest.fixture
+def bare_runner(monkeypatch, projects_dir):
+    """Scripted process answers and exact argv, with no process or network access."""
+    from types import SimpleNamespace
+    from app import bare
+    fake = SimpleNamespace(answers=[], calls=[])
+
+    def run(argv, *, stdin=None):
+        fake.calls.append((list(argv), stdin))
+        assert fake.answers, "unexpected device command"
+        answer = fake.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        code, out, err = answer
+        return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+    monkeypatch.setattr(bare, "runner", run)
+    return fake

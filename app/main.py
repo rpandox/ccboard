@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -4894,6 +4894,56 @@ def api_nodes_discover(request: Request, refresh: int = 0):
     if refresh and request.headers.get("x-ccboard") != "1":
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     return nodes_discovery.discover(db, refresh=bool(refresh))
+
+
+# ---------- devices without a board: no session operations in this phase ----------
+
+class BareAddIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    ts_id: str
+    user: str = "ccagent"
+    folder: str = "projects"
+
+
+@app.get("/api/bare")
+def api_bare(request: Request):
+    _node_manager(request)
+    return JSONResponse(bare.listing(db, request.state.user), headers={"Cache-Control": "no-store"})
+
+
+def _bare_action(request, verb, tid, user="ccagent", folder="projects"):
+    _node_manager(request)
+    try:
+        result = bare.action(db, request.state.user, verb, tid, user, folder)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/bare")
+def api_bare_add(body: BareAddIn, request: Request):
+    return _bare_action(request, "add", body.ts_id, body.user, body.folder)
+
+
+@app.post("/api/bare/{tid}/check")
+def api_bare_check(tid: str, request: Request):
+    return _bare_action(request, "check", tid)
+
+
+class BareForgetIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    user: str = "ccagent"
+    folder: str = "projects"
+
+
+@app.post("/api/bare/{tid}/forget-host-key")
+def api_bare_forget_host_key(tid: str, body: BareForgetIn, request: Request):
+    return _bare_action(request, "forget_host_key", tid, body.user, body.folder)
+
+
+@app.delete("/api/bare/{tid}")
+def api_bare_remove(tid: str, request: Request):
+    return _bare_action(request, "remove", tid)
 
 
 # ---------- team (issue #197): what GitHub shows about the people working in a shared repository; read only; the logic is in app/team.py and app/team_github.py ----------
