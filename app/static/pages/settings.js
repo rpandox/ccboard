@@ -390,7 +390,7 @@ function settingsOptionsPaint(p, data) {
       if (option.pending) row.add(el('span', { class: 'set-option-next', text: 'running ' + settingsOptionText(option.running, option) + ', next start ' + settingsOptionText(option.value, option) }));
       if ((option.cls === 'page' || (option.cls === 'confirm' && data.page_widen)) && !option.secret) row.add(el('button', { type: 'button', text: 'Edit', onclick: () => settingsOptionEdit(p, data, option, row) }));
       if (option.cls === 'confirm') {
-        row.add(el('span', { class: 'dim', text: data.page_widen ? 'Widening needs a typed confirmation; lowering uses Save.' : 'Allow in settings: CCBOARD_PAGE_WIDEN=1. Old plain page entries are ignored.' }));
+        row.add(el('span', { class: 'dim', text: data.page_widen ? 'Widening needs a typed confirmation; lowering uses Save.' : 'Changing this from the page is off. To allow it, set CCBOARD_PAGE_WIDEN=1 in the settings file. A value saved here before v0.5.83 is not used.' }));
         if (!data.page_widen) row.add(el('code', { class: 'set-option-line', text: option.line }));
       }
       if (option.live_widening) row.add(el('span', { class: 'warn', text: 'Live value is wider than the settings file/environment alone.' }));

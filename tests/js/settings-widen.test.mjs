@@ -28,7 +28,7 @@ for (const on of [false, true]) test(`master switch ${on}: chip and confirm edit
   assert.equal(!!page(w).querySelector('.set-widen-chip'), on);
   assert.equal(!!button(row(w), 'Edit'), on);
   if (on) assert.match(text(page(w)), /Settings can widen agent permissions/);
-  else assert.match(text(row(w)), /Allow in settings: CCBOARD_PAGE_WIDEN=1/);
+  else assert.match(text(row(w)), /To allow it, set CCBOARD_PAGE_WIDEN=1 in the settings file/);
   for (const k of ['CCBOARD_CODEX_HOOK_TRUST', 'CCBOARD_NODE_TAGS', 'CCBOARD_PAGE_WIDEN']) {
     const r = page(w).querySelector('[data-key=' + k + ']');
     assert.equal(button(r, 'Edit'), undefined);
