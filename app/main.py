@@ -2956,7 +2956,7 @@ class JobIn(BaseModel):
     name: str
     prompt: str
     cron: str | None = None
-    permission_mode: str = "acceptEdits"
+    permission_mode: str = "auto"
     max_turns: int | None = None             # Claude: 1..500 (30 when unset); Codex has no such limit and refuses the field
     max_budget_usd: float | None = None      # Claude only, like max_turns
     args: str | None = None
@@ -3062,7 +3062,7 @@ class BatchIn(BaseModel):
     prompt: str
     repos: list[str]                 # "project/repo" ids
     name: str | None = None
-    permission_mode: str = "acceptEdits"
+    permission_mode: str = "auto"
     max_turns: int | None = None
     max_budget_usd: float | None = None
     args: str | None = None

@@ -10,6 +10,17 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.61 - 2026-10-17
+
+### Changed
+- The default permission mode for new work is now `auto` for Claude (issue #83): a session, task or dispatch opened from the launcher, and a schedule or batch started without a mode, run with Claude's safety checks instead of asking or accepting edits. The form shows it as *auto (default): Claude's safety checks*; *ask* is one tap away.
+- Codex opens on `auto` too, but only gets `--approve-for-me` where its installed binary has the flag. Without it `auto` is exactly the old default (`-s workspace-write -a on-request`; the older `on-failure` fallback is gone), and a headless run is unchanged.
+- A saved choice still wins: a per-repo or project default, a preset, a Backlog card's own mode and an issue's model line. A remembered *ask* is now kept as a choice. A Claude Code too old to start in `auto` opens on *ask* instead of failing.
+- Jobs already stored keep their mode; only the fallback for a new job with none changed (`POST /jobs`, `POST /api/batch`).
+- Bypass is never a default, and a request from another node still never carries `auto`, bypass or `dontAsk`.
+
+Upgrade: nothing to do.
+
 ## v0.5.60 - 2026-10-16
 
 ### Fixed
