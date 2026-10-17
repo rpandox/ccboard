@@ -168,6 +168,8 @@ def _no_real_tailscale(monkeypatch):
     starts with no id, no Tailscale reading and an empty hello limiter. tests/test_nodes_card.py patches the seam with a fake reading."""
     from app import nodes
     monkeypatch.setattr(nodes, "_ts_status", lambda: None)
+    # Synthetic clocks may predate this real process. Restart/replay tests set their own start boundary.
+    monkeypatch.setattr(nodes.node_keys, "STARTED", 0)
     nodes.reset()
     yield
     nodes.reset()
@@ -814,6 +816,7 @@ class Board:
         self.parent, self.name, self.url, self.data_dir = parent, name, url, data_dir
         self.db_path = data_dir / "ccboard.db"
         self.hub_token = ""
+        self.signer = None
         self.hook_token = ""
         self.db = DB(self.db_path)
         with self.enter():
@@ -842,6 +845,21 @@ class Board:
         only `headers`, the way a node's server process arrives on a tagged tailnet (no identity)."""
         h = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"} if owner else {}
         h.update(headers or {})
+        # pair_up opts integration tests into real signatures. Raw two_nodes stays unsigned for auth/tamper tests.
+        if self.signer is not None and h.get("Authorization", "").startswith("Bearer ccbnode_") and not h.get("X-CCBoard-Signature"):
+            import httpx
+            from app import nodes, node_keys
+            wire = httpx.Request(method, path, **{k: v for k, v in kw.items() if k in ("content", "json", "data", "params")})
+            with self.enter():
+                recipient = nodes.node_id()
+                pair = nodes.verify_token(h["Authorization"][7:], db=self.db)
+            with self.signer.enter():
+                if pair and pair["node_id"] != nodes.node_id():
+                    with self.enter():
+                        return self.parent.client.request(method, path, headers=h, **kw)
+                h["X-CCBoard-Node"] = nodes.node_id()
+                h.update(node_keys.sign_headers(method, wire.url.raw_path.decode("ascii"), wire.content,
+                                               recipient_id=recipient, token=h["Authorization"][7:], acting_user=h.get("X-CCBoard-Acting-User")))
         with self.enter():
             return self.parent.client.request(method, path, headers=h, **kw)
 
@@ -1008,6 +1026,7 @@ def pair_up(two_nodes):
         code = two_nodes.b.post("/api/nodes/pair-code", json={"scopes": list(scopes), "minutes": 10}).json()["code"]
         made = two_nodes.a.post("/api/nodes", json={"url": two_nodes.b.url, "code": code})
         assert made.status_code == 201, made.text
+        two_nodes.b.signer = two_nodes.a
         return made.json()
     return go
 

@@ -113,7 +113,7 @@ def uvicorn_forwarded_allow(argv) -> str | None:
 
 
 def parse_node_auth(raw) -> tuple[str, bool]:
-    """CCBOARD_NODE_AUTH (issue #136): `token` (the default: the pair token alone), `whois` (token plus the device it was paired from) or `whois+cap`
+    """CCBOARD_NODE_AUTH (issue #136): `token` (the default: no extra device check), `whois` (token plus the device it was paired from) or `whois+cap`
     (that plus a Tailscale app capability). Unset or blank is `token`. Any other text is returned as it was typed (lower case) with True: it is never
     read as `token`, so a typo cannot quietly turn the check off; app/nodes_whois.py refuses every node call until it is fixed."""
     text = (raw or "").strip().lower()
@@ -458,6 +458,10 @@ class Settings:
         self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
         self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
         # Issue #136: the optional device binding and app capability for calls from paired nodes (app/nodes_whois.py). Off (`token`) by default.
+        self.node_keys_input = str(env.get("CCBOARD_NODE_KEYS") or "prefer")
+        self.node_keys = self.node_keys_input.strip().lower()
+        if self.node_keys not in ("prefer", "require", "off"):
+            self.node_keys = "require"
         self.node_auth, self.node_auth_bad = parse_node_auth(env.get("CCBOARD_NODE_AUTH"))
         self.node_cap, self.node_cap_bad = parse_node_cap(env.get("CCBOARD_NODE_CAP"))
         # The address uvicorn was told to listen on, from this process's own command line (`--host`; uvicorn's default is 127.0.0.1); None when the

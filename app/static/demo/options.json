@@ -1190,6 +1190,28 @@
       "problem": null
     },
     {
+      "key": "CCBOARD_NODE_KEYS",
+      "group": "safety",
+      "label": "Node signing keys",
+      "help": "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.",
+      "kind": "choice",
+      "default": "prefer",
+      "cls": "confirm",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": [
+        "prefer",
+        "require",
+        "off"
+      ],
+      "value": "prefer",
+      "set": false,
+      "line": "CCBOARD_NODE_KEYS=prefer",
+      "source": "default",
+      "problem": null
+    },
+    {
       "key": "CCBOARD_RECOVER",
       "group": "agents",
       "label": "Session recovery",

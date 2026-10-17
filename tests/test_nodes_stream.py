@@ -1044,6 +1044,11 @@ def bridge(w):
     def transport(target, path, headers, timeout):
         seen.append({"path": path, "headers": dict(headers)})
         board = w.two.boards[(target.host, target.port)]
+        # The test adds once=1 before signing, just as the production client signs its final target.
+        headers = dict(headers)
+        with w.a.enter():
+            headers.update(nodes.node_keys.sign_headers("GET", path + "&once=1", b"", recipient_id=w.reg["node_id"],
+                           token=headers["Authorization"][7:], acting_user=headers.get("X-CCBoard-Acting-User")))
         with board.enter():
             r = w.two.client.request("GET", path + "&once=1", headers=headers)
         if r.status_code != 200:

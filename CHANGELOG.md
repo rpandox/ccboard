@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.73 - 2026-10-17
+
+### Added
+- Nodes keep a private Ed25519 key; both boards prove possession before pairing pins their public keys. Signed calls reject tampering, repeated nonces and changed keys.
+- Settings shows key ids to compare and a two-tap Rotate key action; offline peers can catch up for 30 days.
+- Existing pairs keep working in prefer mode and can upgrade; require refuses unkeyed pairing. Doctor explains invalid modes and how to clear a corrupt-key warning.
+- Nonces persist in SQLite across restarts, closing restart replays while allowing 120 seconds of clock lag; transient signature refusals name the reason without asking to re-pair.
+- Pairing distinguishes callback timeouts from key conflicts, and the hub and Doctor identify which board’s key changed.
+
+Upgrade: nothing to do.
+
 ## v0.5.72 - 2026-10-17
 
 ### Fixed
