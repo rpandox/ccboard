@@ -21,7 +21,7 @@ test('Options follows Box and renders all nine registry groups and every key onc
   const ids = w.run('SETTINGS_SECTIONS.map(s => s.id).join()');
   assert.match(ids, /box,options,doctor/);
   assert.deepEqual(panel(w).querySelectorAll('.set-options-group').map(n => n.getAttribute('data-group')), FX.groups.map(g => g.id));
-  assert.deepEqual(panel(w).querySelectorAll('.set-h').map(text), FX.groups.map(g => g.label));
+  assert.deepEqual(panel(w).querySelectorAll('.set-options-group .set-h').map(text), FX.groups.map(g => g.label));
   const keys = panel(w).querySelectorAll('.set-option').map(n => n.getAttribute('data-key'));
   assert.equal(keys.length, FX.options.length);
   assert.equal(new Set(keys).size, keys.length);

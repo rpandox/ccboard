@@ -156,7 +156,7 @@ test('Options pending callout uses labels and one separate command; without pend
   assert.equal(text(banner.querySelector('.doc-cmdline code')), FX.restart_hint);
   assert.ok(banner.querySelector('.copy-btn'));
   const checkGuidance = () => {
-    assert.equal(text(p).split(FX.restart_hint).length - 1, 1);
+    assert.equal(p.querySelectorAll('.doc-cmdline code').filter(n => text(n) === FX.restart_hint).length, 1);
     assert.match(text(p.querySelector('.set-options-guidance')), /Page options save here; others are set by the installer or settings file\./);
     assert.doesNotMatch(text(p), /Saved changes apply after|After changing startup options:/);
   };

@@ -2,13 +2,31 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.80 - 2026-10-17
+## v0.5.82 - 2026-10-17
 
 ### Added
 - Settings > Options can save a claude-mem dashboard URL for the Memory page link, taking precedence over the local viewer port.
 - Viewer URLs require HTTPS or loopback HTTP without credentials; invalid values are ignored and reported in Options and Doctor.
 
 Upgrade: nothing to do.
+
+## v0.5.81 - 2026-10-17
+
+### Added
+- Restart board controls in Settings, pending banners and the command palette, with confirmation and warnings about work in progress.
+- Person-only board restarts, spaced one minute apart and capped at six per hour across boots; systemd exits gracefully with status 75 under the existing hardening.
+- Automatic reconnect by boot identity, audited launch failures with immediate retry, and launchd output logs named after a timeout.
+- Doctor reports the restart method; older Docker installs must refresh the installed Compose file before recreating the container.
+
+Upgrade: for an older Docker install, rerun `./install.sh` on the host to copy `deploy/docker-compose.yml`, then run `docker compose up -d --force-recreate ccboard`. Native installs: nothing to do.
+
+## v0.5.79 - 2026-10-17
+
+### Fixed
+- The macOS installer stops again before Homebrew builds a tool from source (ttyd, and tmux on an Intel Mac) when no one is at a terminal, unless CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1 is also set. v0.5.74 had let CCBOARD_MACOS_INSTALL_TOOLS=1 alone start that build, against the owner's answer on #128 ("keep the stop").
+- On a terminal the installer still asks once and builds on a yes; the Command Line Tools stop is unchanged.
+
+Upgrade: nothing to do; an unattended Intel install that relied on v0.5.74 needs CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1 again.
 
 ## v0.5.77 - 2026-10-17
 

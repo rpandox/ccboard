@@ -43,6 +43,7 @@ NOT_REMEMBERED = {
 
 # Names the code reads that are neither ENV_KEYS nor a user setting, each with the reason. Everything in NOT_REMEMBERED counts too.
 EXTRA_INTERNAL = {
+    "CCBOARD_RESTART_POLICY": "set by deploy/docker-compose.yml (unless-stopped) so the board knows its container is restarted after it exits (#241); never set by the installer",
     "CCBOARD_IMAGE_VERSION": "baked into the image by the build; shown in the footer",
     "CCBOARD_IMAGE_REVISION": "baked into the image by the build; the doctor's build check compares it with the repository",
     "CCBOARD_SOURCE_REPO": "baked into the image by the build (owner/name); the doctor's build check reads it",
@@ -57,7 +58,7 @@ EXTRA_INTERNAL = {
     "CCBOARD_KEEP_AWAKE": "macOS installer switch: 1 adds the dev.ccboard.awake job (caffeinate); the job's presence is the record, nothing to remember",
     "CCBOARD_MACOS_OPTIONAL": "macOS installer: which optional Homebrew tools to install (default code-server,restic,bun; none skips them); installer-time only",
     "CCBOARD_MACOS_INSTALL_TOOLS": "macOS installer: 1 installs missing Homebrew tools without asking, 0 never; installer-time only",
-    "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "macOS installer: unset or 1 allows source builds with tools consent; 0 forbids source builds; installer-time only",
+    "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "macOS installer: 1 (with CCBOARD_MACOS_INSTALL_TOOLS=1) lets Homebrew build a tool from source without a terminal question; installer-time only",
     "CCBOARD_MACOS_PLUGIN_SECONDS": "macOS installer: seconds each claude plugin step may take (default 300); installer-time only",
     "CCBOARD_MACOS_VENV_READY": "macOS installer test seam: the venv is already built, so pip is never run; documented in the script header",
     "CCBOARD_MACOS_HEALTH_TRIES": "macOS installer: seconds to wait for /healthz after the jobs start (default 30); installer-time only",

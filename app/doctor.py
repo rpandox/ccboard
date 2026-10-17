@@ -1037,19 +1037,22 @@ def _c_ccusage(db) -> Outcome:
 def _c_settings_page(db) -> Outcome:
     from .config import read_page_file
     from .options import pending
+    from . import restart
+    via = restart.info()
+    method = "\nrestart method: " + via["method"] + (" (" + via["why"] + ")" if via["why"] else "")
     info = {}
     read_page_file(settings.page_file, env=settings.raw, info=info)
     if info.get("problem"):
-        return _warn("Page settings file " + info["problem"])
+        return _warn("Page settings file " + info["problem"] + method)
     if info.get("ignored"):
-        return _warn("Ignored page options: " + ", ".join(info["ignored"]))
+        return _warn("Ignored page options: " + ", ".join(info["ignored"]) + method)
     try:
         age = time.time() - settings.page_file.stat().st_mtime if settings.page_file else 0
     except OSError:
         age = 0
     if age > 86400 and pending(settings):
-        return _warn("Saved options have waited more than a day for a restart", fix("Restart the board", plat.hint("restart", "ccboard")))
-    return _pass("Page settings file is absent or valid")
+        return _warn("Saved options have waited more than a day for a restart" + method, fix("Restart the board", plat.hint("restart", "ccboard")))
+    return _pass("Page settings file is absent or valid" + method)
 
 
 def _c_identity(db) -> Outcome:

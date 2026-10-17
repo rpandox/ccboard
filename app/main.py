@@ -6,6 +6,7 @@ import contextlib
 import gzip
 import hashlib
 import json
+import math
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
@@ -41,6 +43,7 @@ from .agents.codex import FORBIDDEN_ARG_PARTS as CODEX_BYPASS_PARTS
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
 from . import platform as plat
+from . import restart
 from . import mcp, mcp_remote, mcp_tokens
 from .auth import csrf_ok, identify
 from . import local_signin
@@ -276,29 +279,32 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=static_mount.warm, name="static-gzip", daemon=True).start()          # the gzip of every script and style, before the first page load asks for it
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
-    taskflow_rt.stop()
-    if team_github.poller is not None:
-        team_github.poller.stop(5.0)
-    if team_presence.publisher is not None:
-        team_presence.publisher.stop(5.0)
-    poller.stop.set()
-    sampler.stop()
-    cloner.stop.set()
-    prp.stop.set()
-    if mem_mon:
-        mem_mon.stop.set()
-    indexer.stop.set()
-    sched_worker.stop.set()
-    nodes.registry_listener = None
-    if claims_task is not None:
-        await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
-    await asyncio.to_thread(_runner().stop, 20.0)                          # the run loop sends nothing more (a call in flight is given a moment)
-    if node_worker is not None:
-        await asyncio.to_thread(node_worker.stop, 20.0)                    # the epic worker starts nothing more (a work call in flight is given a moment)
-    await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
-    await asyncio.to_thread(nodes_work.stop_work, 15.0)                    # a report of epic work that is writing to an issue is given a moment (the next start finishes what is left)
-    await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
-    await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
+    try:
+        taskflow_rt.stop()
+        if team_github.poller is not None:
+            team_github.poller.stop(5.0)
+        if team_presence.publisher is not None:
+            team_presence.publisher.stop(5.0)
+        poller.stop.set()
+        sampler.stop()
+        cloner.stop.set()
+        prp.stop.set()
+        if mem_mon:
+            mem_mon.stop.set()
+        indexer.stop.set()
+        sched_worker.stop.set()
+        nodes.registry_listener = None
+        if claims_task is not None:
+            await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
+        await asyncio.to_thread(_runner().stop, 20.0)                          # the run loop sends nothing more (a call in flight is given a moment)
+        if node_worker is not None:
+            await asyncio.to_thread(node_worker.stop, 20.0)                    # the epic worker starts nothing more (a work call in flight is given a moment)
+        await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
+        await asyncio.to_thread(nodes_work.stop_work, 15.0)                    # a report of epic work that is writing to an issue is given a moment (the next start finishes what is left)
+        await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
+        await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
+    finally:
+        restart.finish_shutdown()                                          # a requested restart exits with its code even if a cleanup step above failed
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -545,7 +551,8 @@ async def _node_auth(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     if request.url.path in {"/auth/local", "/auth/local/script.js", "/auth/local/token", "/auth/local/redeem"}:
         return await call_next(request)  # each handler enforces the direct-loopback gate
-    if request.url.path == "/api/settings/options" and request.method == "PUT" and not _node_bearer(request):
+    if ((request.url.path, request.method) in (("/api/settings/options", "PUT"), ("/api/settings/restart", "POST"))
+            and not _node_bearer(request)):
         # A node token goes to the node check below, which refuses this unlisted route like every other; anything else is refused here.
         from urllib.parse import urlsplit
         user = identify(request.headers, settings, request)          # a local sign-in (issue #127) counts as the person too
@@ -561,6 +568,8 @@ async def auth_middleware(request: Request, call_next):
                 or not csrf_ok(request.method, request.headers)):
             user = None
         if not user or (origin is not None and origin not in origins):
+            if request.url.path == "/api/settings/restart":
+                return _restart_refused("person", 403, user)
             return _settings_refused(None, "A signed-in person on this board with X-CCBoard: 1 is required.", 403, user)
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
@@ -918,7 +927,8 @@ def build_state(user: str) -> dict:
     from .options import pending_state
     st = _scan_entry()
     st["boot"] = BOOT
-    st["settings_pending"] = pending_state(settings)
+    st["restart"] = restart.info()
+    st["settings_pending"] = {**pending_state(settings), "restart_hint": st["restart"]["hint"]}
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime, "auto_continue": settings.auto_continue,
@@ -5255,7 +5265,12 @@ def api_settings_options(request: Request):
     rec = db.kv_get(mcp_tokens.KV_REMOTE) if db is not None else None
     saved = rec.get("value") if isinstance(rec, dict) else None
     page_values = {"CCBOARD_MCP_REMOTE": saved["enabled"]} if isinstance(saved, dict) and isinstance(saved.get("enabled"), bool) else {}
-    return JSONResponse(listing(settings, page_values, db), headers={"Cache-Control": "no-store"})
+    result = listing(settings, page_values, db)
+    result["restart"] = restart.info()
+    if request.query_params.get("readiness") == "1":
+        result["restart"]["blockers"] = restart.readiness(db)
+    result["restart_hint"] = result["restart"]["hint"]
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 def _settings_refused(key, reason, status=400, user=None):
@@ -5266,6 +5281,72 @@ def _settings_refused(key, reason, status=400, user=None):
     else:
         log.debug("settings request refused without an identified allowed person")
     return JSONResponse({"key": key, "reason": reason}, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+_restart_lock = threading.Lock()
+
+
+def _restart_refused(reason, status, user=None, **detail):
+    if user:
+        nodes.audit("in", "", "settings_restart_refused", False, reason, user=user,
+                    target="settings", status="refused", db=db)
+    else:
+        log.debug("restart request refused without an identified allowed person")
+    headers = {"Cache-Control": "no-store"}
+    if status == 429:
+        headers["Retry-After"] = str(detail["retry_after"])
+    return JSONResponse({"reason": reason, **detail}, status_code=status, headers=headers)
+
+
+async def _settings_restart_launch(via: str, user: str, at: float):
+    try:
+        await restart._launch(via)
+    except Exception as exc:
+        # Exception messages can contain environment values or command output.
+        reason = type(exc).__name__[:80]
+        with _restart_lock:
+            previous = db.kv_get("settings_restart_at")
+            value = previous["value"] if previous else {}
+            if value.get("at") == at:
+                db.kv_set("settings_restart_at", {**value, "at": 0})
+            nodes.audit("in", "", "settings_restart_failed", False, reason, user=user,
+                        target="settings", status="failed", db=db)
+
+
+@app.post("/api/settings/restart")
+async def api_settings_restart(request: Request):
+    user = _epic_person(request, "only a signed-in person can restart the board")
+    try:
+        if len(await request.body()) > 100:
+            raise ValueError()
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"force"} or type(body["force"]) is not bool:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return _restart_refused("body", 400, user)
+    info = restart.info()
+    via = info["method"]
+    if via == "none":
+        return _restart_refused("no_supervisor", 409, user, hint=info["hint"])
+    blockers = await asyncio.to_thread(restart.readiness, db)
+    if blockers and not body["force"]:
+        return _restart_refused("busy", 409, user, blockers=blockers)
+    with _restart_lock:
+        at = time.time()
+        previous = db.kv_get("settings_restart_at")
+        value = previous.get("value", {}) if previous else {}
+        last = value.get("at", 0)
+        accepted = [t for t in value.get("accepted", [last] if last else []) if t > at - 3600]
+        if at - last < 60:
+            return _restart_refused("rate", 429, user, retry_after=max(1, int(60 - (at - last)) + 1))
+        if len(accepted) >= 6:
+            return _restart_refused("rate", 429, user,
+                                    message="At most 6 board restarts are allowed per hour. Try again later.",
+                                    retry_after=max(1, math.ceil(min(accepted) + 3600 - at)))
+        db.kv_set("settings_restart_at", {"at": at, "accepted": [*accepted, at]})  # survives process restarts
+        nodes.audit("in", "", "settings_restart", True, via, user=user, target="settings", status="ok", db=db)
+    return JSONResponse({"ok": True, "method": via, "boot_id": BOOT["id"], "expect_seconds": info["expect_seconds"]},
+                        status_code=202, headers={"Cache-Control": "no-store"}, background=BackgroundTask(_settings_restart_launch, via, user, at))
 
 
 @app.put("/api/settings/options")

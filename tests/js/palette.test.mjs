@@ -1299,3 +1299,16 @@ test('the demo fixture (demo/skills.json) is what GET /api/skills answers: the p
   const rows = items(w).filter((n) => n.querySelector('.pal-act')).map((n) => n.querySelector('.pal-label').textContent);
   assert.deepEqual(rows, ['browse', 'loop', 'phase-kickoff', 'artifact-design', 'phase-review']);
 });
+
+
+test('keyboard opens the palette and Restart board leads to Options for confirmation', async () => {
+  const { w } = world({ state: fakeState({ restart: { method: 'docker' } }) });
+  w.run('api = async () => ({groups: [], options: []})');
+  press(w, 'k', { ctrlKey: true });
+  assert.equal(dlg(w).open, true);
+  typeInto(w, 'Restart board');
+  assert.ok(labels(w).includes('Restart board'));
+  keyInBox(w, 'Enter');
+  assert.equal(w.location.hash, '#/settings?sec=options');
+  assert.equal(w.ctx.__calls.filter(c => c.method === 'POST').length, 0);
+});
