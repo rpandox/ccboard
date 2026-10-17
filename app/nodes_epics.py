@@ -1061,6 +1061,17 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
     out["authors"] = {"allowed": sorted(allowed), "epic": part["epic"].get("author"), "epic_ok": epic_ok, "blocked": blocked,
                       "text": (None if not allowed else "The epic is not by an allowed author, so nothing in it will run." if not epic_ok else
                                ("These issues are not by an allowed author and will be skipped: " + ", ".join(f"#{b['number']}" for b in blocked) + ".") if blocked else None)}
+    epic_edit = nodes_work.edit_view(db, owner, repo, n, part["epic"].get("updated_at"))
+    out["epic"].update(epic_edit)
+    edit_views = {(c["repo"], c["number"]): nodes_work.edit_view(db, c["owner"], c["name"], c["number"], c.get("updated_at")) for c in part["children"]}
+    edited = [f"#{c['number']} (edited by {edit_views[(c['repo'], c['number'])]['edited_by'] or 'an unknown login'})" for c in part["children"]
+              if edit_views[(c["repo"], c["number"])]["edit_state"] == "blocked"]
+    note = "These issues were edited by a login that is not on the allowed list and will be skipped: " + ", ".join(edited) + "." if edited else ""
+    if epic_edit["edit_state"] in ("blocked", "unknown"):
+        word = "epic_edit_not_allowed" if epic_edit["edit_state"] == "blocked" else "epic_edit_unknown"
+        note += " " + nodes_work.edit_text(word, epic_edit["edited_by"]) + " Nothing in it will run."
+    if note:
+        out["authors"]["text"] = " ".join(filter(None, [out["authors"]["text"], note.strip()]))
     views = _task_views(db, records, display)
     rows = []
     own = f"{owner}/{repo}".lower()
@@ -1098,6 +1109,7 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
             "claim_rejected": rejected, "claim_note": STALE_NOTE if rejected else None,
             "claim_state": cstate, "claims_read_at": github.epoch_iso(c["read_at"]), "claim_unknown": {"reason": reason, "text": UNKNOWN_TEXT[reason]} if cstate == "unknown" else None,
             "task": task, "pr": pr, "pin": pin, "author": c.get("author"), "author_ok": author_ok(c.get("author"), allowed) if allowed else None,
+            **edit_views[(c["repo"], c["number"])],
             "work": works.get((c["repo"].lower(), c["number"])),
             "label_pin": lp, "bucket": {"node": who, "state": bucket}})
         out["children"][-1]["phase"] = (out["children"][-1]["work"] or {}).get("phase") or bucket                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree

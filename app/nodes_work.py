@@ -10,7 +10,7 @@ THE WORK FLOW  (`work_issue`, called by the peer route POST /api/node/epics/work
   1  where    the repository is one of this board's own projects (SSH and HTTPS spellings of `origin` both match; a clone is needed: no clone, no claim): else `repo_not_here`.
   2  author   THE FIRST GUARD. The issue and the epic it is a child of (the epic is read, and must list the issue) must each be authored by a user whose login is among the allowed
               authors (`nodes_epics.allowed_authors`: CCBOARD_EPIC_AUTHORS, else this board's gh login). Anything else, and anything that could not be read, is refused with
-              "authored by <login>, not on the allowed list" BEFORE a claim comment exists.
+              "authored by <login>, not on the allowed list" BEFORE a claim comment exists. Every body revision and title rename of both must also pass the shared edit-history guard.
   3  lanes    the advisory lane cap, unless a person forces it.
   4  claim    `nodes_epics.claim_issue`.
   5  read     the issue again (the claim took seconds); its "Who should do it" block is parsed with app/issues.py.
@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -65,6 +66,10 @@ WORK_TEXT = {
     "repo_not_here": "That repository is not cloned on this node, so nothing was claimed.",
     "author_not_allowed": "The issue is not by an allowed author, so nothing was claimed.",
     "epic_author_not_allowed": "The epic is not by an allowed author, so nothing was claimed.",
+    "edit_not_allowed": "The issue text was edited by someone not on the allowed list, so nothing was claimed. Add that login to CCBOARD_EPIC_AUTHORS, or have an allowed author copy the text into a new issue.",
+    "edit_unknown": "GitHub did not say who edited the issue text, so nothing was claimed.",
+    "epic_edit_not_allowed": "The epic text was edited by someone not on the allowed list, so nothing was claimed. Add that login to CCBOARD_EPIC_AUTHORS, or have an allowed author copy the text into a new issue.",
+    "epic_edit_unknown": "GitHub did not say who edited the epic text, so nothing was claimed.",
     "unreadable": "GitHub did not let this node read the issue or its epic just now, so nothing was claimed.",
     "bypass_refused": "The issue asks for bypass permissions. This node refused to run it and released the claim.",
     "posture_refused": "The issue asks for a permission setting this node does not use for work from an issue. This node refused to run it and released the claim.",
@@ -73,7 +78,7 @@ WORK_TEXT = {
     "changed": "The issue changed after this node's worker checked it, so nothing was started.",          # issue #157: the worker's check of the text that runs
 }
 REASONS = tuple(WORK_TEXT) + tuple(k for k in nodes_epics.CLAIM_TEXT if k not in ("won", "already_held"))     # every reason a refusal can carry
-FACTS = ("winner", "attempt", "wait_s", "unknown_reason", "unknown_outcome", "asked_person", "author")
+FACTS = ("winner", "attempt", "wait_s", "unknown_reason", "unknown_outcome", "asked_person", "author", "editor")
 
 
 class Refused(Exception):
@@ -247,7 +252,7 @@ def _read_issue(owner: str, name: str, n: int) -> dict:
         raise Refused("bad_request")
     body = d.get("body")
     return {"title": github.clean_text(d.get("title"), 200) or f"Issue {n}", "body": body[:ISSUE_BODY_MAX * 2] if isinstance(body, str) else "",
-            "state": "closed" if d.get("state") == "closed" else "open", "author": nodes_epics.author_of(d), "digest": text_digest(d)}
+            "state": "closed" if d.get("state") == "closed" else "open", "author": nodes_epics.author_of(d), "digest": text_digest(d), "node_id": d.get("node_id"), "id": d.get("id"), "updated_at": d.get("updated_at")}
 
 
 def text_digest(d) -> str:
@@ -264,6 +269,145 @@ def _author_guard(issue: dict, allowed: set[str], epic: bool = False) -> None:
         subject = "the epic" if epic else "the issue"
         text = f"{subject} is authored by {who}, not on the allowed list" if who else f"{subject} has no author this node can check, so it is not on the allowed list"
         raise Refused("epic_author_not_allowed" if epic else "author_not_allowed", text[0].upper() + text[1:] + ".", author=who)
+
+
+EDIT_PAGES = github.EDIT_PAGES
+EDIT_CACHE_MAX = 256
+EDIT_TTL = 600.0
+_edit_cache: dict = {}
+_edit_lock = threading.RLock()
+
+
+def _edit_pins(allowed):
+    from . import prpoll
+    login, uid = prpoll.gh_identity_cached()
+    pins = {k: settings.epic_author_ids.get(k) for k in allowed}
+    if not settings.epic_authors and (not login or uid is None):
+        return {k: settings.epic_author_ids.get(k) or 0 for k in allowed}
+    if login and login.lower() in pins and pins[login.lower()] is None:
+        pins[login.lower()] = uid
+    return pins
+
+
+def edit_guard(owner, name, n, issue, allowed, *, epic=False) -> dict:
+    """Judge the full edit history of this exact REST snapshot. Unknown never grants work."""
+    pins = _edit_pins(allowed)
+    digest = issue.get("digest") or text_digest(issue)
+    updated = github.clean_ts(issue.get("updated_at"))
+    key = (f"{owner}/{name}#{n}".lower(), updated, digest, tuple(sorted(pins.items())))
+    prefix = "epic_" if epic else ""
+    def verdict(reason, editor=None, cost=0, wait_s=None, reset_at=None, unknown_reason=None, cache_hit=False):
+        return {"ok": reason == "ok", "reason": prefix + reason if reason != "ok" else reason, "editor": editor,
+                "cost": cost, "wait_s": math.ceil(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) and math.isfinite(wait_s) else None,
+                "reset_at": reset_at, "unknown_reason": unknown_reason, "cache_hit": cache_hit}
+    node_id, iid = github.clean_node_id(issue.get("node_id")), issue.get("id")
+    if node_id is None or not _int(iid) or iid <= 0 or not updated or "pull_request" in issue or issue.get("number", n) != n:
+        return verdict("edit_unknown")
+    with _edit_lock:
+        cached = _edit_cache.get(key)
+        if cached and 0 <= clock() - cached[0] < EDIT_TTL and cached[2] == (node_id, iid):
+            return verdict(**{**cached[1], "cost": 0, "cache_hit": True})
+    cost, edits, renames, cursor, seen = 0, [], [], None, set()
+    last = None
+    for page in range(EDIT_PAGES):
+        try:
+            status, _headers, data = github.graphql_edit_history(node_id, cursor)
+        except github.GhReadError as e:
+            return verdict("edit_unknown", cost=cost, wait_s=e.wait_s)
+        rate = (data.get("data") or {}).get("rateLimit", {}) if isinstance(data, dict) and isinstance(data.get("data"), dict) else {}
+        c = rate.get("cost") if isinstance(rate, dict) else None
+        if _int(c) and c >= 0:
+            cost += c
+        if status != 200 or github.graphql_reason(data):
+            return verdict("edit_unknown", cost=cost)
+        v = github.parse_edit_history(data, iid)
+        if v is None or not v["complete"] or not _int(c) or c < 0 or not _int(v["remaining"]) or v["remaining"] < 0:
+            return verdict("edit_unknown", cost=cost)
+        if v["remaining"] < 25:
+            reset = github.ts_epoch(v["reset_at"]) if v["reset_at"] else None
+            return verdict("edit_unknown", cost=cost, wait_s=max(0, reset - clock()) if reset else 300, reset_at=v["reset_at"])
+        if v["node_id"] != node_id or v["number"] != n or not isinstance(v["repo"], str) or v["repo"].lower() != f"{owner}/{name}".lower() or v["updated_at"] != updated:
+            return verdict("edit_unknown", cost=cost)
+        if page and last != v["last_edited_at"]:
+            return verdict("edit_unknown", cost=cost)
+        last = v["last_edited_at"]
+        edits.extend(v["edits"])
+        renames.extend(v["renames"])
+        if not v["has_next"]:
+            break
+        cursor = v["next_cursor"]
+        if cursor in seen or page == EDIT_PAGES - 1:
+            return verdict("edit_unknown", cost=cost)
+        seen.add(cursor)
+    if last is not None and max((github.ts_epoch(e["at"]) for e in edits + renames), default=0) < github.ts_epoch(last) - 1:
+        return verdict("edit_unknown", cost=cost, unknown_reason="newest_edit_hidden")
+    reason, editor = "ok", None
+    for e in edits + renames:
+        login, uid = e["login"], e["id"]
+        if not login or not _int(uid):
+            return verdict("edit_unknown", cost=cost)
+        if pins.get(login.lower()) == 0:
+            return verdict("edit_unknown", cost=cost)
+        if login.lower() not in pins or (pins[login.lower()] is not None and pins[login.lower()] != uid):
+            reason, editor = "edit_not_allowed", login
+            break
+    result = {"reason": reason, "editor": editor, "cost": cost}
+    with _edit_lock:
+        _edit_cache[key] = (clock(), result, (node_id, iid))
+        while len(_edit_cache) > EDIT_CACHE_MAX:
+            del _edit_cache[next(iter(_edit_cache))]
+    return verdict(**result)
+
+
+def _edit_record(db, owner, name, n, issue, v):
+    """Persist a fresh check or a changed record; return whether it needs an audit row."""
+    key = f"editcheck:{owner}/{name}#{n}".lower()
+    record = {"verdict": v["reason"], "editor": v["editor"], "updated_at": issue.get("updated_at")}
+    with _edit_lock:
+        previous = (db.kv_get(key) or {}).get("value") or {}
+        if v.get("cache_hit") and all(previous.get(k) == value for k, value in record.items()):
+            return False
+        db.kv_set(key, {**record, "time": clock()})
+        row = db.kv_get("editcheck-index") or {}
+        idx = [k for k in row.get("value", []) if k != key]
+        idx.append(key)
+        while len(idx) > 200:
+            db.kv_del(idx.pop(0))
+        db.kv_set("editcheck-index", idx)
+    return True
+
+
+def edit_view(db, owner, name, n, updated_at):
+    row = db.kv_get(f"editcheck:{owner}/{name}#{n}".lower()) or {}
+    v = row.get("value") or {}
+    if not updated_at or v.get("updated_at") != updated_at:
+        return {"edit_state": None, "edited_by": None}
+    word = v.get("verdict")
+    state = "ok" if word == "ok" else "blocked" if word in ("edit_not_allowed", "epic_edit_not_allowed") else "unknown"
+    editor = v.get("editor")
+    return {"edit_state": state, "edited_by": editor if isinstance(editor, str) and github.OWNER_RE.fullmatch(editor) else None}
+
+
+def edit_text(reason, editor=None, unknown_reason=None):
+    if reason in ("edit_unknown", "epic_edit_unknown") and unknown_reason == "newest_edit_hidden":
+        return "GitHub did not show the newest edit, so nothing was claimed."
+    if reason in ("edit_not_allowed", "epic_edit_not_allowed") and isinstance(editor, str) and github.OWNER_RE.fullmatch(editor):
+        subject = "epic" if reason.startswith("epic_") else "issue"
+        return (f"The {subject} text was edited by {editor}, who is not on the allowed list, so nothing was claimed. "
+                "Add that login to CCBOARD_EPIC_AUTHORS, or have an allowed author copy the text into a new issue.")
+    return WORK_TEXT[reason]
+
+
+def _check_edits(actor, owner, name, n, issue, allowed, *, epic=False):
+    v = edit_guard(owner, name, n, issue, allowed, epic=epic)
+    if _edit_record(actor.db, owner, name, n, issue, v):
+        _audit(actor, v["ok"], owner, name, n, f"{v['reason']} edit_cost={v['cost']}")
+    if not v["ok"]:
+        text = edit_text(v["reason"], v["editor"], v.get("unknown_reason"))
+        if v.get("reset_at"):
+            text += f" Try again after {v['reset_at']}."
+        raise Refused(v["reason"], text, editor=v["editor"], wait_s=v.get("wait_s"), unknown_reason=v.get("unknown_reason"))
+    return v
 
 
 # ---------------------------------------------------------------- the prompt and the launch, built only from validated values
@@ -430,7 +574,10 @@ def work_issue(repo, issue, *, epic=None, report: str = "phase", auto_pr: bool =
     _author_guard(first, allowed)
     if expect is not None and first["digest"] != expect:
         raise Refused("changed")
-    _author_guard(_read_issue(ep[0], ep[1], ep[2]), allowed, epic=True)
+    _check_edits(actor, owner, name, n, first, allowed)
+    epic_issue = _read_issue(ep[0], ep[1], ep[2])
+    _author_guard(epic_issue, allowed, epic=True)
+    _check_edits(actor, *ep, epic_issue, allowed, epic=True)
     if first["state"] == "closed":
         raise Refused("closed")
     here = local_repo(f"{owner}/{name}")
@@ -466,11 +613,15 @@ def _after_claim(actor, repos, owner: str, name: str, n: int, ep: tuple, here: t
         second = _read_issue(owner, name, n)                               # the claim took seconds: the text that runs is the text read now, by the author read now
         allowed = nodes_epics.allowed_authors(None if settings.epic_authors else actor.login)
         _author_guard(second, allowed)
+        judged_digest = text_digest(second)
+        _check_edits(actor, owner, name, n, second, allowed)
         if second["state"] == "closed":
             raise Refused("closed")
         if expect is not None and second["digest"] != expect:
             raise Refused("changed")
         agent, fields, kw = launch_of(second["body"])
+        if text_digest(second) != judged_digest:
+            raise Refused("changed")
     except Refused as e:
         _refuse(actor, repos, ref, e)
         raise
@@ -538,7 +689,8 @@ def _give_up(actor, repos, ref: str, status: str) -> None:
 def _refuse(actor, repos, ref: str, e: "Refused") -> None:
     """After a claim: a refusal the issue earned (bypass, a permission setting) gets ONE comment (fenced) saying so, and the claim is released as failed; any other refusal just releases."""
     rec = nodes_epics._held(actor, ref)[0]
-    word = {"bypass_refused": "refused_bypass", "posture_refused": "refused_posture"}.get(e.reason)
+    word = {"bypass_refused": "refused_bypass", "posture_refused": "refused_posture", "edit_not_allowed": "refused_edits",
+            "edit_unknown": "refused_edits", "epic_edit_not_allowed": "refused_edits", "epic_edit_unknown": "refused_edits"}.get(e.reason)
     if word and rec is not None:
         try:
             body = github_write.progress_body(rec["alias"], word)

@@ -147,7 +147,8 @@ def _no_real_tailscale(monkeypatch):
 def _no_real_github_reader(monkeypatch):
     """The epic reader (app/github.py `api`, which runs `gh api`) and the login lookup behind the claim author rule never reach the real gh: both answer "no gh"
     until a test installs tests/fake_github.py, which puts a fake gh first on PATH and gives them back. The reader's cache and back-off start empty."""
-    from app import github, github_write, nodes_epics, prpoll, team_github, team_presence
+    from app import github, github_write, nodes_epics, nodes_work, prpoll, team_github, team_presence
+    nodes_work._edit_cache.clear()
 
     def refuse(path, etag=None):
         raise github.GhReadError("no_gh")
@@ -161,6 +162,7 @@ def _no_real_github_reader(monkeypatch):
     monkeypatch.setattr(github, "graphql", refuse_graph)                   # the team reader's one GraphQL seam (issue #197), refused the same way
     monkeypatch.setattr(github, "graphql_editors", lambda owner, repo, n: refuse_graph(owner, repo))      # the presence editor check (issue #198), refused the same way
     monkeypatch.setattr(github, "graphql_editor", lambda node_id: refuse_graph(node_id, None))             # ... and its one-comment form
+    monkeypatch.setattr(github, "graphql_edit_history", lambda node_id, cursor=None: refuse_graph(node_id, cursor))
     monkeypatch.setattr(team_github, "identity", lambda: (None, None))     # `gh api user` for the node card and the doctor: unknown until tests/fake_github.py is installed
     team_github.reset()
     team_presence.reset()

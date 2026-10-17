@@ -1551,3 +1551,284 @@ def test_the_wider_redaction_is_linear_on_long_runs():
 
 
 # ==== END ====
+
+
+# Full body history and title history share the guard on every work entry point.
+def test_hidden_newest_revision_refuses_before_claim(w):
+    k = f"{REPO}#201"
+    w.gh.edit_issue(k, by="alice")
+    w.gh.rename(k, "Allowed title", by="alice")
+    w.gh.tick(10)
+    w.gh.edit_issue(k, "Outsider text missing from history", by="mallory")
+    w.gh.world["issues"][k]["history"].pop()
+    r = run_route(w)
+    assert r.status_code == 409
+    assert r.json()["why"] == "edit_unknown"
+    assert "GitHub did not show the newest edit" in r.json()["error"]
+    assert w.gh.writes() == [] and claims(w) == []
+    assert w.b.db.tasks() == []
+
+
+@pytest.mark.parametrize("kind", ["edit", "rename"])
+@pytest.mark.parametrize("lag,ok", [(0, True), (1, True), (2, False)])
+def test_newest_history_timestamp_allows_one_second_tolerance(w, kind, lag, ok):
+    from tests import gh_server
+    k = f"{REPO}#201"
+    if kind == "edit":
+        w.gh.edit_issue(k, by="alice")
+    else:
+        w.gh.rename(k, "Allowed title", by="alice")
+    w.gh.world["issues"][k]["last_edited_at"] = gh_server.iso(w.gh.world["now"] + lag)
+    v = nodes_work.edit_guard("acme", "shop", 201, gh_server.issue_obj(w.gh.world, k), {"alice"})
+    assert v["ok"] is ok
+
+
+def test_an_outsider_edit_cannot_be_cleared_by_an_allowed_edit(w):
+    k = f"{REPO}#201"
+    w.gh.edit_issue(k, by="mallory")
+    w.gh.edit_issue(k, by="alice")
+    r = run_route(w)
+    assert r.status_code == 409
+    assert r.json()["why"] == "edit_not_allowed"
+    assert r.json()["editor"] == "mallory"
+    assert "copy the text into a new issue" in r.json()["error"]
+    assert w.gh.writes() == []
+    assert w.b.db.tasks() == []
+
+
+@pytest.mark.parametrize("case,why", [
+    ("never", "ok"), ("allowed", "ok"), ("pin", "ok"), ("wrong_pin", "edit_not_allowed"),
+    ("middle", "edit_not_allowed"), ("deleted", "edit_unknown"), ("bot", "edit_unknown"),
+    ("rename", "edit_not_allowed"), ("null_rename", "edit_unknown"), ("rename_pages", "edit_unknown"),
+    ("history_hidden", "edit_unknown"), ("history_pages", "edit_unknown"), ("history_status", "edit_unknown"),
+    ("history_fail", "edit_unknown"), ("missing", "edit_unknown"), ("other_id", "edit_unknown"),
+    ("other_number", "edit_unknown"), ("other_repo", "edit_unknown"), ("pr", "edit_unknown"),
+    ("no_gh", "edit_unknown"), ("timeout", "edit_unknown"), ("non_json", "edit_unknown"),
+    ("missing_connection", "edit_unknown"), ("missing_page", "edit_unknown"), ("snapshot", "edit_unknown"),
+    ("budget", "edit_unknown"), ("three_pages", "ok"), ("deleted_revision", "edit_not_allowed"),
+])
+def test_edit_guard_fails_closed_on_every_history_shape(w, monkeypatch, case, why):
+    from tests import gh_server
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))
+    k = f"{REPO}#201"
+    if case in ("allowed", "pin", "wrong_pin", "middle", "deleted", "bot", "deleted_revision"):
+        w.gh.edit_issue(k, by="alice")
+    if case in ("pin", "wrong_pin"):
+        monkeypatch.setattr(settings, "epic_author_ids", {"alice": gh_server.uid(w.gh.world, "alice") + (case == "wrong_pin")})
+    if case in ("middle", "deleted_revision"):
+        w.gh.edit_issue(k, by="mallory")
+        if case == "deleted_revision":
+            w.gh.world["issues"][k]["history"][-1]["deleted"] = gh_server.iso(w.gh.world["now"])
+        w.gh.edit_issue(k, by="alice")
+    if case in ("deleted", "bot"):
+        h = w.gh.world["issues"][k]["history"][-1]
+        h["editor"] = None if case == "deleted" else "alice"
+        h["type"] = "Bot" if case == "bot" else "User"
+    if case in ("rename", "null_rename", "rename_pages"):
+        for _ in range(51 if case == "rename_pages" else 1):
+            w.gh.rename(k, "New title", by="mallory" if case == "rename" else None if case == "null_rename" else "alice")
+    if case.startswith("history_"):
+        w.gh.world[case] = 503 if case == "history_status" else True
+    if case == "three_pages":
+        for _ in range(300):
+            w.gh.edit_issue(k, by="alice")
+    if case == "budget":
+        w.gh.world["gql_rate"] = {"limit": 5000, "remaining": 24, "reset": w.gh.world["now"] + 900}
+    original = github.graphql_edit_history
+    def answer(node_id, cursor=None):
+        if case in ("no_gh", "timeout"):
+            raise github.GhReadError(case)
+        status, headers, data = original(node_id, cursor)
+        if case == "non_json":
+            return 200, {}, "unreadable"
+        node = data["data"]["node"]
+        if case == "missing": data["data"]["node"] = None
+        if case == "other_id": node["databaseId"] += 1
+        if case == "other_number": node["number"] += 1
+        if case == "other_repo": node["repository"]["nameWithOwner"] = "acme/other"
+        if case == "pr": node["__typename"] = "PullRequest"
+        if case == "missing_connection": node["userContentEdits"] = None
+        if case == "missing_page": node["userContentEdits"]["pageInfo"] = {}
+        if case == "snapshot": node["updatedAt"] = "2020-01-01T00:00:00Z"
+        return status, headers, data
+    monkeypatch.setattr(github, "graphql_edit_history", answer)
+    v = nodes_work.edit_guard("acme", "shop", 201, gh_server.issue_obj(w.gh.world, k), {"alice"})
+    assert v["reason"] == why
+    assert v["ok"] == (why == "ok")
+    if why != "ok":
+        r = run_route(w)
+        assert r.status_code == 409 and r.json()["why"] == why
+    assert w.gh.writes() == []
+    if case == "three_pages": assert w.gh.world["history_calls"] == 3
+
+
+def test_epic_history_refuses_all_children_and_the_page_uses_stored_verdicts(w, monkeypatch):
+    w.gh.edit_issue(EPIC, by="mallory")
+    for n in (201, 202):
+        r = run_route(w, n)
+        assert r.status_code == 409 and r.json()["why"] == "epic_edit_not_allowed"
+    assert w.gh.writes() == []
+    with w.b.enter():
+        d = nodes_epics.detail(w.b.db, "acme", "shop", 147, [], repos=[REPO], login="alice")
+    assert d["epic"]["edit_state"] == "blocked"
+    assert "Nothing in it will run" in d["authors"]["text"]
+    assert "mallory" in d["authors"]["text"]
+    monkeypatch.setattr(github, "graphql_edit_history", lambda *a: pytest.fail("page must not query history"))
+    with w.b.enter():
+        nodes_epics.detail(w.b.db, "acme", "shop", 147, [], repos=[REPO], login="alice")
+
+
+def test_child_edit_record_is_hidden_after_an_update(w):
+    w.gh.edit_issue(f"{REPO}#201", by="mallory")
+    assert run_route(w).status_code == 409
+    with w.b.enter():
+        d = nodes_epics.detail(w.b.db, "acme", "shop", 147, [], repos=[REPO], login="alice")
+    child = next(c for c in d["children"] if c["number"] == 201)
+    assert (child["edit_state"], child["edited_by"]) == ("blocked", "mallory")
+    assert "#201 (edited by mallory)" in d["authors"]["text"]
+    assert nodes_work.edit_view(w.b.db, "acme", "shop", 201, "2027-01-01T00:00:00Z")["edit_state"] is None
+
+
+def test_edit_after_claim_is_failed_once_without_a_task(w, monkeypatch):
+    original = nodes_epics.claim_issue
+    def changed(*a, **kw):
+        res = original(*a, **kw)
+        w.gh.edit_issue(f"{REPO}#201", "Rewritten after claim", by="mallory")
+        return res
+    monkeypatch.setattr(nodes_epics, "claim_issue", changed)
+    r = run_route(w)
+    assert r.status_code == 409 and r.json()["why"] == "edit_not_allowed"
+    assert claims(w)[-1]["status"] == "failed"
+    assert len(progress(w)) == 1 and "edit history" in progress(w)[0]
+    assert w.b.db.tasks() == []
+
+
+def test_history_cache_rechecks_updates_allowlists_and_pins(w, monkeypatch):
+    # Lane refusal leaves the issue unchanged, so two Runs share one issue and epic check.
+    monkeypatch.setattr(nodes_work, "_reserve", lambda *a: False)
+    assert run_route(w).json()["why"] == "lanes_full"
+    assert run_route(w).json()["why"] == "lanes_full"
+    assert w.gh.world["history_calls"] == 2
+    w.gh.edit_issue(f"{REPO}#201", by="mallory")
+    assert run_route(w).json()["why"] == "edit_not_allowed"
+    count = w.gh.world["history_calls"]
+    assert run_route(w).json()["why"] == "edit_not_allowed"
+    assert w.gh.world["history_calls"] == count
+    w.gh.tick(2)
+    w.gh.comment(f"{REPO}#201", "A comment")
+    assert run_route(w).json()["why"] == "edit_not_allowed"
+    assert w.gh.world["history_calls"] == count + 1
+    monkeypatch.setattr(settings, "epic_authors", ("alice", "mallory"))
+    assert run_route(w).json()["why"] == "lanes_full"
+    assert w.gh.world["history_calls"] == count + 3
+    monkeypatch.setattr(settings, "epic_author_ids", {"mallory": 1})
+    assert run_route(w).json()["why"] == "edit_not_allowed"
+    assert w.gh.world["history_calls"] == count + 4
+
+
+@pytest.mark.parametrize("entry", ["work", "worker"])
+@pytest.mark.parametrize("editor", ["alice", "mallory"])
+def test_cached_edit_check_writes_no_audit_or_kv(w, monkeypatch, entry, editor):
+    from app import nodes_worker
+    from tests import gh_server
+    k = f"{REPO}#201"
+    w.gh.edit_issue(k, by=editor)
+    issue = gh_server.issue_obj(w.gh.world, k)
+    writes = []
+    original_set, original_audit = w.b.db.kv_set, nodes_work._audit
+    def set_kv(*args, **kw):
+        writes.append("kv")
+        return original_set(*args, **kw)
+    def audit_check(*args, **kw):
+        writes.append("audit")
+        return original_audit(*args, **kw)
+    monkeypatch.setattr(w.b.db, "kv_set", set_kv)
+    monkeypatch.setattr(nodes_work, "_audit", audit_check)
+    with w.b.enter():
+        actor = nodes_epics.board_actor(w.b.db)
+        wr = nodes_worker.Worker(w.b.db)
+        def check():
+            if entry == "worker":
+                assert wr._editor_verdict(issue, {"alice"}, {}, owner="acme", name="shop", n=201) == (None if editor == "alice" else "edited")
+            elif editor == "alice":
+                assert nodes_work._check_edits(actor, "acme", "shop", 201, issue, {"alice"})["ok"]
+            else:
+                with pytest.raises(nodes_work.Refused, match="not on the allowed list"):
+                    nodes_work._check_edits(actor, "acme", "shop", 201, issue, {"alice"})
+        check()
+        assert "kv" in writes and "audit" in writes
+        writes.clear()
+        check()
+        assert writes == []
+        assert w.gh.world["history_calls"] == 1
+        # A cached verdict must repair a missing or stale durable record.
+        for record in (None, {"verdict": "edit_unknown", "updated_at": issue["updated_at"]},
+                       {"verdict": "ok" if editor == "alice" else "edit_not_allowed", "updated_at": "2020-01-01T00:00:00Z"}):
+            if record is None:
+                w.b.db.kv_del("editcheck:acme/shop#201")
+            else:
+                original_set("editcheck:acme/shop#201", record)
+            writes.clear()
+            check()
+            assert "kv" in writes and "audit" in writes
+        # A fresh read still records its cost, even if GitHub charges zero.
+        w.gh.tick(nodes_work.EDIT_TTL + 1)
+        w.gh.world["gql_cost"] = 0
+        writes.clear()
+        check()
+        assert "kv" in writes and "audit" in writes
+        assert w.gh.world["history_calls"] == 2
+
+
+def test_history_budget_refusal_audits_reported_cost_without_secrets(w):
+    w.gh.world["gql_cost"] = 7
+    w.gh.world["gql_rate"] = {"limit": 5000, "remaining": 24, "reset": w.gh.world["now"] + 900}
+    r = run_route(w)
+    assert r.status_code == 409 and r.json()["why"] == "edit_unknown"
+    assert w.gh.writes() == []
+    records = audit(w.b, action="epic-work")
+    assert any("edit_cost=7" in a["detail"] for a in records)
+    assert SECRET not in json.dumps(records)
+
+
+def test_edit_cache_and_records_are_bounded_and_expire(w, monkeypatch):
+    from tests import gh_server
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))
+    issue = gh_server.issue_obj(w.gh.world, f"{REPO}#201")
+    check = lambda: nodes_work.edit_guard("acme", "shop", 201, issue, {"alice"})
+    assert check()["ok"]
+    assert check()["cost"] == 0
+    assert w.gh.world["history_calls"] == 1
+    w.gh.tick(nodes_work.EDIT_TTL + 1)
+    assert check()["ok"] and w.gh.world["history_calls"] == 2
+    for n in range(300, 557):
+        k = w.gh.add_issue(REPO, n)
+        snapshot = gh_server.issue_obj(w.gh.world, k)
+        v = nodes_work.edit_guard("acme", "shop", n, snapshot, {"alice"})
+        nodes_work._edit_record(w.b.db, "acme", "shop", n, snapshot, v)
+    assert len(nodes_work._edit_cache) == 256
+    assert len(w.b.db.kv_get("editcheck-index")["value"]) == 200
+    assert w.b.db.kv_get("editcheck:acme/shop#300") is None
+    assert w.b.db.kv_get("editcheck:acme/shop#556") is not None
+
+
+def test_cached_ok_never_authorizes_missing_or_changed_node_identity(w, monkeypatch):
+    from tests import gh_server
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))
+    issue = gh_server.issue_obj(w.gh.world, f"{REPO}#201")
+    assert nodes_work.edit_guard("acme", "shop", 201, issue, {"alice"})["ok"]
+    for patch in ({"node_id": None}, {"id": None}, {"id": issue["id"] + 1}, {"pull_request": {}}):
+        assert nodes_work.edit_guard("acme", "shop", 201, {**issue, **patch}, {"alice"})["reason"] == "edit_unknown"
+
+
+def test_the_task_cannot_use_text_changed_after_the_guard(w, monkeypatch):
+    original = nodes_work._check_edits
+    def change(actor, owner, name, n, issue, allowed, **kw):
+        v = original(actor, owner, name, n, issue, allowed, **kw)
+        if n == 201 and w.gh.claims_on(f"{REPO}#201"):
+            issue["body"] = "Changed after judgment"
+        return v
+    monkeypatch.setattr(nodes_work, "_check_edits", change)
+    r = run_route(w)
+    assert r.status_code == 409 and r.json()["why"] == "changed"
+    assert w.b.db.tasks() == []

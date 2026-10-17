@@ -230,10 +230,15 @@ function epWorkSentence(e, name, n) {
   const b = e && e.body && typeof e.body === 'object' ? e.body : {};
   const issue = `#${n}`;
   const author = typeof b.author === 'string' && b.author ? b.author : 'someone';
+  const editor = typeof b.editor === 'string' && /^(?=.{1,39}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(b.editor) ? b.editor : 'someone';
   const own = {
     repo_not_here: `${name} does not have this repository cloned, so ${issue} was not claimed.`,
     author_not_allowed: `${issue} was written by ${author}, ${EP_NOT_ALLOWED}. Nothing was claimed.`,
     epic_author_not_allowed: `The epic was written by ${author}, ${EP_NOT_ALLOWED}. Nothing in it will run. Nothing was claimed.`,
+    edit_not_allowed: `${issue} was edited by ${editor}, ${EP_NOT_ALLOWED}. Nothing was claimed. Add that login to CCBOARD_EPIC_AUTHORS, or have an allowed author copy the text into a new issue.`,
+    epic_edit_not_allowed: `The epic was edited by ${editor}, ${EP_NOT_ALLOWED}. Nothing in it will run. Add that login to CCBOARD_EPIC_AUTHORS, or have an allowed author copy the text into a new issue.`,
+    edit_unknown: `GitHub did not say who edited ${issue}, so nothing was claimed.`,
+    epic_edit_unknown: 'GitHub did not say who edited the epic text, so nothing was claimed.',
     unreadable: `${name} could not read ${issue} or its epic from GitHub just now. Try again in a moment. Nothing was claimed.`,
     bypass_refused: `${issue} asks for bypass permissions. ${name} refused to run it, said so on the issue and released the claim.`,
     posture_refused: `${issue} asks for a permission setting that ${name} does not use for work from an issue. ${name} refused to run it and released the claim.`,
@@ -333,6 +338,10 @@ function epWorkNode(d, c) {
 }
 
 /* What the row's Work action is: null (not offered), {ok, node} (a button that works), or {off, text, node} (a disabled button that says why). The node checks all of this again. */
+function epEditText(c) {
+  return c.edit_state === 'blocked' ? `Edited by ${c.edited_by || 'someone'}, ${EP_NOT_ALLOWED}. Work is blocked.` : 'GitHub did not say who edited the text. Work is blocked.';
+}
+
 function epWorkOffer(P, c) {
   const d = P.data;
   if (!d || c.state !== 'open' || typeof d.writes !== 'boolean') return null;
@@ -346,6 +355,8 @@ function epWorkOffer(P, c) {
   else if (node.status !== 'online') { off = 'offline'; text = `${node.name} is ${node.status}: it cannot work.`; }
   else if (node.tasks !== true) { off = 'scope'; text = `${node.name} is paired without the tasks scope.`; }
   else if (a && a.epic_ok === false) { off = 'epic_author'; text = `The epic was written by ${a.epic || 'someone'}, ${EP_NOT_ALLOWED}. Nothing in it will run.`; }
+  else if (d.epic && ['blocked', 'unknown'].includes(d.epic.edit_state)) { off = 'epic_edit'; text = `The epic: ${epEditText(d.epic)} Nothing in it will run.`; }
+  else if (['blocked', 'unknown'].includes(c.edit_state)) { off = 'edit'; text = epEditText(c); }
   else if (c.author_ok === false) { off = 'author'; text = `#${c.number} was ${who}.`; }
   else if (a && Array.isArray(a.allowed) && !a.allowed.length) { off = 'authors_unknown'; text = 'This board cannot tell whose issues may run. Set CCBOARD_EPIC_AUTHORS, or log gh in on this board.'; }
   const retry = !!c.claim && EP_RETRY.includes(c.claim.status);
@@ -367,7 +378,7 @@ function epWorkBits(P, c) {
       onclick: () => epWork(P, c, offer.node, false), text: `${offer.retry ? 'Try again on' : 'Work on'} ${offer.node.name}` }));
   } else if (offer) {
     out.push(el('button', { class: 'small ep-work-btn', type: 'button', disabled: true, 'data-work-off': offer.off, title: offer.text, 'aria-label': `Work on issue #${c.number}: ${offer.text}`, text: 'Work' }));
-    if (!epClaimable(P.data, c) || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
+    if (!epClaimable(P.data, c) || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown' || offer.off === 'edit' || offer.off === 'epic_edit') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
   }
   if (note) {
     out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-work-note': note.why || 'error' }, note.text, note.check ? [' ', epCheckLink(note.check, note.name || note.check)] : null));
@@ -658,7 +669,7 @@ function epRunAuthors(d) {
   if (!a || d.writes !== true) return '';
   if (a.epic_ok === false) return `Run would skip everything: the epic was written by ${a.epic || 'someone'}, ${EP_NOT_ALLOWED}.`;
   const b = Array.isArray(a.blocked) ? a.blocked.filter((x) => x && Number.isInteger(x.number)) : [];
-  if (!b.length) return '';
+  if (!b.length) return typeof a.text === 'string' ? a.text : '';
   return `Run would skip ${b.map((x) => `#${x.number}${x.author ? ' (' + x.author + ')' : ''}`).join(', ')}: ${b.length === 1 ? 'its author is' : 'their authors are'} not on the allowed list.`;
 }
 
@@ -1026,6 +1037,8 @@ function epFillRow(P, li, c) {
   if (own) meta.append(el('span', { class: 'ep-own' + (own.state === 'lost' || (own.state === 'held' && data.writes === false) ? ' warn' : ''), 'data-own': own.state }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: own.state === 'lost' ? '⚠ ' : own.state === 'claiming' ? '∙ ' : '✽ ' }), epOwnText(own, data.writes)));
   const readAgo = c.state === 'open' && c.claims_read_at ? epSince(c.claims_read_at, data.server_now) : '';
   if (readAgo) meta.append(el('span', { class: 'dim ep-read', title: 'When the board last read this issue\'s comments, by GitHub\'s clock. "Unclaimed" is only true for that moment.', text: `claims read ${readAgo}` }));
+  if (c.state === 'open' && ['blocked', 'unknown'].includes(c.edit_state)) meta.append(el('span', { class: 'ep-author warn', 'data-edit': c.edit_state, title: epEditText(c) },
+    el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), epEditText(c)));
   if (c.state === 'open' && c.author_ok === false) meta.append(el('span', { class: 'ep-author warn', 'data-author': 'blocked', title: 'The node runs only issues by an allowed author, because an issue body becomes the prompt of an agent that edits files.' },
     el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.author ? `by ${c.author}, ${EP_NOT_ALLOWED}` : 'author not on the allowed list'));
   const chosen = epRouteBit(c);
@@ -1434,6 +1447,8 @@ const demoEpicClaimed = {};
 /* The work ask in the demo (issue #149): ?work=<word> plays a refusal (the claim's words and nothere author epicauthor unreadable bypass posture lanes launch), else the node starts the issue
    and the row shows its task running from then on. "lanes" is refused until the visitor taps Start anyway (force). */
 const DEMO_WORK = {
+  edited: [409, { reason: 'work_refused', why: 'edit_not_allowed', editor: 'dana-w' }],
+  editunknown: [409, { reason: 'work_refused', why: 'edit_unknown' }],
   nothere: [404, { reason: 'repo_not_here', why: 'repo_not_here' }],
   author: [409, { reason: 'work_refused', why: 'author_not_allowed', author: 'dana-w' }], epicauthor: [409, { reason: 'work_refused', why: 'epic_author_not_allowed', author: 'dana-w' }],
   unreadable: [409, { reason: 'work_refused', why: 'unreadable' }], bypass: [409, { reason: 'work_refused', why: 'bypass_refused' }], posture: [409, { reason: 'work_refused', why: 'posture_refused' }],

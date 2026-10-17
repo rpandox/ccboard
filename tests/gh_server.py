@@ -493,6 +493,38 @@ def handle_graphql_editor(world: dict, node_id: str) -> tuple[Resp, bool]:
     return Resp(200, headers, {"data": {"rateLimit": {"cost": 1, "remaining": rate["remaining"], "resetAt": "2027-01-15T10:00:00Z"}, "node": node}}), True
 
 
+def handle_graphql_edit_history(world: dict, node_id: str, cursor=None) -> tuple[Resp, bool]:
+    world["history_calls"] = world.get("history_calls", 0) + 1
+    rate = world.setdefault("gql_rate", {"limit": 5000, "remaining": 5000, "reset": int(world["now"]) + 3600})
+    cost = world.get("gql_cost", 1)
+    data = {"rateLimit": {"cost": cost, "remaining": rate["remaining"], "resetAt": iso(rate["reset"])}, "node": None}
+    def user(login, kind="User", identity=None):
+        return None if login is None else {"__typename": kind, "login": login, **({"databaseId": identity or uid(world, login)} if kind == "User" else {})}
+    for k, it in world.get("issues", {}).items():
+        if "I_kw%d" % issue_id(k) != node_id:
+            continue
+        edits = list(it.get("history", []))
+        if world.get("history_pages"):
+            edits = [{"editor": "alice", "at": iso(world["now"])}] * 301
+        last = it.get("last_edited_at") or (edits[-1]["at"] if edits else None)
+        if world.get("history_hidden"):
+            last, edits = iso(world["now"]), []
+        offset = int(cursor or 0)
+        chunk = edits[offset:offset + 100]
+        renames = [e for e in world.get("events", {}).get(k, []) if e["event"] == "renamed"]
+        data["node"] = {"__typename": "PullRequest" if it.get("pull_request") else "Issue", "id": node_id, "number": int(k.split("#")[1]), "databaseId": issue_id(k),
+                        "repository": {"nameWithOwner": k.split("#")[0]}, "updatedAt": issue_obj(world, k)["updated_at"], "lastEditedAt": last,
+                        "author": user(it.get("user", "alice")), "userContentEdits": {"nodes": [
+                            {"editedAt": e["at"], "deletedAt": e.get("deleted"), "editor": user(e.get("editor"), e.get("type", "User"), e.get("id"))} for e in chunk],
+                            "pageInfo": {"hasNextPage": offset + 100 < len(edits), "endCursor": str(offset + 100) if offset + 100 < len(edits) else None}},
+                        "timelineItems": {"nodes": [{"createdAt": e["created_at"], "actor": user(e.get("actor"), e.get("actor_type", "User"), e.get("actor_id"))} for e in renames[:50]],
+                                          "pageInfo": {"hasNextPage": len(renames) > 50}}}
+    body = {"data": data}
+    if world.get("history_fail"):
+        body["errors"] = [{"type": "FORBIDDEN", "message": "history unavailable"}]
+    return Resp(world.get("history_status", 200), {}, body), True
+
+
 def handle(world: dict, method: str, path: str, inm: str | None = None, body=None) -> tuple[Resp, bool]:
     """Serve one request: (the response, whether the world changed in a way the caller must save). Status, headers (Date, ETag, rate limit, scopes) and body as GitHub would
     send them; a 2xx read with a matching If-None-Match is a 304."""
@@ -583,7 +615,9 @@ def main(args: list[str], env: dict, stdin, world_path: str, log_path: str, out,
             elif a in ("-f", "-F") and j + 1 < len(args):
                 k, _, v = args[j + 1].partition("=")
                 fields[k] = v
-        if "node(id" in fields.get("query", ""):
+        if "userContentEdits" in fields.get("query", ""):
+            resp, dirty = handle_graphql_edit_history(world, fields.get("id", ""), fields.get("cursor"))
+        elif "node(id" in fields.get("query", ""):
             resp, dirty = handle_graphql_editor(world, fields.get("id", ""))
         elif "editor{" in fields.get("query", ""):
             resp, dirty = handle_graphql_editors(world, fields.get("owner", ""), fields.get("name", ""), fields.get("number", ""))

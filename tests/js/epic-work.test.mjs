@@ -503,7 +503,7 @@ test('demo: the work route is played here: the node starts the issue and the row
 });
 
 test('demo: ?work=<word> plays each refusal of the work route with the same body the board sends; lanes is refused until force is sent', async () => {
-  const want = { nothere: [404, 'repo_not_here'], author: [409, 'author_not_allowed'], epicauthor: [409, 'epic_author_not_allowed'], unreadable: [409, 'unreadable'], bypass: [409, 'bypass_refused'], posture: [409, 'posture_refused'],
+  const want = { edited: [409, 'edit_not_allowed'], editunknown: [409, 'edit_unknown'], nothere: [404, 'repo_not_here'], author: [409, 'author_not_allowed'], epicauthor: [409, 'epic_author_not_allowed'], unreadable: [409, 'unreadable'], bypass: [409, 'bypass_refused'], posture: [409, 'posture_refused'],
     lanes: [409, 'lanes_full'], launch: [409, 'launch_failed'], taken: [409, 'taken'], lost: [409, 'lost'], unknown: [409, 'claim_unknown'], writesoff: [409, 'writes_off'], closed: [409, 'closed'], done: [409, 'done'], attempts: [409, 'attempts_exhausted'] };
   for (const [flag, [status, why]] of Object.entries(want)) {
     const e = await demoFail(await demoWorld({ search: `?demo=1&work=${flag}` }), 'POST', WORK, ASK);
@@ -582,4 +582,26 @@ test('the demo page end to end: Work on node-b starts the issue, the row runs wi
   await new Promise((r) => setTimeout(r, 500));
   assert.match(text(rowOf(bad, 205).querySelector('[data-work-note]')), /asks for bypass permissions/);
   assert.equal(rowOf(bad, 205).getAttribute('data-state'), 'open');
+});
+
+
+test('edit history blocks Work with a glyph and words; an unchecked row has no edit mark', async () => {
+  for (const state of ['blocked', 'unknown', null]) {
+    const d = detail();
+    const c = d.children.find((x) => x.number === 205);
+    c.edit_state = state;
+    c.edited_by = state === 'blocked' ? 'mallory' : null;
+    const w = await epicWorld({ data: d });
+    const mark = rowOf(w, 205).querySelector('[data-edit]');
+    if (state) {
+      assert.match(text(mark), /⚠/);
+      assert.match(text(mark), state === 'blocked' ? /mallory.*not on the allowed list/ : /did not say who edited/);
+      const btn = workBtn(w, 205);
+      assert.notEqual(btn.getAttribute('disabled'), null);
+      assert.match(btn.getAttribute('title'), /Work is blocked/);
+    } else {
+      assert.equal(mark, null);
+      assert.equal(workBtn(w, 205).getAttribute('disabled'), null);
+    }
+  }
 });
