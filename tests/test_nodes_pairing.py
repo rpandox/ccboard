@@ -864,10 +864,10 @@ def serve(two, board, method, path, headers, body):
             return out(e.status, e.payload(), {"retry-after": str(e.retry_after)} if e.retry_after else None)
     if (method, path) == ("POST", "/api/nodes/pair/confirm"):
         got = nodes.confirm_answer((j or {}).get("proof")) if isinstance(j, dict) else None
-        return out(200, {"node_id": got}) if got else out(404, {"error": "no pairing is in progress here"})
+        return out(200, nodes.node_keys.sign_confirm(j["proof"])) if got else out(404, {"error": "no pairing is in progress here"})
     if (method, path) == ("GET", "/api/node"):
         pair, err = authed("read")
-        return err or out(200, {"node_id": nodes.node_id(), "name": nodes.display_name()})
+        return err or out(200, {"node_id": nodes.node_id(), "name": nodes.display_name(), "key": nodes.node_keys.card()})
     if (method, path) == ("POST", "/api/node/rotate"):
         pair, err = authed(None)
         return err or out(200, {"token": nodes.rotate_token(pair["peer_id"])})
@@ -1297,7 +1297,8 @@ def test_unpair_from_an_unverified_pair_keeps_the_outgoing_row_to_the_claimed_no
     assert nodes.peers(db) == [] and not nodes.has_outgoing(out["peer_id"]), "a verified pair takes the outgoing pair to the same node with it"
 
 
-def test_an_unverified_pair_claiming_a_paired_nodes_id_replaces_and_revokes_nothing(pair2):
+def test_an_unverified_pair_claiming_a_paired_nodes_id_replaces_and_revokes_nothing(pair2, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "off")  # the older, unkeyed protocol remains supported
     pair(pair2)                                                              # A <-> B; B holds a verified incoming pair from A
     with pair2.b.enter():
         (inc,) = [p for p in nodes.peers() if p["direction"] == "in"]
@@ -1344,7 +1345,8 @@ def test_the_reverse_token_of_an_unverified_pair_is_never_saved(pair2):
         assert "reverse_dropped" in {x["action"] for x in nodes.audit_list(20)}
 
 
-def test_the_callers_back_pair_is_revoked_when_the_other_node_did_not_keep_the_reverse_token(pair2):
+def test_the_callers_back_pair_is_revoked_when_the_other_node_did_not_keep_the_reverse_token(pair2, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "off")  # the legacy callback behavior
     pair2.offline.add("node-a")
     with pair2.b.enter():
         code = nodes.create_code()["code"]
@@ -1467,7 +1469,8 @@ def confirm_post(board, proof):
 
 
 @pytest.mark.parametrize("attack", ["no_nonce", "own_nonce", "a_pairing_in_flight_with_another_code"])
-def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_ends_unverified_and_cuts_nothing(pair2, attack):
+def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_ends_unverified_and_cuts_nothing(pair2, attack, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "off")  # the older, unkeyed protocol remains supported
     """The attack: a code of B in a stranger's hands, claiming A's node id AND A's real address. A's address answers the old hello with A's id,
     which used to verify the stranger. Now the address must confirm this very redemption, and A has no add_node in flight for it."""
     pair(pair2, both_ways=True)                                              # A <-> B both ways
@@ -1511,7 +1514,7 @@ def test_the_confirm_route_answers_only_while_this_boards_add_node_is_in_flight(
     with pair2.a.enter():
         key = nodes.begin_confirm(norm, nonce, pair2.b.url)
     r = confirm_post(pair2.a, proof)
-    assert r.status_code == 200 and r.json() == {"node_id": a_id}
+    assert r.status_code == 200 and r.json()["node_id"] == a_id and nodes.node_keys.verify_confirm(r.json(), proof, a_id, r.json()["pubkey"])
     assert confirm_post(pair2.b, proof).status_code == 404, "another board has no such pairing"
     assert confirm_post(pair2.a, nodes.confirm_proof(norm, nonce + "x", a_id, pair2.a.url, pair2.b.url)).status_code == 404
     assert confirm_post(pair2.a, "x" * 64).status_code == 404
@@ -1558,9 +1561,10 @@ def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_n
     inner = nodes.peer_transport
     real_begin = nodes.begin_confirm
 
-    def spy_begin(norm, nonce, target):
-        mine.update(norm=norm, nonce=nonce, target=target)
-        return real_begin(norm, nonce, target)
+    def spy_begin(norm, nonce, target, pubkey=None):
+        if pubkey:
+            mine.update(norm=norm, nonce=nonce, target=target, pubkey=pubkey)
+        return real_begin(norm, nonce, target, pubkey)
 
     def spy(target, method, path, headers, body, timeout):
         res = inner(target, method, path, headers, body, timeout)
@@ -1579,7 +1583,7 @@ def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_n
     on_wire = json.dumps(headers) + body.decode() + answer.decode()
     with pair2.a.enter():
         a_id = nodes.node_id()
-    assert json.loads(body) == {"proof": nodes.confirm_proof(mine["norm"], mine["nonce"], a_id, pair2.a.url, pair2.b.url)} and "authorization" not in {k.lower() for k in headers}
+    assert json.loads(body) == {"proof": nodes.confirm_proof(mine["norm"], mine["nonce"], a_id, pair2.a.url, pair2.b.url, mine["pubkey"])} and "authorization" not in {k.lower() for k in headers}
     assert len(tokens) == 3 and all(tokens)
     for secret in (code, code.replace("-", ""), mine["norm"], mine["nonce"], *tokens):
         assert secret not in on_wire
@@ -1589,6 +1593,7 @@ def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_n
 
 
 def test_an_older_board_without_the_confirm_route_pairs_unverified_never_verified(pair2, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "off")  # the legacy callback behavior
     real = serve
 
     def old_board(two, board, method, path, headers, body):
@@ -1713,6 +1718,7 @@ def through_m(pair2, monkeypatch, forward=True, answer_id=None):
 
 
 def test_a_relay_that_forwards_the_pair_body_to_the_board_the_code_came_from_ends_unverified_and_replaces_nothing(pair2, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "off")  # the older, unkeyed protocol remains supported
     """The person has A and B paired, then types M's address with a code B showed. M forwards A's pair body (A's id and address, A's nonce) to B, so
     B calls A's real address to confirm and A really has that code and nonce in flight. The old digest (code + nonce) matched; the proof now names the
     address A typed (M), B puts its own, and A answers 404."""

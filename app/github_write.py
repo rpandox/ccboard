@@ -135,6 +135,7 @@ PHASE_TEXT = {                                                  # the closed lis
     "failed": "failed",
     "cancelled": "cancelled",
     "refused_bypass": "refused: the issue asks for bypass",
+    "refused_edits": "refused: the issue edit history is not allowed or could not be checked",
     "refused_posture": "refused: the issue asks for a permission setting this node does not use",
     "parked": "parked: waiting for a person for more than 30 minutes, so this node released the claim",          # issue #157: the worker's park rule
 }

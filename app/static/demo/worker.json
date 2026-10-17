@@ -165,7 +165,7 @@
    "kind": "skip",
    "issue": "example/website#7",
    "reason": "edited",
-   "text": "the text was last edited by a login that is not allowed"
+   "text": "the text was edited by a login that is not allowed"
   },
   {
    "at": "2026-10-03T00:50:00Z",

@@ -1053,7 +1053,7 @@ def test_run_on_two_boards_routes_to_the_node_that_holds_the_repository_and_the_
     assert w.two.tmux_b["created"] and not w.two.tmux_a["created"], "the sessions are on the node, never on the hub"
     first = v["assigned"]["201"]
     assert first["task_ref"].startswith(f"{w.h}:") and first["why"].startswith(f"chose {w.h}: ")
-    out = [r for r in w.a.db.node_audit_list(100) if r["direction"] == "out" and r["action"] != "paired"]
+    out = [r for r in w.a.db.node_audit_list(100) if r["direction"] == "out" and r["action"] not in ("paired", "key_pinned")]
     assert {r["action"] for r in out} == {"work_issue", "epic_route"} and all(r["user"] == "alice@example.com" for r in out)
     assert len([r for r in out if r["action"] == "epic_route"]) == len(v["assigned"])
 
@@ -1249,3 +1249,36 @@ def test_a_window_percentage_outside_0_to_100_counts_as_unknown_and_50(pct):
     assert r["handle"] == "n" and "window unknown" in r["why"] and r["ranked"][0]["headroom"] == 50.0
     assert pick([node("n", pct=pct)], max_window_pct=40)["waiting"]["code"] == "window", "so an unreadable number is not full and not empty either"
     assert pick([node("edge0", pct=0.0)])["ranked"][0]["headroom"] == 100.0 and pick([node("edge100", pct=100.0)])["waiting"]["code"] == "window", "0 and 100 are readings"
+
+
+@pytest.mark.parametrize("via", ["page", "mcp"])
+@pytest.mark.parametrize("subject", ["issue", "epic"])
+def test_run_loop_and_epic_run_cannot_claim_untrusted_edit_history(w, monkeypatch, via, subject):
+    from app import main
+    ck = Clock(time.time())
+    monkeypatch.setattr(nodes_route, "clock", ck)
+    monkeypatch.setattr(nodes_run, "sleep", ck.sleep)
+    monkeypatch.setattr(nodes_run.Runner, "ensure", lambda self: False)
+    hub = Hub()
+    hub.put(node(w.h, name="node-b", ok=ck.t, cap=3, free=3, pct=12.0))
+    monkeypatch.setattr(main, "_hub", lambda: hub)
+    monkeypatch.setattr(main, "node_runner", None)
+    for n in ([147] if subject == "epic" else [201, 202, 203, 204]):
+        w.gh.edit_issue(f"{REPO}#{n}", by="mallory")
+        w.gh.edit_issue(f"{REPO}#{n}", by="alice")
+    with w.a.enter():
+        runner = main._runner()
+        if via == "mcp":
+            monkeypatch.setattr(settings, "mcp_nodes", "tasks")
+            monkeypatch.setattr(nodes_run, "_caller", lambda request: ("local-token", {"scopes": ["tasks"]}))
+            nodes_epics.save_settings(w.a.db, "acme", "shop", 147, {"mcp_run": True})
+            result = nodes_run.agent_run(runner, None, "acme", "shop", 147)
+            assert result["assigned"] == []
+        else:
+            runner.start("acme", "shop", 147, "person", via="page")
+            runner.tick()
+        view = runner.view("acme", "shop", 147)
+    assert view["assigned"] == {}
+    assert view["held"]
+    assert all(h["code"] == ("epic_edit_not_allowed" if subject == "epic" else "edit_not_allowed") for h in view["held"].values())
+    assert w.gh.writes() == [] and w.b.db.tasks() == []

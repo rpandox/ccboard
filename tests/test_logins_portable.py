@@ -172,7 +172,8 @@ def test_secure_write_keeps_the_old_write_atomic_mode_and_content(tmp_path):
 def test_the_409_and_the_view_carry_the_per_system_reason(home, lite_client, monkeypatch, system, reason, drvfs):
     set_system(monkeypatch, system, drvfs=drvfs)
     from app import nodes
-    nodes.node_id()            # the board writes its node-id once at start (#133); the snapshot is of what these requests change
+    nodes.node_id()            # create the board identity before taking the read-only request snapshot
+    nodes.node_keys.available()
     before = (tree(home.live), tree(home.data))
     r = lite_client.post("/api/accounts/login", headers=H, json={})
     assert r.status_code == 409 and r.json() == {"detail": reason, "error": reason}
