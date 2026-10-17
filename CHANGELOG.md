@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.92 - 2026-10-17
+
+### Changed
+- README: one section, "Devices without a board", replaces the scattered notes: what such a device can and cannot do, the tailnet rule, the dedicated non-root user, the ten-second poll, the state log, removal, and a failure table in the board's own words.
+- `tests/test_bare_docs.py` fails when a message quoted in that table no longer appears in the code, so the README cannot drift.
+- Demo: lab-pi shows a session in each state the sidebar can show (working, waiting, needs you, unconfirmed, stopping), in page memory only.
+- Still to run on real hardware, by the owner: the Tailscale check prompt, a tmux session across a `tailscaled` restart, sleep and wake, and a Mac as a target.
+- Sidebar: a device session row offers Reply only while it is waiting, as a small icon button named for the agent, repo and device, so names keep room at 390 px (#285).
+
+Upgrade: nothing to do.
+
 ## v0.5.91 - 2026-10-17
 
 ### Added

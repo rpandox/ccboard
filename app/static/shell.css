@@ -453,7 +453,7 @@ dialog.dnd-pop { position:fixed; inset:auto; margin:0; z-index:60; width:min(360
 .bare-controls .tn-add:not(.icon) { padding:0 3px; font-size:11px; color:var(--fg-2); }
 .bare-controls .tn-add.danger { padding:0 6px; color:#fff; background:var(--bad-solid); border:1px solid var(--bad-solid); border-radius:3px; font-weight:600; }  /* the armed second tap, as other destructive confirms */
 .bare-controls .hidden, .bare-controls [hidden] { display:none !important; }
-@media (max-width:600px) { .bare-tree .s-row { flex-wrap:wrap; } }
+@media (max-width:600px) { .bare-tree .s-row { flex-wrap:wrap; } .bare-tree .s-row .tn-name { min-width:10ch; } }  /* controls wrap below before the name is squeezed under ~10 characters */
 
 .bare-reply { display:flex; gap:4px; padding:4px 8px 8px; }
 .bare-reply textarea { min-width:0; width:100%; resize:vertical; }

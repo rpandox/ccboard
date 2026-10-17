@@ -118,6 +118,27 @@
           "repo": "example-web",
           "agent": "shell",
           "state": "waiting"
+        },
+        {
+          "tmux_name": "bare-demo-working",
+          "host": "demo-lab-pi",
+          "repo": "example-web",
+          "agent": "claude",
+          "state": "working"
+        },
+        {
+          "tmux_name": "bare-demo-unconfirmed",
+          "host": "demo-lab-pi",
+          "repo": "example-api",
+          "agent": "shell",
+          "state": "unconfirmed"
+        },
+        {
+          "tmux_name": "bare-demo-stopping",
+          "host": "demo-lab-pi",
+          "repo": "example-web",
+          "agent": "shell",
+          "state": "stopping"
         }
       ]
     }
