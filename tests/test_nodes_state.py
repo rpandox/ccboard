@@ -77,8 +77,11 @@ def test_the_shape_on_a_seeded_board(board):
     assert set(d["node"]) == {"id", "name", "url", "version", "now"} and d["node"]["id"] == nodes.node_id() and d["node"]["now"].endswith("+00:00")
     assert [p["name"] for p in d["projects"]] == ["ops", "shop"]
     shop = next(p for p in d["projects"] if p["name"] == "shop")
-    assert shop["repos"] == [{"name": "api", "slug": "acme/api", "branch": "main", "dirty": False},
-                             {"name": "web", "slug": None, "branch": "feat/x", "dirty": True}], "slug is owner/name of a GitHub origin, else null"
+    from app.tasks import workspace_trust_reason
+    assert shop["repos"] == [{"name": "api", "slug": "acme/api", "branch": "main", "dirty": False,
+                              "claude_trust_warning": workspace_trust_reason("shop", "api")},
+                             {"name": "web", "slug": None, "branch": "feat/x", "dirty": True,
+                              "claude_trust_warning": workspace_trust_reason("shop", "web")}], "slug is owner/name of a GitHub origin, else null"
     by = {s["tmux"]: s for s in d["sessions"]}
     assert set(by) == {"shop--api--fix-login", "shop--web--ui", "shop--root--lead", "shop--ghost--x"}
     assert by["shop--api--fix-login"] == {"tmux": "shop--api--fix-login", "project": "shop", "repo": "api", "repo_slug": "github.com/acme/api", "session": "fix-login", "agent": "claude", "state": "waiting",

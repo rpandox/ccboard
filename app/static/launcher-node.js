@@ -99,7 +99,7 @@ function lxnRepos(handle) {
   const out = [];
   for (const p of ps) {
     if (!p || !ok(p.name)) continue;
-    for (const r of Array.isArray(p.repos) ? p.repos : []) if (r && ok(r.name)) out.push({ project: p.name, repo: r.name, slug: typeof r.slug === 'string' ? r.slug : '', branch: typeof r.branch === 'string' ? r.branch : '' });
+    for (const r of Array.isArray(p.repos) ? p.repos : []) if (r && ok(r.name)) out.push({ project: p.name, repo: r.name, slug: typeof r.slug === 'string' ? r.slug : '', branch: typeof r.branch === 'string' ? r.branch : '', claude_trust_warning: r.claude_trust_warning || '' });
   }
   return out;
 }
@@ -282,6 +282,7 @@ function lxnForm(opt, handle, hooks) {
     : el('div', { class: 'grid' }, field('Project', projSel), field('Repo', repoSel));
 
   const agentSeg = lxSeg([['claude', '◆ Claude'], ['codex', '◇ Codex']], (a) => switchAgent(a), 'Agent', 'lx-agent');
+  const trustWarning = el('p', { class: 'callout warn lx-trust-warning' });
   const agentWhy = el('p', { class: 'dim lx-hint lx-why' });
   const switchAgent = (a) => { if (a === R.agent || lxnAgentWhy(handle, a)) return; R.agent = a; edit(); paint(); };
   const agentField = field('Agent', el('div', { class: 'lx-agentctl' }, agentSeg.node, agentWhy));
@@ -398,6 +399,8 @@ function lxnForm(opt, handle, hooks) {
   };
   const paint = () => {
     const claude = R.agent === 'claude';
+    trustWarning.textContent = (repos.find((r) => r.project === R.project && r.repo === R.repo) || {}).claude_trust_warning || '';
+    hide(trustWarning, session || (dispatch && R.where !== 'lane') || !claude || !trustWarning.textContent);
     for (const a of ['claude', 'codex']) { const w = lxnAgentWhy(handle, a); agentSeg.disable(a, !!w, w); }
     agentSeg.set(R.agent);
     agentWhy.textContent = [...new Set(['claude', 'codex'].map((a) => lxnAgentWhy(handle, a)).filter(Boolean))].join(' · ');
@@ -528,7 +531,7 @@ function lxnForm(opt, handle, hooks) {
   composerBind(promptEl, { maxRows: 10, onSend: () => submit() });
   const form = el('form', { class: 'form lx-form lx-remote' + (session ? '' : ' task-form'), 'data-node': handle, onsubmit: (e) => { e.preventDefault(); submit(); } },
     placeField, dispatch ? [whereField, sessField] : null, agentField, modelField, modelNote, effortField, reasonField, permField, cxField, noBypass, nameField, noPrompt,
-    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, why, status, foot);
+    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, trustWarning, why, status, foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });
   form.focusFirst = () => focusFine(mode === 'task' ? promptEl : (session ? nameIn : null));
   paint();

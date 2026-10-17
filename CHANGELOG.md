@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.68 - 2026-10-17
+
+### Fixed
+- During the first minute after launch (after a 20-second grace), running Claude tasks with no reported state now fail when a shell pane shows a line starting with the workspace-trust error. The failure explains how to accept trust in a session, including through a hub. Sending prompts and echoed commands quoting the error do not trigger this check.
+- The project page and task launcher warn until repository history shows an interactive Claude session, a reported Claude state other than the trust failure, or a completed Claude task. Dispatch to an existing session hides the warning. Hub warnings and failure reasons accept only the exact board sentence for that row's folder. The board never answers the trust dialog.
+
+Upgrade: nothing to do.
+
 ## v0.5.64 - 2026-10-17
 
 ### Added

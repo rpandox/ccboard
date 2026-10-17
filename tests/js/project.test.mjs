@@ -1259,3 +1259,16 @@ test('issue #107: a job with no schedule that has not been asked to run reads pa
   const line = textOf(rows.find((r) => r.getAttribute('data-job') === '41').querySelector('.pj-run-line'));
   assert.match(line, /· denied · \$0\.03 · 4 turns · denied 3 tool calls: Bash, Write/);
 });
+
+test('project page shows the repository trust warning before a first task', async () => {
+  const state = projectState();
+  const repo = state.projects.find((p) => p.name === 'phasezero').repos[0];
+  const reason = `Claude has not been trusted in this folder yet: open a session in phasezero/${repo.name} once and accept the trust dialog, then run the task again`;
+  repo.claude_trust_warning = reason;
+  const env = projectWorld({ state });
+  await go(env, `#/p/phasezero/${repo.name}?tab=tasks`);
+  assert.equal(textOf(env.page().querySelector('.pj-trust')), reason);
+  repo.claude_trust_warning = null;
+  env.w.run('pjUpdate()');
+  assert.equal(textOf(env.page().querySelector('.pj-trust')), '');
+});

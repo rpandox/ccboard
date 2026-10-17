@@ -743,6 +743,7 @@ function taskForm(p, r, opts) {
     whereSel ? field('Repo', whereSel) : null,
     field('When', seg.node),
     lede,
+    r.claude_trust_warning ? el('p', { class: 'callout warn', text: r.claude_trust_warning }) : null,
     promptField,
     titleField,
     chain.node,
@@ -2378,6 +2379,7 @@ function launcherForm(o) {
   let nameTyped = !!carry.name;
   const whenSeg = lxSeg(TASK_WHEN, (w) => { T.when = w; whenSeg.set(w); paintAgentSeg(); edit(); focusFine(promptEl); }, 'Run', 'lx-when');      // a mouse moves on to the prompt (an arrow key's own focus move runs after this and wins); touch raises no keyboard
   const lede = el('p', { class: 'dim tf-lede' });
+  const trustWarning = el('p', { class: 'callout warn lx-trust-warning', text: r.claude_trust_warning || '' });
   const teamKit = launcherTeamKit(p, r, mode === 'dispatch' ? task : null, T.title, mode === 'session');          // a session form has no issue and no title: its kit is inert
   const titleIn = text(() => T.title, (x) => { T.title = x; if (T.when === 'schedule' && !nameTyped) autoName(); teamKit.setTitle(x); }, { maxlength: 120, placeholder: 'e.g. Fix the login redirect' });
   const titleField = field('Title', titleIn, 'Optional: the first line of the prompt is used.');
@@ -2511,6 +2513,7 @@ function launcherForm(o) {
     if (mode === 'dispatch') { hide(sessField, D.where !== 'session'); hide(agentField, D.where !== 'lane'); hide(claudeBasic, D.where !== 'lane' || a !== 'claude'); hide(codexBasic, D.where !== 'lane' || a !== 'codex'); hide(claudeAdv, true); hide(codexAdv, true); hide(cmdBox, D.where !== 'lane'); }
     lede.textContent = mode === 'task' ? (T.when === 'schedule' && a === 'codex' ? TASK_LEDE_CODEX_SCHEDULE : TASK_LEDE[T.when]) : '';
     hide(lede, mode !== 'task');
+    hide(trustWarning, mode === 'session' || (mode === 'dispatch' && D.where !== 'lane') || a !== 'claude' || !r.claude_trust_warning);
   }
 
   const fallbackOver = (v, w) => lxFallbackOver(v) && lxHas('claude', 'fallback_model') && w !== 'schedule' && !(mode === 'dispatch' && D.where === 'session');     // only where the field is shown
@@ -2791,6 +2794,7 @@ function launcherForm(o) {
     cmdBox,
     jx.fableRow,
     teamKit.on ? teamKit.node : null,
+    trustWarning,
     status,
     foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });

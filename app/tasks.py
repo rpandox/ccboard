@@ -21,6 +21,17 @@ STATUSES = ("open", "pr", "merged", "archived")
 PHASES = ("backlog", "queued", "running", "done", "failed", "cancelled")   # tasks.phase; legacy rows are 'running'
 
 
+def workspace_trust_reason(project: str, repo: str) -> str:
+    folder = project if repo == projects.ROOT else f"{project}/{repo}"
+    return f"Claude has not been trusted in this folder yet: open a session in {folder} once and accept the trust dialog, then run the task again"
+
+
+def trust_failure(task: dict) -> str | None:
+    """Only the board's own trust failure is shared with a hub; task output stays private."""
+    reason = workspace_trust_reason(task.get("project") or "", task.get("repo") or "")
+    return reason if task.get("phase") == "failed" and task.get("result") == reason else None
+
+
 def has_worktree(t: dict | None) -> bool:
     """Does this task have a worktree on disk to act on? An unassigned (backlog/queued) task and a session-mode task
     store '' (or None on a hand-built dict). Path('') is Path('.'), which is_dir() and would point git at the board's

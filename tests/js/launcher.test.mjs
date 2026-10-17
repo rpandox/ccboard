@@ -1827,3 +1827,33 @@ test('a fourth fallback model is stopped in the form: an inline error, no comman
   assert.equal(posts(w, /\/sessions$/).length, 1);
   assert.equal(posts(w, /\/sessions$/)[0].body.fallback_model, 'sonnet, haiku, opus');
 });
+
+test('task launch warns about workspace trust for Claude, without blocking or answering it', () => {
+  const state = STATE();
+  const reason = 'Claude has not been trusted in this folder yet: open a session in shop/api once and accept the trust dialog, then run the task again';
+  state.projects[0].repos[0].claude_trust_warning = reason;
+  const w = lWorld({ state });
+  open(w, { mode: 'task' });
+  const warning = form(w).querySelector('.lx-trust-warning');
+  assert.equal(text(warning), reason);
+  assert.equal(hidden(warning), false);
+  group(form(w), 'Agent').querySelectorAll('button').find((b) => /Codex/.test(text(b))).click();
+  assert.equal(hidden(warning), true);
+  assert.equal(calls(w).filter((c) => c.method === 'POST').length, 0);
+});
+
+test('dispatch trust warning hides for an existing session and returns for a new lane', () => {
+  const state = STATE();
+  state.projects[0].repos[0].claude_trust_warning = 'Accept trust in shop/api first';
+  state.projects[0].repos[0].sessions = [{ name: 's1', tmux: 'shop--api--s1', state: 'idle', agent: 'claude' }];
+  const task = { id: 7, title: 'Fix it', prompt: 'fix it', project: 'shop', repo: 'api', agent: 'claude', phase: 'backlog' };
+  state.tasks = [task];
+  const w = lWorld({ state });
+  open(w, { mode: 'dispatch', task });
+  const f = form(w), warning = f.querySelector('.lx-trust-warning');
+  assert.equal(hidden(warning), false);
+  btn(f, 'Where', 'Running session').click();
+  assert.equal(hidden(warning), true);
+  btn(f, 'Where', 'New session').click();
+  assert.equal(hidden(warning), false);
+});

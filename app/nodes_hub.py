@@ -91,6 +91,16 @@ def _s(v, n: int = node_state.STR_MAX):
     return node_state.clean(v, n)
 
 
+def _trust_reason(value, project, repo) -> str | None:
+    """Accept only the exact board sentence for this row's cleaned folder names."""
+    from .tasks import workspace_trust_reason
+    project, repo = _s(project), _s(repo)
+    if not project or not repo:
+        return None
+    reason = workspace_trust_reason(project, repo)
+    return reason if value == reason else None
+
+
 def _b(v):
     return v if isinstance(v, bool) else None
 
@@ -163,13 +173,15 @@ def clean_state(body, row: dict) -> dict:
     projects = []
     for p in _rows(body.get("projects"), node_state.PROJECTS_MAX):
         repos = [{"name": _s(r.get("name")), "slug": _s(r.get("slug")) if node_state._SLUG.fullmatch(str(r.get("slug"))) else None,
-                  "branch": _s(r.get("branch")), "dirty": _b(r.get("dirty"))} for r in _rows(p.get("repos"), node_state.REPOS_MAX)]
+                  "branch": _s(r.get("branch")), "dirty": _b(r.get("dirty")),
+                  **({"claude_trust_warning": reason} if (reason := _trust_reason(r.get("claude_trust_warning"), p.get("name"), r.get("name"))) else {})} for r in _rows(p.get("repos"), node_state.REPOS_MAX)]
         projects.append({"name": _s(p.get("name")), "repos": repos})
     sessions = [{"tmux": _s(r.get("tmux")), "project": _s(r.get("project")), "repo": _s(r.get("repo")), "session": _s(r.get("session")),
                  "agent": _s(r.get("agent"), 20), "state": _s(r.get("state"), 20), "needs_you": bool(r.get("needs_you")), "kind": _s(r.get("kind"), 20),
                  "since": _s(r.get("since"), 40), "model": _s(r.get("model"), 80)} for r in _rows(body.get("sessions"), node_state.SESSIONS_MAX)]
     tasks = [{"id": _i(r.get("id")), "title": _s(r.get("title")), "phase": _s(r.get("phase"), 20), "agent": _s(r.get("agent"), 20), "project": _s(r.get("project")),
               "repo": _s(r.get("repo")), "branch": _s(r.get("branch")), "tmux": _s(r.get("tmux")), "issue_ref": _s(r.get("issue_ref"), 20),
+              **({"failure_reason": reason} if _s(r.get("phase"), 20) == "failed" and (reason := _trust_reason(r.get("failure_reason"), r.get("project"), r.get("repo"))) else {}),
               "updated_at": _s(r.get("updated_at"), 40)} for r in _rows(body.get("tasks"), node_state.TASKS_MAX)]
     ny = body.get("needs_you") if isinstance(body.get("needs_you"), dict) else {}
     lanes = body.get("lanes") if isinstance(body.get("lanes"), dict) else {}

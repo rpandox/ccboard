@@ -548,9 +548,9 @@ function nhTaskRow(t) {
   return el('div', { class: 'nd-item nd-task', 'data-key': Ref.key({ kind: 'task', node: t.node, id: t.id }), 'data-phase': phase },
     el('span', { class: 'nd-g' }, el('span', { class: 'glyph', 'aria-hidden': 'true', text: ownKey(NH_PHASE, phase) ? NH_PHASE[phase] : '·' }), agentGlyph(nhAgent(t.agent))),
     el(href ? 'a' : 'span', { class: 'nd-name', href: href || null, text: title }), el('span', { class: 'dim nd-where', text: nhWhere(t) + (t.issue_ref ? ` ${t.issue_ref}` : '') }),
-    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: t.pending === 'starting' ? `Starting on ${Nodes.nameOf(t.node)}` : [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ') }));
+    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: t.failure_reason || (t.pending === 'starting' ? `Starting on ${Nodes.nameOf(t.node)}` : [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ')) }));
 }
-function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
+function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.failure_reason, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
 
 /* ---------- slots: the sections other pages host ---------- */
 
