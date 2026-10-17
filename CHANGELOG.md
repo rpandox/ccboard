@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.67 - 2026-10-17
+
+### Fixed
+- Removing a both-ways node pair now names the incoming pairs it revoked automatically in the answer. Settings > Nodes warns that both directions go before removal and names the revoked pairs afterwards.
+
+Upgrade: nothing to do.
+
 ## v0.5.66 - 2026-10-17
 
 ### Fixed
