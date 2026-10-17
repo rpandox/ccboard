@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.91 - 2026-10-17
+## v0.5.88 - 2026-10-17
 
 ### Added
 - Optional state log for a device without a board: **Install state log** and **Remove state log** (two taps) in the device check add four small hooks to that user's Claude and Codex settings.
