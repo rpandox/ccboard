@@ -852,6 +852,31 @@ test('the shipped demo shows the platform lines: alice-mac is a Mac with n/a loa
   assert.equal(page(w).querySelector('.nd-plat'), null);
 });
 
+test('signature refusals name the check without suggesting re-pair for time or replay', async () => {
+  const { w } = await ready();
+  for (const [kind, words] of [['stale', /too old/i], ['replay', /already used/i], ['bad_signature', /signature.*not valid/i], ['signature_required', /signature.*missing/i]]) {
+    const row = { status: 'unauthorized', error_kind: kind, scopes: ['tasks'] };
+    const notice = w.run(`Nodes.hardNotice(${JSON.stringify(row)})`);
+    assert.match(notice.text, words);
+    assert.match(w.run(`Nodes.can(${JSON.stringify(row)}, 'tasks')`).why, words);
+    if (['stale', 'replay'].includes(kind)) {
+      assert.equal(notice.repair, false);
+      const view = w.run(`Nodes.view(${JSON.stringify(row)})`);
+      assert.equal(view.repair, false);
+      assert.doesNotMatch(view.word, /re-pair/);
+    }
+  }
+});
+
+test('key change notices identify which board changed', async () => {
+  const { w } = await ready();
+  for (const [kind, words] of [['key_changed', /peer.*signing key/i], ['own_key_changed', /this board.s signing key/i]]) {
+    const row = { status: 'unauthorized', error_kind: kind, scopes: ['tasks'] };
+    assert.match(w.run(`Nodes.hardNotice(${JSON.stringify(row)})`).text, words);
+    assert.match(w.run(`Nodes.can(${JSON.stringify(row)}, 'tasks')`).why, words);
+  }
+});
+
 test('a failed remote task displays its workspace trust reason as text', async () => {
   const peer = rec('worker');
   const { w } = await ready([peer]);

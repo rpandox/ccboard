@@ -2900,3 +2900,12 @@ def invalidate() -> None:
         _probes.clear()
         _last_good.clear()
         _mem_cache.clear()
+
+
+def _c_node_keys(db) -> Outcome:
+    from . import node_keys
+    status, detail = node_keys.doctor(db)
+    return {"pass": _pass, "warn": _warn, "fail": _fail}[status](detail)
+
+
+register("node-keys", "box", "Node signing key", _c_node_keys)

@@ -511,6 +511,73 @@ def graphql_editor(node_id) -> tuple[int, dict, Any]:
     return _gql_run(lambda exe: graphql_editor_argv(node_id, exe))
 
 
+# Only the node id and an opaque page cursor vary. Title history is bounded too; an
+# incomplete timeline cannot authorize the title that becomes the task prompt.
+GQL_EDIT_HISTORY = (
+    "query($id:ID!,$cursor:String){rateLimit{cost remaining resetAt}node(id:$id){__typename ... on Issue{"
+    "id number databaseId updatedAt lastEditedAt repository{nameWithOwner} author{login ... on User{databaseId}} "
+    "userContentEdits(first:100,after:$cursor){nodes{editedAt deletedAt editor{__typename login ... on User{databaseId}}} pageInfo{hasNextPage endCursor}} "
+    "timelineItems(itemTypes:[RENAMED_TITLE_EVENT],first:50){nodes{... on RenamedTitleEvent{createdAt actor{__typename login ... on User{databaseId}}}} pageInfo{hasNextPage}}}}}"
+)
+EDIT_CURSOR_RE = re.compile(r"[A-Za-z0-9_+/=-]{1,256}")
+EDIT_PAGES = 3
+
+
+def graphql_edit_history_argv(node_id, cursor=None, exe: str = "gh") -> list[str]:
+    if clean_node_id(node_id) is None or any(w in GQL_EDIT_HISTORY.lower() for w in GQL_WORDS) or (cursor is not None and
+            (not isinstance(cursor, str) or not EDIT_CURSOR_RE.fullmatch(cursor))):
+        raise GhReadError("bad_request")
+    args = [exe, "api", "graphql", "--include", "-f", "query=" + GQL_EDIT_HISTORY, "-f", f"id={node_id}"]
+    return args + (["-f", f"cursor={cursor}"] if cursor is not None else [])
+
+
+def graphql_edit_history(node_id, cursor=None) -> tuple[int, dict, Any]:
+    return _gql_run(lambda exe: graphql_edit_history_argv(node_id, cursor, exe))
+
+
+def parse_edit_history(data, issue_id) -> dict | None:
+    d = data.get("data") if isinstance(data, dict) else None
+    node = d.get("node") if isinstance(d, dict) else None
+    if not isinstance(node, dict) or node.get("__typename") != "Issue" or not isinstance(issue_id, int) or isinstance(issue_id, bool) or issue_id <= 0 or _gql_uid(node) != issue_id:
+        return None
+    edits, renames = node.get("userContentEdits"), node.get("timelineItems")
+    rate = d.get("rateLimit") if isinstance(d.get("rateLimit"), dict) else {}
+    out = {"complete": True, "edits": [], "renames": [], "last_edited_at": node.get("lastEditedAt"),
+           "cost": rate.get("cost"), "remaining": rate.get("remaining"), "reset_at": clean_ts(rate.get("resetAt")),
+           "updated_at": clean_ts(node.get("updatedAt")), "node_id": node.get("id"), "number": node.get("number"),
+           "repo": (node.get("repository") or {}).get("nameWithOwner") if isinstance(node.get("repository"), dict) else None,
+           "next_cursor": None, "has_next": False}
+    if "lastEditedAt" not in node or (node["lastEditedAt"] is not None and not clean_ts(node["lastEditedAt"])):
+        out["complete"] = False
+    for connection, dest, actor, date in ((edits, "edits", "editor", "editedAt"), (renames, "renames", "actor", "createdAt")):
+        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list) or not isinstance(connection.get("pageInfo"), dict):
+            out["complete"] = False
+            continue
+        page = connection["pageInfo"]
+        if len(connection["nodes"]) > (100 if dest == "edits" else 50) or (page.get("hasNextPage") and not connection["nodes"]):
+            out["complete"] = False
+        if not isinstance(page.get("hasNextPage"), bool):
+            out["complete"] = False
+        if dest == "edits":
+            out["has_next"], out["next_cursor"] = page.get("hasNextPage"), page.get("endCursor")
+            if out["has_next"] and (not isinstance(out["next_cursor"], str) or not EDIT_CURSOR_RE.fullmatch(out["next_cursor"])):
+                out["complete"] = False
+        elif page.get("hasNextPage"):
+            out["complete"] = False
+        for item in connection["nodes"]:
+            item = item if isinstance(item, dict) else {}
+            u = item.get(actor)
+            uid = _gql_uid(u)
+            login = u.get("login") if isinstance(u, dict) and u.get("__typename") == "User" and uid else None
+            login = login if isinstance(login, str) and OWNER_RE.fullmatch(login) else None
+            at = clean_ts(item.get(date))
+            deleted = item.get("deletedAt")
+            if at is None or (dest == "edits" and ("deletedAt" not in item or (deleted is not None and not clean_ts(deleted)))):
+                out["complete"] = False
+            out[dest].append({"login": login, "id": uid if login else None, "at": at, **({"deleted": deleted} if dest == "edits" else {})})
+    return out
+
+
 def _gql_uid(u) -> int | None:
     v = u.get("databaseId") if isinstance(u, dict) else None
     return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 10 ** 12 else None

@@ -59,16 +59,18 @@ Nodes.view = function (rec, nowMs) {
   const status = ['online', 'stale', 'offline', 'unauthorized', 'unpaired', 'incompatible'].includes(rec && rec.status) ? rec.status : 'offline';
   const since = rec && rec.last_ok_at ? nhClock(rec.last_ok_at, now) : '';
   const other = status === 'unpaired' && rec && rec.error_kind === 'identity_changed';
+  const signatureWord = rec && { stale: 'signature too old', replay: 'signature already used', clock: 'clocks differ',
+    bad_signature: 'signature not valid', signature_required: 'signature missing', key_changed: 'peer key changed', own_key_changed: 'own key changed' }[rec.error_kind];
   const v = {
     online: { glyph: '●', word: 'online', tone: 'ok' },
     stale: { glyph: '◐', word: age === null ? 'stale' : `stale ${nhSpan(age)}`, tone: 'warn' },
     offline: { glyph: '○', word: since ? `offline since ${since}` : 'offline, never read', tone: '' },
-    unauthorized: { glyph: '!', word: 're-pair', tone: 'bad' },
+    unauthorized: { glyph: '!', word: signatureWord || 're-pair', tone: 'bad' },
     unpaired: other ? { glyph: '?', word: 'another device', tone: 'bad' } : { glyph: '?', word: 'not paired any more', tone: 'bad' },
     incompatible: { glyph: '!', word: `incompatible, API ${nhApi(rec && rec.peer_api)}`, tone: 'warn' },
   }[status];
   const repair = !!rec && rec.needs_repair === true && (status === 'online' || status === 'stale' || status === 'offline');
-  return { status, age, ...v, ...(repair ? { glyph: '!', word: 're-pair', tone: 'bad' } : {}), repair: repair || status === 'unauthorized', identity: other };
+  return { status, age, ...v, ...(repair ? { glyph: '!', word: 're-pair', tone: 'bad' } : {}), repair: repair || (status === 'unauthorized' && !signatureWord), identity: other };
 };
 
 /* The node API number as a word: a whole number, else "unknown". */
@@ -179,11 +181,22 @@ Nodes.unpend = function (p) { Nodes.pending = Nodes.pending.filter((x) => x !== 
 
 /* Can an action that needs `scope` be sent to this node now? {ok, why}: why is the plain sentence a disabled control shows, in the order the hub refuses (a paired token, the
    pair's scope, the reading: nothing is queued for later). A stale node (its last try failed, the reading is younger than 10 minutes) is still called. */
+Nodes.signatureWords = function (rec) {
+  return { stale: 'The signature is too old. Wait for the next check; check automatic time if it persists.',
+    replay: 'The signature was already used. Wait for the next check.',
+    bad_signature: 'The signature is not valid. Check that both boards have the key update and signing enabled.',
+    signature_required: 'The signature is missing. Check that both boards have the key update and signing enabled.' }[rec.error_kind] || '';
+};
+
 Nodes.can = function (rec, scope) {
   if (!rec) return { ok: false, why: 'this node is not paired any more' };
   const name = nhName(rec);
   if (rec.legacy) return { ok: false, why: `${name} was added without a token: pair it to act on it` };
   if (!(Array.isArray(rec.scopes) && rec.scopes.includes(scope))) return { ok: false, why: `needs the ${scope} scope on ${name}` };
+  if (Nodes.signatureWords(rec)) return { ok: false, why: Nodes.signatureWords(rec) };
+  if (rec.error_kind === 'clock') return { ok: false, why: 'Fix the clocks on both boards; signatures need them within 120 seconds' };
+  if (rec.error_kind === 'own_key_changed') return { ok: false, why: `The peer refused this board's signing key. Remove this board's pair there first, then pair again.` };
+  if (rec.error_kind === 'key_changed') return { ok: false, why: 'The peer has a different signing key. Remove its pair here first, then pair again.' };
   if (rec.status === 'unauthorized' || rec.needs_repair === true) return { ok: false, why: `${name} no longer takes this board's token: re-pair it in Settings, Nodes` };
   if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { ok: false, why: `This address now belongs to another device, not ${name}: remove it or pair again` };
   if (rec.status === 'unpaired') return { ok: false, why: `${name} answers as another node: remove it and pair it again` };
@@ -217,6 +230,13 @@ Nodes.apiWords = function (rec) {
 Nodes.hardNotice = function (rec) {
   if (!rec) return null;
   const name = nhName(rec);
+  if (Nodes.signatureWords(rec)) return { key: rec.error_kind, cls: 'bad', repair: false, remove: false, text: Nodes.signatureWords(rec) };
+  if (rec.error_kind === 'clock') return { key: 'clock', cls: 'bad', repair: false, remove: false,
+    text: 'Fix the clocks on both boards. Signed calls need them within 120 seconds.' };
+  if (rec.error_kind === 'own_key_changed') return { key: 'own_key_changed', cls: 'bad', repair: false, remove: false,
+    text: `The peer refused this board's signing key. Remove this board's pair there first, then pair again and compare the key ids.` };
+  if (rec.error_kind === 'key_changed') return { key: 'key_changed', cls: 'bad', repair: true, remove: false,
+    text: '✕ The peer has a different signing key. Remove its pair here first, then pair again with a new code; compare the key ids.' };
   if (rec.status === 'unauthorized') return { key: 'unauthorized', cls: 'bad', repair: true, remove: false,
     text: `${name} removed this pairing, pair again. Its token was refused, so nothing can be sent to it until it is paired again.` };
   if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { key: 'identity_changed', cls: 'bad', repair: true, remove: true,

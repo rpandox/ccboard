@@ -13,6 +13,27 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.73 - 2026-10-17
+
+### Added
+- Nodes keep a private Ed25519 key; both boards prove possession before pairing pins their public keys. Signed calls reject tampering, repeated nonces and changed keys.
+- Settings shows key ids to compare and a two-tap Rotate key action; offline peers can catch up for 30 days.
+- Existing pairs keep working in prefer mode and can upgrade; require refuses unkeyed pairing. Doctor explains invalid modes and how to clear a corrupt-key warning.
+- Nonces persist in SQLite across restarts, closing restart replays while allowing 120 seconds of clock lag; transient signature refusals name the reason without asking to re-pair.
+- Pairing distinguishes callback timeouts from key conflicts, and the hub and Doctor identify which board’s key changed.
+
+Upgrade: nothing to do.
+
+## v0.5.72 - 2026-10-17
+
+### Fixed
+- Every epic work start checks the full visible edit history and title renames of the issue and its epic before claiming. An outsider edit still blocks after an allowed person's edit; unreadable or incomplete history refuses work, including a newest revision missing from the visible edit and rename timestamps (with one-second tolerance).
+- Epic rows show stored edit refusals and disable Work with a reason. Add an editor to `CCBOARD_EPIC_AUTHORS`, or copy the text into a new issue by an allowed author. Checkbox edits count too when GitHub reports them.
+- A permanent unknown editor or history holds only that issue; the worker continues to the next ready candidate in the same cycle. Checks rest the worker only with a wait or reset time.
+- Checks cache unchanged text and account pins, record GitHub's reported cost and rest on low budget. Matching cache hits write no audit or KV records. Older deleted revisions that disappear and compromised allowed accounts remain limits; real-token behaviour is still unverified.
+
+Upgrade: nothing to do.
+
 ## v0.5.71 - 2026-10-17
 
 ### Added

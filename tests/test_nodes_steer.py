@@ -318,7 +318,7 @@ def test_the_peer_takes_20_prompts_a_minute_into_one_session_and_the_hub_counts_
     d = peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "direct"})
     assert d.status_code == 429 and d.json()["reason"] == "rate_limited" and d.headers["retry-after"].isdigit() and nodes.PROMPT_RATE == 20
     assert len([p for p in w.two.tmux_b["pasted"] if p[0] == tm]) == nodes.PROMPT_RATE, "the peer typed nothing"
-    assert any(x["action"] == "send_prompt" and x["status"] == "refused" and x["detail"] == "rate_limited" for x in audit(w.b))
+    assert any(x["action"] == "send_prompt" and x["status"] == "refused" and x["detail"] == "verified; rate_limited" for x in audit(w.b))
     nodes.relay_prompt_limiter.clear()
     h = hub(w, "POST", f"/sessions/{tm}/prompt", {"text": "hub sees the peer's 429"})
     assert h.status_code == 429 and h.json()["reason"] == "rate_limited" and "Retry-After" in h.headers
@@ -506,7 +506,7 @@ def test_close_and_ack_want_an_acting_user_and_a_real_ccboard_session_on_the_pee
         r = peer(w, method, path, acting=None)
         assert r.status_code == 403 and "acting" in r.json()["error"], r.text
     assert tm in w.two.tmux_b["sessions"]
-    assert any(x["action"] == "close_session" and x["status"] == "refused" and x["detail"] == "no acting user named" for x in audit(w.b))
+    assert any(x["action"] == "close_session" and x["status"] == "refused" and x["detail"] == "verified; no acting user named" for x in audit(w.b))
     for bad in ("_ccboard-login", "not-a-session", "shop--api--s1;id"):
         for method, path in (("DELETE", f"/api/node/sessions/{bad}"), ("POST", f"/api/node/sessions/{bad}/ack")):
             assert peer(w, method, path).status_code == 422, (method, bad)
@@ -693,7 +693,7 @@ def test_the_peer_wants_a_named_person_for_an_answer_even_with_the_scope_and_a_g
     nobody = peer(w, "POST", f"/api/node/permissions/{pid}/allow", acting=None)
     assert nobody.status_code == 403 and "acting" in nobody.json()["error"], nobody.text
     assert peer(w, "POST", f"/api/node/permissions/{pid}/allow", acting="   ").status_code == 403
-    assert any(x["action"] == "answer_permission" and x["status"] == "refused" and x["detail"] == "no acting user named" for x in audit(w.b))
+    assert any(x["action"] == "answer_permission" and x["status"] == "refused" and x["detail"] == "verified; no acting user named" for x in audit(w.b))
     with w.b.enter():
         assert w.b.db.perm_get(pid)["decision"] is None
     assert peer(w, "POST", f"/api/node/permissions/{pid}/allow").status_code == 200
@@ -986,7 +986,7 @@ def test_a_pair_with_sessions_and_without_permissions_cannot_press_a_key_while_t
     h = w.a.post(f"/api/nodes/{reg['handle']}/sessions/{tm}/keys", json={"key": key})
     assert h.status_code == 409 and h.json()["reason"] == "scope" and h.json()["error"] == ASK_SENTENCE, h.text
     assert tmux_effects(w) == before, "no key reached the terminal"
-    assert any(x["action"] == "send_keys" and x["status"] == "failed" and x["detail"] == "asking" for x in audit(w.b))
+    assert any(x["action"] == "send_keys" and x["status"] == "failed" and x["detail"] == "verified; asking" for x in audit(w.b))
 
 
 @pytest.mark.parametrize("how", ASKING)

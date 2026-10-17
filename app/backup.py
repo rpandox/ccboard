@@ -337,9 +337,10 @@ def running() -> bool:
 
 
 def _login_paths() -> list[Path]:
-    """Every place a login lives: the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
+    """Node identity files and every place a login lives: the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
     app/codex_accounts.py) and the live ones (Claude's .credentials.json in its config dir, Codex's auth.json in CODEX_HOME)."""
-    return [settings.data_dir / "accounts", settings.data_dir / "codex-accounts",
+    return [settings.data_dir / "node-key", settings.data_dir / "node-key.bad", settings.data_dir / "node-tokens.json", settings.data_dir / "node-id",
+            settings.data_dir / "accounts", settings.data_dir / "codex-accounts",
             Path(settings.claude_config_dir) / ".credentials.json", Path(settings.codex_home) / "auth.json"]
 
 

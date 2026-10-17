@@ -708,7 +708,7 @@ function settingsNdPeerActions(rec, incoming) {
   if (incoming) {
     if (busy) return [wait('Revoking…')];
     const rv = confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false);
-    return [rv];
+    return [rv, ...(!p.keyId || p.keySource === 'upgrade' ? [el('button', { type: 'button', text: 'Pair again', onclick: () => settingsNdCodeSheet(null) })] : [])];
   }
   if (p.legacy) {
     const pair = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Pair ${p.name}`, text: 'Pair' });
@@ -734,7 +734,8 @@ function settingsNdPeerActions(rec, incoming) {
       onclick: (e) => { e.preventDefault(); settingsNdToast(`Rotate token for ${p.name} is off. ${reason}.`, 'warn'); } });
     return [off, busy === 'remove' ? wait('Removing…') : rm];
   }
-  return [busy === 'rotate' ? wait('Rotating…') : confirmButton(`node-rot:${p.id}`, 'Rotate token', () => settingsNdRotate(p), false),
+  const pairAgain = (!p.keyId || p.keySource === 'upgrade') ? el('button', { type: 'button', text: 'Pair again', onclick: () => settingsNdAddSheet(null, rec.url) }) : null;
+  return [...(pairAgain ? [pairAgain] : []), busy === 'rotate' ? wait('Rotating…') : confirmButton(`node-rot:${p.id}`, 'Rotate token', () => settingsNdRotate(p), false),
     busy === 'remove' ? wait('Removing…') : rm];
 }
 
@@ -946,7 +947,8 @@ function settingsNdAddSheet(opener, prefill) {
     const row = r && typeof r === 'object' ? r : {};
     const name = NodeView.str(row.name || row.handle, 60) || NodeView.hostOf(a.url);
     code.value = '';
-    shell.close();
+    form.textContent = '';
+    form.append(el('p', { text: `Paired with ${name}.` }), el('p', { text: row.key_id ? `Ed25519 ${NodeView.keyId(row.key_id)}. Check that this matches on the other board.` : '○ Unkeyed. Pair again when both boards have keys.' }));
     settingsNdToast(row.callback_unverified === true ? `Paired with ${name}, but its own address did not confirm who it is.` : `Paired with ${name}.`, row.callback_unverified === true ? 'warn' : 'ok');
     settingsNdLoadPeers();
   }
@@ -985,6 +987,22 @@ function settingsNdPaintThis(host, st) {
   host.append(settingsKv('Name', el('span', { class: 'v', text: String(n.name || st.node_name || 'this node') })));
   if (n.node_id) host.append(settingsKv('Node id', el('span', { class: 'v', title: String(n.node_id), text: NodeView.shortId(String(n.node_id)) }), typeof copyButton === 'function' ? copyButton(String(n.node_id), 'node id') : null,
     /^n_/.test(String(n.node_id)) ? el('span', { class: 'dim', title: 'This board made a random id because Tailscale was not answering when it first started. It still works. The Doctor says how to move to the Tailscale id.', text: 'fallback id' }) : null));
+  host.append(settingsKv('CCBOARD_NODE_KEYS', el('span', { class: 'v', text: String(n.key_mode || 'prefer') })));
+  if (n.key && n.key.id) {
+    const id = NodeView.keyId(n.key.id);
+    host.append(settingsKv('Ed25519 key', el('span', { class: 'v', text: id }), typeof copyButton === 'function' ? copyButton(id, 'key id') : null));
+    host.append(settingsKv('Key created', el('span', { class: 'v', text: (typeof fmtTs === 'function' ? fmtTs(NodeView.str(n.key.created_at, 40)) : NodeView.str(n.key.created_at, 40)) || 'this run only' })));                  // a date and minute, not the raw ISO stamp
+    host.append(confirmButton('node-key-rotate', 'Rotate key', async () => {
+      try {
+        const result = await api('POST', '/api/nodes/key/rotate', {});
+        if (result && result.key) n.key = result.key;
+        settingsNdToast('Key rotated. Offline peers catch up within 30 days.');
+        settingsNd.rev++;
+        settingsFill('nodes', true);
+      } catch (e) { settingsNdToast('Could not rotate the key. Check Doctor.', 'warn'); }
+    }, false));
+    host.append(el('p', { class: 'dim', text: 'Rotation is for an ageing key. A lost or stolen key means Remove each pair and pair again with a new code.' }));
+  } else host.append(el('p', { class: 'dim', text: '○ Unkeyed. Check Doctor before pairing.' }));
   const os = n.os && typeof n.os === 'object' ? n.os : {};
   const osText = [NodeView.osName(os.tailscale_os || os.system), os.release].filter(Boolean).join(' ');
   if (osText) host.append(settingsKv('System', el('span', { class: 'v', text: osText })));
