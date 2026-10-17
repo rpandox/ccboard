@@ -59,8 +59,8 @@ def test_every_entry_has_one_upgrade_line_and_few_bullets():
     for e in _entries():
         upgrades = [l for l in e["lines"] if l.startswith("Upgrade: ")]
         assert len(upgrades) == 1, f"{e['heading']!r} needs exactly one Upgrade: line"
-        assert any(upgrades[0] == base or upgrades[0].startswith(base + " ")
-                   for base in ("Upgrade: nothing to do.", "Upgrade: rerun ./install.sh.")), upgrades[0]
+        # Setting changes can explain their migration instead of prescribing a rerun.
+        assert re.fullmatch(r"Upgrade: \S.*\.", upgrades[0]), upgrades[0]
         bullets = 0
         for l in e["lines"]:
             if l.startswith(BULLET_HEADINGS):
