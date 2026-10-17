@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # file -> why it may touch the home directly. app/config.py is allowed without an entry (it owns the path defaults).
 HOME_USE_ALLOWED = {
+    "bin/ccboard-attach-bare": "standalone ttyd helper on the Docker host: defaults to the board data directory when CCBOARD_DATA_DIR is unset; tests use a temp HOME and fake ssh",
     "app/bare.py": "shell snippets run on the device over SSH, so their $HOME is the device account's home; nothing on this machine is read, and tests replace the device runner",
     "bin/ccboard-open": "finds the local hook-token file under the default data dir (~/.local/share/ccboard on every system, as the hook scripts do) when CCBOARD_DATA_DIR is unset",
     "app/platform.py": "owns the per-system path defaults (default_projects_dir, default_data_dir) that app/config.py reads; nothing is read or written here",

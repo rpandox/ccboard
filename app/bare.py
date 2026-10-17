@@ -1,22 +1,29 @@
-"""Devices without a board: explicit checks only, through one replaceable runner."""
+"""Devices without a board: validated transport, explicit session actions and terminal tickets."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import json
 import os
 import selectors
 import secrets
 import time
 import re
 import shlex
+import stat
 import subprocess
 import threading
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from . import nodes, nodes_discovery as discovery, nodes_relay
-from .auth import normalize
-from .config import settings
+# Keep transport and ticket reading stdlib-only: ttyd also runs on the Docker host.
+def _data_dir(value=None):
+    if value is not None:
+        return Path(value)
+    from .config import settings
+    return settings.data_dir
+
 
 PREFIX = "bare:device:"
 LOCK = threading.Lock()
@@ -85,6 +92,8 @@ def runner(argv: list[str], *, stdin: str | None = None):
 
 
 def candidates(status, owner: str, *, online=True) -> list[dict]:
+    from . import nodes_discovery as discovery
+    from .auth import normalize
     if not isinstance(status, dict):
         return []
     users = status.get("User")
@@ -103,7 +112,7 @@ def candidates(status, owner: str, *, online=True) -> list[dict]:
 
 
 def validate(user: str, folder: str) -> None:
-    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user) or user == "root":
+    if not isinstance(user, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user) or user == "root":
         raise ValueError("Choose a dedicated non-root user, such as ccagent.")
     if (not folder or len(folder) > 200 or folder.startswith("/")
             or any(p in ("", ".", "..") for p in folder.split("/"))
@@ -116,9 +125,9 @@ def _host_ok(host):
             and all(re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in host.split(".")))
 
 
-def _control_path(host, user):
+def _control_path(host, user, data_dir=None):
     key = hashlib.sha256((host + user).encode()).hexdigest()[:16]
-    return settings.data_dir / "bare-ssh" / key
+    return _data_dir(data_dir) / "bare-ssh" / key
 
 
 def forget_host_key(host, user, *, close_master=True):
@@ -132,7 +141,7 @@ def forget_host_key(host, user, *, close_master=True):
                     "-O", "exit", user + "@" + host], stdin=None)
     except (OSError, subprocess.TimeoutExpired):
         pass  # The master may already have exited or SSH may have been uninstalled.
-    known = settings.data_dir / "bare-ssh" / "known_hosts"
+    known = _data_dir() / "bare-ssh" / "known_hosts"
     if known.exists():
         lines = []
         for line in known.read_text().splitlines(keepends=True):
@@ -150,26 +159,46 @@ def forget_host_key(host, user, *, close_master=True):
 def argv(device: dict, user: str, check: str, folder: str = "projects", *, session=None, agent=None, mode=None, repo=None, model="", effort="") -> list[str]:
     """Fixed verbs, a validated tailnet destination, and one quoted remote command."""
     validate(user, folder)
-    host = device["dns_name"]
-    if not _host_ok(host):
-        raise ValueError("The device has no valid Tailscale name. Refresh the device list.")
-    addr = next((a for a in device.get("ips", []) if nodes.in_tailnet(a)), None)
-    if not addr:
-        raise ValueError("The device has no Tailscale address. Refresh the device list.")
     commands = {"ssh": ["true"], "user": ["id", "-u"], "groups": ["id", "-Gn"], "system": ["uname"],
                 "tmux": ["tmux", "-V"], "agents": ["command", "-v", "claude", "codex"],
                 "repos": ["sh", "-c", REPOS, "bare-repos", folder]}
     if check in ("start", "list", "stop", "kill"):
         commands[check] = session_command(check, session=session, agent=agent, mode=mode, folder=folder, repo=repo, model=model, effort=effort)
     remote = shlex.join(commands[check])
-    directory = settings.data_dir / "bare-ssh"
+    return ssh_argv(device, user) + [remote]
+
+
+def ssh_argv(device, user, *, data_dir=None, tty=False):
+    """Shared pinned transport. Attach has separate, validated remote argv words."""
+    validate(user, "projects")
+    if not isinstance(device, dict) or not _host_ok(device.get("dns_name")):
+        raise ValueError("The device has no valid Tailscale name. Refresh the device list.")
+    host = device["dns_name"]
+    addresses = device.get("ips")
+    if not isinstance(addresses, list):
+        raise ValueError("The device has no Tailscale address. Refresh the device list.")
+    addr = next((a for a in addresses if tailnet_address(a)), None)
+    if not addr:
+        raise ValueError("The device has no Tailscale address. Refresh the device list.")
+    directory = _data_dir(data_dir) / "bare-ssh"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    options = ["BatchMode=yes", "ConnectTimeout=8", "StrictHostKeyChecking=accept-new",
+    options = ["BatchMode=yes", "ConnectTimeout=8", "StrictHostKeyChecking=" + ("yes" if tty else "accept-new"),
                "UserKnownHostsFile=" + shlex.quote(str(directory / "known_hosts")), "GlobalKnownHostsFile=/dev/null",
-               "ControlMaster=auto", "ControlPersist=30", "ControlPath=" + shlex.quote(str(_control_path(host, user))),
-               "ForwardAgent=no", "ClearAllForwardings=yes", "RequestTTY=no", "PubkeyAuthentication=no",
+               "ControlMaster=auto", "ControlPersist=30", "ControlPath=" + shlex.quote(str(_control_path(host, user, data_dir))),
+               "ForwardAgent=no", "ClearAllForwardings=yes", "RequestTTY=" + ("yes" if tty else "no"), "PubkeyAuthentication=no",
                "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "HostName=" + addr, "HostKeyAlias=" + host]
-    return ["ssh", "-F", "/dev/null", *[part for opt in options for part in ("-o", opt)], user + "@" + host, remote]
+    return ["ssh", "-F", "/dev/null", *[part for opt in options for part in ("-o", opt)],
+            *(["-t"] if tty else []), user + "@" + host]
+
+
+def tailnet_address(addr):
+    if not isinstance(addr, str) or "%" in addr:
+        return False
+    try:
+        ip = ipaddress.ip_address(addr)
+        return ip in ipaddress.ip_network("100.64.0.0/10") or ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")
+    except ValueError:
+        return False
 
 
 def _run(device, user, check, folder):
@@ -304,12 +333,14 @@ def check(device: dict, user: str, folder: str) -> dict:
 
 
 def listing(db, owner: str) -> dict:
+    from . import nodes_discovery as discovery
     status, info = discovery.read_tailscale(fresh=True)
     devices = [v for _, v, _ in db.kv_list_prefix(PREFIX) if v.get("owner") == owner]
     return {"candidates": candidates(status, owner), "devices": devices, "tailscale": info}
 
 
 def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects", *, confirm=False, discard_sessions=False) -> dict:
+    from . import nodes, nodes_discovery as discovery
     ok = False
     with LOCK:
         try:
@@ -379,6 +410,7 @@ MODES = {"claude": ("default", "manual", "acceptEdits", "plan"), "codex": ("work
 
 
 def launch_line(agent, mode, model="", effort=""):
+    from . import nodes_relay
     # Check the mode before constructing even the agent argv. Defaults belong at the API boundary.
     if agent not in (*MODES, "shell"):
         raise ValueError("Choose Claude, Codex or a shell.")
@@ -405,7 +437,12 @@ def launch_line(agent, mode, model="", effort=""):
     return line
 
 
-def session_command(verb, *, session=None, agent=None, mode=None, folder="projects", repo=None, model="", effort=""):
+def session_socket():
+    from . import nodes
+    return "ccboard-bare-" + hashlib.sha256(nodes.node_id().encode()).hexdigest()[:8]
+
+
+def session_command(verb, *, session=None, agent=None, mode=None, folder="projects", repo=None, model="", effort="", socket=None):
     line = launch_line(agent, mode, model, effort) if verb == "start" else None
     if verb != "list" and (not isinstance(session, str) or not re.fullmatch(r"bare-[a-f0-9]{32}", session)):
         raise ValueError("Choose a session started by this board.")
@@ -413,11 +450,15 @@ def session_command(verb, *, session=None, agent=None, mode=None, folder="projec
         validate("ccagent", folder)
         if repo != ".":
             validate("ccagent", repo or "")
-    socket = "ccboard-bare-" + hashlib.sha256(nodes.node_id().encode()).hexdigest()[:8]
+    socket = session_socket() if socket is None else socket
+    if not isinstance(socket, str) or not re.fullmatch(r"ccboard-bare-[a-f0-9]{8}", socket):
+        raise ValueError("Invalid device session socket.")
     prefix = ["tmux", "-L", socket]
     if verb == "start":
         command = shlex.join(["sh", "-c", START, "bare-start", (folder if repo == "." else folder + "/" + repo), *shlex.split(line)])
         return prefix + ["new-session", "-d", "-s", session, command]
+    if verb == "attach":
+        return prefix + ["attach-session", "-t", "=" + session]
     if verb == "list":
         return prefix + ["list-sessions", "-F", "#{session_name}"]
     if verb == "stop":
@@ -437,6 +478,7 @@ def stored_devices(db, owner):
 
 
 def _ready(db, owner, tid):
+    from . import nodes_discovery as discovery
     saved = db.kv_get(PREFIX + tid)
     saved = saved["value"] if saved else None
     if not saved or saved.get("owner") != owner:
@@ -466,12 +508,22 @@ def _alive(saved, device):
 
 
 def session_action(db, owner, tid, verb, *, session=None, repo=None, agent="claude", mode=None, model="", effort="", confirm=False):
+    from . import nodes
     result_status = "failed"
     with LOCK:
         try:
             if verb == "start":
                 launch_line(agent, mode, model, effort)  # gate before any device argv
             saved, device = _ready(db, owner, tid)
+            if verb == "attach":
+                if session not in db.bare_open_rows(host=tid):
+                    raise ValueError("Choose an open session on this device.")
+                try:
+                    ticket = issue_ticket(device, saved["user"], session)
+                except OSError:  # nothing reached the device: say so, not "did not answer"
+                    raise ValueError("The board could not prepare the terminal ticket. Check that its data directory is writable.") from None
+                result_status = "ok"
+                return {"attach_url": "/term/" + ticket}
             if verb == "list":
                 before = datetime.now(timezone.utc).isoformat()
                 alive = _alive(saved, device)
@@ -545,11 +597,13 @@ def session_action(db, owner, tid, verb, *, session=None, repo=None, agent="clau
             raise ValueError("The device did not answer; its session may still run.") from None
         finally:
             nodes.audit("out", tid, "bare_" + verb, result_status in ("ok", "alive"), user=owner,
-                        status=result_status if result_status == "unconfirmed" else None, db=db)
+                        status=result_status if result_status == "unconfirmed" else None,
+                        target=session if verb == "attach" else None, db=db)
 
 
 def finish_stop(db, owner, tid, session):
     """One delayed check, never a poller. A failed read never authorizes a kill."""
+    from . import nodes
     attempted = False
     ok = False
     status = None
@@ -571,3 +625,79 @@ def finish_stop(db, owner, tid, session):
     finally:
         if attempted:
             nodes.audit("out", tid, "bare_kill", ok, user=owner, status=status, db=db)
+
+
+TICKET_TTL = 600
+TICKET_PATTERN = r"bare-ticket-[a-f0-9]{64}"
+
+
+def ticket_id_ok(value):
+    return isinstance(value, str) and re.fullmatch(TICKET_PATTERN, value) is not None
+
+
+def ticket_argv(ticket, *, data_dir=None, now=None):
+    """Validate the complete credential before building any process arguments."""
+    fields = {"device", "user", "socket", "session", "issued_at", "expires_at"}
+    if not isinstance(ticket, dict) or set(ticket) != fields:
+        raise ValueError("Invalid terminal ticket. Open the terminal again from the board.")
+    issued, expires = ticket["issued_at"], ticket["expires_at"]
+    now = time.time() if now is None else now
+    if (any(type(v) not in (int, float) or not 0 <= v <= 1e12 for v in (issued, expires))
+            or not issued <= now < expires or not 0 < expires - issued <= TICKET_TTL):
+        raise ValueError("Terminal ticket expired. Open the terminal again from the board.")
+    device = ticket["device"]
+    if (not isinstance(device, dict) or set(device) != {"dns_name", "ips"}
+            or not isinstance(device["ips"], list) or len(device["ips"]) != 1
+            or not tailnet_address(device["ips"][0])):
+        raise ValueError("Invalid device in terminal ticket.")
+    if not isinstance(ticket["socket"], str) or not re.fullmatch(r"ccboard-bare-[a-f0-9]{8}", ticket["socket"]):
+        raise ValueError("Invalid device session socket.")
+    remote = session_command("attach", session=ticket["session"], socket=ticket["socket"])
+    return ssh_argv(device, ticket["user"], data_dir=data_dir, tty=True) + remote
+
+
+def _ticket_directory(data_dir=None):
+    directory = _data_dir(data_dir) / "bare-tickets"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = directory.lstat()
+    if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.getuid():
+        raise ValueError("Terminal ticket directory must be private to the board user.")
+    return directory
+
+
+def issue_ticket(device, user, session):
+    now = time.time()
+    ticket = {"device": {"dns_name": device["dns_name"], "ips": [next(a for a in device["ips"] if tailnet_address(a))]},
+              "user": user, "session": session, "socket": session_socket(), "issued_at": now, "expires_at": now + TICKET_TTL}
+    ticket_argv(ticket, now=now)
+    directory = _ticket_directory()
+    # Expired credentials have no further use. Do not follow links while pruning.
+    for path in directory.iterdir():
+        if ticket_id_ok(path.name) and path.lstat().st_mtime < now - TICKET_TTL:
+            path.unlink(missing_ok=True)
+    name = "bare-ticket-" + secrets.token_hex(32)
+    fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(ticket, f)
+    except BaseException:
+        (directory / name).unlink(missing_ok=True)
+        raise
+    return name
+
+
+def read_ticket(name, *, data_dir=None):
+    if not ticket_id_ok(name):
+        raise ValueError("Invalid terminal ticket. Open the terminal from the board.")
+    try:
+        directory = _ticket_directory(data_dir)
+        fd = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600 or st.st_uid != os.getuid() or st.st_size > 4096:
+                raise ValueError("Terminal ticket must be a private file owned by the board user.")
+            ticket = json.loads(f.read(4097))
+        return ticket_argv(ticket, data_dir=data_dir)
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        raise ValueError("Terminal ticket is missing or unreadable. Open the terminal again from the board.") from None

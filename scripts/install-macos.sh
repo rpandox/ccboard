@@ -425,7 +425,7 @@ fi
 # ---------------------------------------------------------------- folders and the settings file
 log "folders and settings file"
 mkdir -p "$PROJECTS_DIR" "$ENV_DIR" "$LA_DIR" "$LOG_DIR"
-chmod 0755 "$APP_DIR/bin/ccboard-attach"
+chmod 0755 "$APP_DIR/bin/ccboard-attach" "$APP_DIR/bin/ccboard-attach-bare"
 env_body=""
 for k in $KEYS; do eval "v=\${$k}"; env_body="$env_body$k=$v
 "; done

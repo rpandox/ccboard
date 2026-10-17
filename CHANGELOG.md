@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.86 - 2026-10-18
+
+### Added
+- Open a checked device session in the normal terminal page from its sidebar row.
+- Private ten-minute tickets allow reconnects, keep device addresses out of URLs, and require a signed-in person; attachment is audited without the ticket.
+- Ship `ccboard-attach-bare` with the installers and Docker host files, and check it in Doctor; normal terminal arguments are unchanged.
+- Demo device terminals stay local without a network connection.
+
+Upgrade: rerun `./install.sh` on macOS so ttyd receives the configured data directory; other installations need no extra steps.
+
 ## v0.5.85 - 2026-10-17
 
 ### Added

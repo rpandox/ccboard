@@ -35,6 +35,8 @@
 		<string>__SHELL__</string>
 		<key>TMUX_TMPDIR</key>
 		<string>__TMUX_TMPDIR__</string>
+		<key>CCBOARD_DATA_DIR</key>
+		<string>__DATA_DIR__</string>
 		<key>CCBOARD_TMUX_SOCKET</key>
 		<string>__TMUX_SOCKET__</string>
 	</dict>

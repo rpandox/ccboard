@@ -37,7 +37,18 @@ Shell.bareDevice = function (node, device) {
       stop.setAttribute('aria-label', label); stop.setAttribute('title', label); status.textContent = '';
     };
     cancel.addEventListener('click', disarm);
-    const controls = el('span', { class: 'bare-controls' }, stop, cancel);
+    const terminal = el('button', { class: 'icon minimal small tn-add', type: 'button',
+      'aria-label': 'Open terminal for ' + row.agent + ' ' + row.repo + ' on ' + device.name,
+      title: 'Open terminal for ' + row.agent + ' ' + row.repo + ' on ' + device.name }, ic('console'));
+    terminal.addEventListener('click', async () => {
+      terminal.disabled = true;
+      try {
+        const r = await api('POST', '/api/bare/' + encodeURIComponent(device.ts_id) + '/sessions/' + encodeURIComponent(row.tmux_name) + '/attach', {});
+        location.assign(r.attach_url + (demoOn() ? '?demo=1' : ''));
+      } catch (_) { status.textContent = 'Could not open the terminal. Check the device and try again.'; }
+      finally { terminal.disabled = false; }
+    });
+    const controls = el('span', { class: 'bare-controls' }, terminal, stop, cancel);
     stop.disabled = row.state === 'stopping';
     stop.addEventListener('click', async () => {
       if (!armed) {

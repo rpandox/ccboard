@@ -4,6 +4,17 @@ set -u
 fail() { printf 'ccboard: %s\n' "$1"; sleep 2; exit 1; }
 { [ "$#" -ge 1 ] && [ "$#" -le 2 ]; } || fail "usage: ccboard-attach <session> [full|grid|ro]"
 name=$1
+case "$name" in
+  bare-ticket-*)
+    ticket=${name#bare-ticket-}
+    case "$ticket" in
+      *[!a-f0-9]*) ;;
+      *) if [ "${#ticket}" -eq 64 ]; then
+           [ "$#" -eq 1 ] || fail "usage: ccboard-attach-bare <ticket>"
+           exec "$(dirname "$0")/ccboard-attach-bare" "$name"
+         fi;;
+    esac;;
+esac
 mode=${2-full}                      # '-' not ':-': an empty 2nd arg is an invalid mode, not 'full'
 [ -n "$name" ] || fail "empty session name"
 case "$name" in *[!A-Za-z0-9_-]*) fail "invalid session name";; esac

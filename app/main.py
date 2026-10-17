@@ -627,7 +627,7 @@ async def auth_middleware(request: Request, call_next):
         # ttyd's and never passes through the board, and frame-ancestors 'none' would block the fake from the terminal page's iframe.
         resp.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "same-origin"
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         # Always revalidate the shell and its assets (ETag), so an update never mixes old HTML with new JS. Only vendored
         # files and fonts are immutable, and only when they were found: a 404 must not be cached for a year.
@@ -4994,6 +4994,11 @@ def api_bare_sessions(tid: str, request: Request):
     return _bare_session(request, tid, "list")
 
 
+@app.post("/api/bare/{tid}/sessions/{session}/attach")
+def api_bare_attach(tid: str, session: str, request: Request):
+    return _bare_session(request, tid, "attach", session=session)
+
+
 @app.post("/api/bare/{tid}/sessions/{session}/stop")
 def api_bare_stop(tid: str, session: str, body: BareStopIn, request: Request):
     return _bare_session(request, tid, "stop", session=session, confirm=body.confirm)
@@ -6470,6 +6475,8 @@ def index():
 
 @app.get("/term/{name}")
 def term_page(name: str):
+    if bare.ticket_id_ok(name):
+        return FileResponse(STATIC / "term.html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     try:
         tmux.split_name(name)
     except ValueError:

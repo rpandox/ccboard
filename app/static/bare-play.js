@@ -10,7 +10,7 @@ async function demoBare(method, path, body = {}) {
   const { data, template } = demoBareStore;
   const route = path.split('?')[0];
   if (method === 'GET' && route === '/api/bare') return JSON.parse(JSON.stringify(data));
-  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/stop)?$/.exec(route);
+  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/(stop|attach))?$/.exec(route);
   if (sessionRoute && method === 'POST') {
     const device = data.devices.find((d) => d.ts_id === decodeURIComponent(sessionRoute[1]));
     if (!device || !device.check.ok) throw demoError(400, 'Add and check your device first.');
@@ -21,6 +21,7 @@ async function demoBare(method, path, body = {}) {
     }
     if (sessionRoute[3]) {
       const row = device.sessions.find((s) => s.tmux_name === decodeURIComponent(sessionRoute[3]));
+      if (row && sessionRoute[4] === 'attach') return { attach_url: '/term/bare-ticket-' + '0'.repeat(64) };
       if (!row || !body.confirm) throw demoError(400, 'Confirm Stop with a second tap.');
       row.state = 'stopping';
       return { status: 'stopping' };

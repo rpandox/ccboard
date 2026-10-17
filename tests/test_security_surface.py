@@ -48,6 +48,7 @@ EXPECTED = {
     ("POST", "/api/bare"): "identity+csrf",
     ("POST", "/api/bare/{tid}/sessions"): "identity+csrf",
     ("POST", "/api/bare/{tid}/sessions/read"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/sessions/{session}/attach"): "identity+csrf",
     ("POST", "/api/bare/{tid}/sessions/{session}/stop"): "identity+csrf",
     ("POST", "/api/bare/{tid}/check"): "identity+csrf",
     ("POST", "/api/bare/{tid}/forget-host-key"): "identity+csrf",
