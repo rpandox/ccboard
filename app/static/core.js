@@ -320,7 +320,10 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
-  if (/^\/api\/bare(\/|$)/.test(path.split('?')[0]) && typeof demoBare === 'function') return demoBare(method, path, body); // Settings plays demo/bare.json locally, including every SSH-related write.
+  if (/^\/api\/bare(\/|$)/.test(path.split('?')[0])) {
+    if (typeof Lazy !== 'undefined') await Lazy.load('demobare');
+    return demoBare(method, path, body); // demo/bare.json, entirely in memory
+  }
   if (path === '/api/settings/options' && typeof demoSettingsOptions === 'function') {
     if (method === 'PUT') return demoSettingsOptions(body);
     if (settingsDemoOptions) return settingsDemoOptions;
@@ -407,6 +410,8 @@ async function demoApi(method, path, body) {
     return { ...data, meta };
   }
   if (name === 'state') {
+    if (typeof Lazy !== 'undefined') await Lazy.load('demobare');
+    if (typeof demoBare === 'function') data.bare_devices = (await demoBare('GET', '/api/bare')).devices;
     const st = demoTaskEpic(demoMadeState(demoUsageRefresh(demoRebase(data))));
     return typeof settingsRestartDemoState === 'function' ? settingsRestartDemoState(st) : st;
   }                 // the usage reading's own time follows the make-believe refresh above

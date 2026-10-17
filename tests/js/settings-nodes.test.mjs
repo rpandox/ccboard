@@ -169,11 +169,12 @@ test('Refresh keeps its button (focus survives), ignores a press while one ask r
   assert.equal(rowNamed(w, 'node-a'), rowA, 'an unchanged row is not recreated under a finger');
 });
 
-test('no timer: the page script has no setInterval, setTimeout or poll for the tailnet', () => {
+test('no timer polls the tailnet; the local forget confirmation may expire', () => {
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'settings.js'), 'utf8');
   const start = src.indexOf('const settingsNd =');
   const end = src.indexOf('function settingsBox');
-  const block = src.slice(start, end).replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = src.slice(start, end).replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace('timer = setTimeout(disarm, 5000);', ''); // Local confirmation only; covered by settings-bare.test.mjs.
   assert.ok(start > 0 && end > start);
   assert.doesNotMatch(block, /setInterval|setTimeout|requestAnimationFrame|visibilitychange/);
   assert.equal((block.match(/api\('GET', '\/api\/nodes\/discover'/g) || []).length, 1, 'one place asks the tailnet');

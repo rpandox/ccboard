@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.85 - 2026-10-17
+
+### Added
+- Start Claude, Codex or a shell on a checked device from the launcher's Node picker.
+- Agent starts use explicit permissions (Claude defaults to `default`) and a separate tmux socket for each board.
+- Device sessions live in their own `bare_sessions` table for rollback safety and appear in the sidebar with a no board badge and Read action.
+- Stop offers Confirm and Cancel, expires after five seconds, and checks for remaining sessions after ten seconds; open sessions block device removal.
+- Lost start acknowledgements stay unconfirmed without retries; device actions, including delayed `bare_kill`, record the acting person without prompts.
+
+Upgrade: nothing to do.
+
 ## v0.5.84 - 2026-10-17
 
 ### Added
