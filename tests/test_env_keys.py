@@ -255,3 +255,8 @@ def test_the_mem_viewer_off_word_clears_the_remembered_port(tmp_path):
     assert _run_config(tmp_path, {"CCBOARD_MEM_HTTPS_PORT": "10443"})["CCBOARD_MEM_HTTPS_PORT"] == "10443"
     assert _run_config(tmp_path, {})["CCBOARD_MEM_HTTPS_PORT"] == "10443", "remembered"
     assert _run_config(tmp_path, {"CCBOARD_MEM_HTTPS_PORT": "off"})["CCBOARD_MEM_HTTPS_PORT"] == "", "off clears it"
+
+
+def test_every_registry_key_has_a_readme_row_or_internal_reason():
+    from app.options import registry
+    assert not {o.key for o in registry()} - readme_rows() - set(INTERNAL)

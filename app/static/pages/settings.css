@@ -248,3 +248,12 @@ dialog.nd-sheet .qr-actions { flex-wrap:wrap; }
 #page .settings-page .nd-row .nd-act .nd-off { opacity:.6; cursor:not-allowed; }
 @media (pointer:coarse) { #page .settings-page .nd-moved > button { min-height:var(--tap); } }
 html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap); }
+
+/* The registry uses the shared kv rows; long keys and copy lines wrap at every screen width. */
+#page .settings-page .set-options-filter { width:100%; margin:12px 0; }
+#page .settings-page .set-options-group { border-top:1px solid var(--line); margin-top:12px; }
+#page .settings-page .set-options-group > summary { cursor:pointer; min-height:var(--tap, 44px); padding:12px 0; }
+#page .settings-page .set-options-group .set-h { display:inline; margin:0; }
+#page .settings-page .set-option > .k { overflow-wrap:anywhere; }
+#page .settings-page .set-option-key { display:block; font-size:11px; margin-top:4px; }
+#page .settings-page .set-option-line { overflow-wrap:anywhere; user-select:all; }
