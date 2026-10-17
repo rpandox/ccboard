@@ -7,7 +7,7 @@
    (lxnForm), a smaller form on purpose: a request from another node is checked by the hub and again by the peer and carries only project, repo, title, prompt, when, agent, model,
    effort, reasoning effort, auto close and an issue reference (a task), a session name, a permission mode of default / acceptEdits / plan or Codex read-only (a session), or a lane /
    session dispatch. No bypass, no extra arguments, tools, directories or system prompt, no first prompt for a session, no chain, no schedule: the form offers none of them and says so
-   ("Bypass is only available on the node itself.") and the body builders below send nothing else (tests/js/launcher-node.test.mjs pins the key sets).
+   ("Bypass is only available inside a devcontainer, on the node itself.") and the body builders below send nothing else (tests/js/launcher-node.test.mjs pins the key sets).
    Everything the form lists comes from the chosen node: its projects and repos from the hub read model (Nodes.get(h).state, GET /api/nodes/state), its agents, models, efforts and
    reasoning levels from the relay's agents row (GET /api/nodes/<h>/agents, cached 10 minutes per node). What is remembered (model, effort, mode, agent, the last repo) is stored per
    node and per repo with Ref.scoped / Ref.storeKey, so the local defaults are never touched.
@@ -21,7 +21,7 @@ const LXN_RETRY_MS = 15000;                        // a failed schema read is no
 const LXN_PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan']];          // the permission modes a request from another node may carry (Claude)
 const LXN_CX_MODES = [['default', 'default'], ['read-only', 'read-only']];                              // Codex: default, or the read-only sandbox
 const LXN_ISSUE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}#[0-9]{1,9}$/;
-const LXN_NOBYPASS = 'Bypass is only available on the node itself.';
+const LXN_NOBYPASS = 'Bypass is only available inside a devcontainer, on the node itself.';
 const LXN_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
 const lxnSchemas = new Map();                       // handle -> {agents: Map(name -> schema) | null, at, failed, busy, promise}
 let lxnSeq = 0;

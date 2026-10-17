@@ -62,11 +62,11 @@
      project / model / context text (the badge used to share line 1 and cut the name to 't-chec…'). */
   const head = {
     sess: el('span', { class: 'name', text: INTERNAL ? 'login' : (PARTS.length === 3 ? PARTS[2] : NAME) }),
-    glyph: el('span'), state: el('span'), meta: el('span', { class: 'l2-text' }), hooks: el('span', { class: 'l2-hooks hidden' }),
+    glyph: el('span'), state: el('span'), meta: el('span', { class: 'l2-text' }), hooks: el('span', { class: 'l2-hooks hidden' }), queued: queuedPromptsChip(),
     agent: null, stateSig: '', metaSig: '', hm: '',
   };
   head.meta.textContent = INTERNAL ? 'terminal' : (PARTS.length === 3 ? projectLabel(PARTS[0], PARTS[1]) : '');
-  $('#headid').append(el('div', { class: 'l1' }, head.sess), el('div', { class: 'l2' }, head.glyph, head.state, head.hooks, head.meta));
+  $('#headid').append(el('div', { class: 'l1' }, head.sess), el('div', { class: 'l2' }, head.glyph, head.state, head.queued, head.hooks, head.meta));
 
   function projectLabel(project, repo) { return repo === 'root' ? project : project + '/' + repo; }
 
@@ -83,6 +83,7 @@
     const badge = stateBadge(s);
     const sig = badge ? badge.textContent + '|' + (s.state || '') : '';
     if (sig !== head.stateSig) { head.stateSig = sig; setState(badge); }
+    queuedPromptsSet(head.queued, s.queued_prompts);               // #79: '+2 queued' only while the board itself holds prompts for the session
     const hm = s.hooks_missing || '';                              // #96: 'no hooks (untrusted?)', a link to the board's Doctor
     if (hm !== head.hm) {
       head.hm = hm;

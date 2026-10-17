@@ -113,23 +113,82 @@ def test_each_permission_mode(ag, mode):
     assert p.argv[-2:] == ["--permission-mode", mode] and p.opts_clean == {"permission_mode": mode}
 
 
-def test_bypass_permission_mode_reaches_argv_but_is_never_stored(ag):
-    p = plan(ag, opts={"permission_mode": "bypassPermissions"})
+def dplan(ag, tmp_path, **kw):
+    """A launch inside the repo's devcontainer (a folder with .devcontainer/devcontainer.json): the only place bypass may start (#104)."""
+    repo = tmp_path / "repo"
+    (repo / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (repo / ".devcontainer" / "devcontainer.json").write_text("{}")
+    opts = {**kw.pop("opts", {}), "devcontainer": True}
+    return plan(ag, cwd=str(repo), opts=opts, **kw)
+
+
+HOST_BYPASS = ("bypass is allowed only inside the repo's devcontainer (owner decision, #104); choose auto or turn on Run in the devcontainer")
+
+
+def test_bypass_is_refused_outside_the_devcontainer_in_every_spelling_and_launch_kind(ag):
+    assert base.BYPASS_REFUSAL == HOST_BYPASS, "the owner's words, pinned"
+    spellings = ({"bypass": True}, {"opts": {"permission_mode": "bypassPermissions"}}, {"opts": {"mode": "bypass"}},
+                 {"opts": {"extra": ["--dangerously-skip-permissions"]}}, {"opts": {"extra": ["--allow-dangerously-skip-permissions"]}},
+                 {"opts": {"extra": ["--permission-mode", "bypassPermissions"]}}, {"opts": {"extra": ["--permission-mode=bypassPermissions"]}},
+                 {"opts": {"extra": ["--DANGEROUSLY-skip-permissions"]}})
+    for kind, more in (("new", {}), ("new", {"prompt": "go"}), ("new", {"worktree": "w"}), ("resume", {"resume_id": RID}), ("continue", {}),
+                       ("from_pr", {"opts": {"from_pr": "7"}})):
+        for kw in spellings:
+            kw = {**kw, "opts": {**more.get("opts", {}), **kw.get("opts", {})}}
+            with pytest.raises(projects.BadRequest) as e:
+                plan(ag, kind=kind, **{k: v for k, v in more.items() if k != "opts"}, **kw)
+            assert str(e.value) == HOST_BYPASS, (kind, kw)
+    # a devcontainer option beside a cwd with no devcontainer.json is its own refusal; the bypass is no way around it
+    with pytest.raises(projects.BadRequest, match="no .devcontainer/devcontainer.json"):
+        plan(ag, bypass=True, opts={"devcontainer": True})
+    # and the safe modes need no container
+    assert plan(ag, opts={"permission_mode": "auto"}).argv[-2:] == ["--permission-mode", "auto"]
+
+
+ACK_REQUIRED = "bypass skips every approval: send bypass: true with the acknowledgement"
+
+
+def test_inside_the_devcontainer_every_bypass_spelling_still_needs_the_acknowledgement(ag, tmp_path):
+    assert base.BYPASS_ACK_REQUIRED == ACK_REQUIRED
+    spellings = ({"opts": {"permission_mode": "bypassPermissions"}}, {"opts": {"mode": "bypass"}}, {"opts": {"mode": "bypassPermissions"}},
+                 {"opts": {"extra": ["--dangerously-skip-permissions"]}}, {"opts": {"extra": ["--permission-mode", "bypassPermissions"]}},
+                 {"opts": {"extra": ["--permission-mode=bypassPermissions"]}})
+    for kind, more in (("new", {}), ("new", {"prompt": "go"}), ("resume", {"resume_id": RID}), ("continue", {})):
+        for kw in spellings:
+            with pytest.raises(projects.BadRequest) as e:
+                dplan(ag, tmp_path, kind=kind, **more, **kw)
+            assert str(e.value) == ACK_REQUIRED, (kind, kw)
+            assert dplan(ag, tmp_path, kind=kind, bypass=True, **more, **kw).argv, "acknowledged: it builds"
+    assert "--dangerously-skip-permissions" in dplan(ag, tmp_path, bypass=True).argv, "the flag itself carries its acknowledgement"
+    assert dplan(ag, tmp_path, opts={"permission_mode": "auto"}).argv[-2:] == ["--permission-mode", "auto"], "the safe modes need none"
+
+
+def test_a_stored_bypass_is_never_re_passed_on_resume_or_continue(ag):
+    stored = {"permission_mode": "bypassPermissions", "model": "opus"}          # a hand-edited row: adapters never store one
+    assert ag.resume_argv(RID, opts=stored) == ["claude", "--resume", RID, "--model", "opus"]
+    assert ag.continue_argv("/p/shop/api", stored) == ["claude", "--continue", "--model", "opus"]
+
+
+def test_bypass_permission_mode_reaches_argv_but_is_never_stored(ag, tmp_path):
+    p = dplan(ag, tmp_path, opts={"permission_mode": "bypassPermissions"}, bypass=True)
     assert p.argv[-2:] == ["--permission-mode", "bypassPermissions"]
     assert "permission_mode" not in p.opts_clean and "bypass" not in p.opts_clean
+    wf = str(tmp_path / "repo")
+    assert p.cmd_line == (f"devcontainer up --workspace-folder {wf} && devcontainer exec --workspace-folder {wf} -- "
+                          f"claude --session-id {SID} --name s1 --permission-mode bypassPermissions")
 
 
-def test_bypass_flag_guard(ag):
+def test_bypass_flag_guard(ag, tmp_path):
     base_ = ["claude", "--session-id", SID, "--name", "s1"]
-    assert plan(ag, bypass=True).argv == base_ + ["--dangerously-skip-permissions"]
+    assert dplan(ag, tmp_path, bypass=True).argv == base_ + ["--dangerously-skip-permissions"]
     # the flag goes before the launch controls and the extra args (test_tmux_cmd: "--dangerously-skip-permissions --model opus")
-    assert plan(ag, bypass=True, opts={"extra": ["--model", "opus"]}).argv == base_ + ["--dangerously-skip-permissions", "--model", "opus"]
+    assert dplan(ag, tmp_path, bypass=True, opts={"extra": ["--model", "opus"]}).argv == base_ + ["--dangerously-skip-permissions", "--model", "opus"]
     # a bypass spelling already in the extra args is not duplicated (main: `body.bypass and not _bypass_requested(extra)`)
     for spelling in (["--dangerously-skip-permissions"], ["--permission-mode=bypassPermissions"], ["--DANGEROUSLY-skip-permissions"]):
-        argv = plan(ag, bypass=True, opts={"extra": spelling}).argv
+        argv = dplan(ag, tmp_path, bypass=True, opts={"extra": spelling}).argv
         assert argv == base_ + spelling, spelling
     assert plan(ag, bypass=False).argv == base_
-    assert plan(ag, bypass=True).opts_clean == {}, "bypass is never stored"
+    assert dplan(ag, tmp_path, bypass=True).opts_clean == {"devcontainer": True}, "bypass is never stored"
 
 
 def test_extra_args_then_add_dirs_last(ag):
@@ -145,7 +204,7 @@ def test_extra_args_then_add_dirs_last(ag):
         plan(ag, opts={"extra": "'unbalanced"})
 
 
-def test_resume_and_continue(ag):
+def test_resume_and_continue(ag, tmp_path):
     assert plan(ag, kind="resume", resume_id=RID).argv == ["claude", "--resume", RID]
     assert plan(ag, kind="resume", resume_id=RID).agent_session_id == RID
     assert plan(ag, kind="resume").argv == ["claude", "--resume"]                      # the picker
@@ -153,8 +212,9 @@ def test_resume_and_continue(ag):
     assert plan(ag, kind="continue").argv == ["claude", "--continue"]
     assert plan(ag, kind="continue").agent_session_id is None
     assert plan(ag, kind="resume", resume_id=RID, add_dirs=["/a", "/b"]).argv == ["claude", "--resume", RID, "--add-dir", "/a", "/b"]
-    assert plan(ag, kind="continue", bypass=True, opts={"model": "opus", "extra": ["--verbose"]}, add_dirs=["/a"]).argv == \
-        ["claude", "--continue", "--dangerously-skip-permissions", "--model", "opus", "--verbose", "--add-dir", "/a"]
+    # a devcontainer launch has no --add-dir (the container sees the repo only), so the siblings are dropped from the line
+    assert dplan(ag, tmp_path, kind="continue", bypass=True, opts={"model": "opus", "extra": ["--verbose"]}, add_dirs=["/a"]).argv == \
+        ["claude", "--continue", "--dangerously-skip-permissions", "--model", "opus", "--verbose"]
     assert plan(ag, kind="resume", resume_id=RID).cmd_line == f"claude --resume {RID}"
     with pytest.raises(projects.BadRequest, match="resume id must be a UUID"):
         plan(ag, kind="resume", resume_id="-x")
@@ -223,15 +283,17 @@ def test_task_launch_parity(ag, tmp_path):
     assert tasks.WORKTREES == claude.WORKTREE_DIR
 
 
-def test_task_rejects_bypass_in_every_spelling(ag):
-    msg = "is not allowed for tasks; start a session and choose bypass there if you really want it"
+def test_task_rejects_bypass_in_every_spelling(ag, tmp_path):
+    msg = "is not allowed for tasks; bypass is only for an interactive Claude session in the repo's devcontainer \\(#104\\)"
     for kw in ({"bypass": True}, {"opts": {"permission_mode": "bypassPermissions"}},
                {"opts": {"extra": ["--dangerously-skip-permissions"]}}, {"opts": {"extra": ["--permission-mode=bypassPermissions"]}},
                {"opts": {"extra": ["--settings", "{}"]}}):
         with pytest.raises(projects.BadRequest, match=msg):
             plan(ag, worktree="w", prompt="p", task=True, **kw)
-    # a worktree session that is not a task keeps the interactive rules (bypass is an explicit choice there)
-    assert plan(ag, worktree="w", prompt="p", bypass=True).argv[:2] == ["claude", "--dangerously-skip-permissions"]
+    # a worktree session that is not a task keeps the interactive rules (bypass is an explicit choice there, inside the devcontainer only)
+    assert dplan(ag, tmp_path, worktree="w", prompt="p", bypass=True).argv[:2] == ["claude", "--dangerously-skip-permissions"]
+    with pytest.raises(projects.BadRequest, match="^bypass is allowed only inside the repo's devcontainer"):
+        plan(ag, worktree="w", prompt="p", bypass=True)
 
 
 def test_task_prompt_cannot_smuggle_a_flag(ag):
@@ -358,7 +420,7 @@ def test_validate_opts_session_accepts_and_cleans(ag):
 
 
 def test_validate_opts_task_messages(ag):
-    tail = "bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there if you really want it"
+    tail = "bypassPermissions (or a settings override) is not allowed for tasks; bypass is only for an interactive Claude session in the repo's devcontainer (#104)"
     for raw, first in (({"extra": ["--dangerously-skip-permissions"]}, "--dangerously-skip-permissions"),
                        ({"extra": ["--permission-mode=bypassPermissions"]}, "--permission-mode=bypassPermissions"),
                        ({"extra": ["--settings", "x"]}, "--settings"),
@@ -895,13 +957,15 @@ def test_the_new_options_reject_what_is_not_theirs(ag, raw, msg):
     assert str(e.value) == msg
 
 
-def test_the_mode_word_is_a_permission_mode(ag):
+def test_the_mode_word_is_a_permission_mode(ag, tmp_path):
     assert v(ag, {"mode": "default"}) == {"permission_mode": "manual"}
     assert v(ag, {"mode": "read-only"}) == {"permission_mode": "plan"}
     assert v(ag, {"mode": "acceptEdits"}) == {"permission_mode": "acceptEdits"}
     assert v(ag, {"mode": "auto", "permission_mode": "plan"}) == {"permission_mode": "auto"}, "mode wins over a permission_mode beside it"
     assert v(ag, {"mode": "bypass"}) == {}, "a bypass is never stored for resume"
-    assert plan(ag, opts={"mode": "bypass"}).argv[-2:] == ["--permission-mode", "bypassPermissions"]
+    assert dplan(ag, tmp_path, opts={"mode": "bypass"}, bypass=True).argv[-2:] == ["--permission-mode", "bypassPermissions"]
+    with pytest.raises(projects.BadRequest, match="^bypass is allowed only inside the repo's devcontainer"):
+        plan(ag, opts={"mode": "bypass"})
     # a task and a headless run refuse it under either spelling
     for raw in ({"mode": "bypass"}, {"permission_mode": "bypassPermissions"}):
         with pytest.raises(projects.BadRequest, match="bypassPermissions"):
@@ -912,13 +976,13 @@ def test_the_mode_word_is_a_permission_mode(ag):
     assert v(ag, {"reasoning": "max"}) == {"effort": "max"} and v(ag, {"effort": "low", "reasoning": "max"}) == {"effort": "low"}
 
 
-def test_from_pr_is_a_launch_of_its_own(ag):
+def test_from_pr_is_a_launch_of_its_own(ag, tmp_path):
     p = plan(ag, kind="from_pr", opts={"from_pr": "#123", "model": "opus"})
     assert p.argv == ["claude", "--from-pr", "123", "--model", "opus"] and p.agent_session_id is None
     assert p.opts_clean == {"model": "opus"}, "the PR is for this launch only"
     url = "https://github.com/o/r/pull/12"
     assert plan(ag, kind="from_pr", opts={"from_pr": url}, add_dirs=["/x"]).argv == ["claude", "--from-pr", url, "--add-dir", "/x"]
-    assert plan(ag, kind="from_pr", opts={"from_pr": "7"}, bypass=True).argv == ["claude", "--from-pr", "7", "--dangerously-skip-permissions"]
+    assert dplan(ag, tmp_path, kind="from_pr", opts={"from_pr": "7"}, bypass=True).argv == ["claude", "--from-pr", "7", "--dangerously-skip-permissions"]
     with pytest.raises(projects.BadRequest, match="^from_pr: give the pull request number or URL$"):
         plan(ag, kind="from_pr")
     with pytest.raises(projects.BadRequest, match="^from_pr: only the from_pr launch takes a pull request$"):

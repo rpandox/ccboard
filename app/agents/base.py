@@ -15,6 +15,15 @@ from typing import Callable
 
 STATUSES = ("pass", "warn", "fail", "skip")          # Check.status
 
+# The one answer to every interactive bypass request that is not Claude inside the repo's devcontainer (owner decision on issue #104, 2026-10-16):
+# the sheet, the compat spellings, the extra args, a Codex session and a node's request all end here. Tasks, dispatch and schedules refuse bypass
+# everywhere with their own words.
+BYPASS_REFUSAL = ("bypass is allowed only inside the repo's devcontainer (owner decision, #104); choose auto or turn on Run in the devcontainer")
+# Codex never runs in the devcontainer, so the sentence above would send its users to a switch it does not have.
+BYPASS_REFUSAL_CODEX = "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
+# Inside the devcontainer every bypass spelling (mode, permission_mode, the args, a resume/continue with a bypass mode) still needs the acknowledgement.
+BYPASS_ACK_REQUIRED = "bypass skips every approval: send bypass: true with the acknowledgement"
+
 
 class TTLCache:
     """Tiny thread-safe TTL cache for adapters whose CLI probes are slow (version, auth status): `get(key, fn)` runs `fn` at most
@@ -46,7 +55,7 @@ class LaunchReq:
     """One launch, agent-neutral. `opts` holds the agent's own options (Claude: model, effort, permission_mode, allowed_tools,
     disallowed_tools, append_system_prompt, fast, devcontainer, tools, agent_name, fallback_model, autocompact, mcp_config and, for
     one launch only, from_pr and fork_session; Codex: model, reasoning_effort, mode / permission_mode, sandbox, approval, search,
-    config lines ...; and `extra`: the already shlex-split extra CLI args). `bypass` is separate from `opts` on purpose: it is never
+    config lines ...; and `extra`: the already shlex-split extra CLI args). `bypass` is separate from `opts` on purpose: it is the launch's bypass acknowledgement, never
     stored. `task=True` applies the stricter task rules (no bypass, no settings overrides). `worktree` is the native worktree name (a
     slug), not a path."""
     kind: str                                          # new | resume | continue | from_pr (Claude) | fork (Codex)

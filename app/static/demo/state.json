@@ -85,7 +85,8 @@
               },
               "win": null,
               "wait_kind": null,
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 0
             },
             {
               "created": 1790961840,
@@ -144,7 +145,8 @@
               },
               "win": null,
               "wait_kind": null,
-              "hooks_missing": "untrusted"
+              "hooks_missing": "untrusted",
+              "queued_prompts": 0
             }
           ],
           "devcontainer": false,
@@ -336,7 +338,8 @@
               },
               "win": null,
               "wait_kind": null,
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 0
             },
             {
               "created": 1790901360,
@@ -400,7 +403,8 @@
               },
               "win": null,
               "wait_kind": null,
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 0
             },
             {
               "created": 1790930000,
@@ -464,7 +468,8 @@
               },
               "win": null,
               "wait_kind": "idle_prompt",
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 0
             }
           ],
           "devcontainer": false,
@@ -556,7 +561,8 @@
               },
               "win": null,
               "wait_kind": null,
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 1
             }
           ],
           "devcontainer": true,
@@ -631,7 +637,8 @@
               },
               "win": null,
               "wait_kind": "permission_prompt",
-              "hooks_missing": null
+              "hooks_missing": null,
+              "queued_prompts": 0
             }
           ],
           "devcontainer": false,
@@ -702,7 +709,8 @@
             },
             "win": null,
             "wait_kind": null,
-            "hooks_missing": null
+            "hooks_missing": null,
+            "queued_prompts": 0
           }
         ],
         "root": true,

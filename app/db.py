@@ -827,6 +827,15 @@ class DB:
                 {"id": r["id"], "title": r["title"], "phase": r["phase"], "auto_close": bool(r["auto_close"])})
         return out
 
+    def queued_task_specs(self) -> list[dict]:
+        """[{session_row, spec}] of the unarchived running tasks bound to a session whose spec mentions a Stop counter (turns_ahead), in ONE
+        query. taskflow.queued_counts() reads them: the prompts the board itself has queued for a busy session (issue #79)."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT session_row, spec FROM tasks WHERE session_row IS NOT NULL AND archived_at IS NULL AND phase='running'"
+                " AND spec LIKE '%turns_ahead%'").fetchall()
+        return [{"session_row": r["session_row"], "spec": r["spec"]} for r in rows]
+
     def task_get(self, tid: int) -> dict | None:
         with self.lock:
             r = self.conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()

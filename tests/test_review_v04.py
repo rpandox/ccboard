@@ -100,10 +100,10 @@ def test_settings_overrides_rejected_on_host(client, projects_dir, fake_tmux, mo
         assert r.status_code == 400 and "not allowed" in r.text, args
         r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": args}, headers=H)
         assert r.status_code == 400 and "overrides" in r.text, args
-    # the bypass flag itself: never for tasks, an explicit choice for interactive sessions
+    # the bypass flag itself: never for tasks, and for interactive sessions only inside the devcontainer (owner decision, #104)
     assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t", "prompt": "p", "args": "--permission-mode bypassPermissions"}, headers=H).status_code == 400
     r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": "--permission-mode bypassPermissions"}, headers=H)
-    assert r.status_code == 201 and "--permission-mode bypassPermissions" in r.json()["cmd"]
+    assert r.status_code == 400 and r.json()["error"].startswith("bypass is allowed only inside the repo's devcontainer")
     r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": "--model opus"}, headers=H)
     assert "bypass" not in r.text.lower()
 
@@ -218,7 +218,7 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "effort": "extreme"}, headers=H).status_code == 400
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "model": "opus; rm -rf /"}, headers=H).status_code == 400
     r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "permission_mode": "bypassPermissions", "name": "byp"}, headers=H)
-    assert r.status_code == 201 and "--permission-mode bypassPermissions" in r.json()["cmd"]
+    assert r.status_code == 400 and r.json()["error"].startswith("bypass is allowed only inside the repo's devcontainer")
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "allowed_tools": "Bash(`id`)"}, headers=H).status_code == 400
     r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t1", "prompt": "do it", "model": "sonnet", "effort": "low", "permission_mode": "plan"}, headers=H)
     assert r.status_code == 201, r.text
