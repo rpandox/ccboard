@@ -10,7 +10,7 @@ from app import config, options, platform as plat
 
 URL = '/api/settings/options'
 PERSON = {'Tailscale-User-Login': 'alice', 'X-CCBoard': '1'}
-KEY = 'CCBOARD_NODE_LANES'
+KEY = 'CCBOARD_AUTOCLOSE_GRACE'
 
 
 def test_a_local_sign_in_person_can_save(board, monkeypatch):
@@ -48,6 +48,28 @@ def put(board, changes, **extra):
 
 def row(response, key=KEY):
     return next(r for r in response.json()['options'] if r['key'] == key)
+
+
+def test_memory_viewer_page_save_restart_and_reset(board):
+    key = 'CCBOARD_MEM_VIEWER_URL'
+    value = 'https://memory.example.ts.net:8446/'
+    saved = put(board, {key: value})
+    assert saved.status_code == 200, saved.text
+    entry = row(saved, key)
+    assert entry['group'] == 'memory' and entry['cls'] == 'page'
+    assert entry['value'] == value and entry['pending'] and entry['source'] == 'page'
+    assert board[1].mem_viewer_url() is None
+    assert config.Settings(board[2]).mem_viewer_url() == value
+    assert put(board, {key: None}).status_code == 200
+    assert config.Settings(board[2]).mem_viewer_url() is None
+
+
+@pytest.mark.parametrize('value', ['http://example.ts.net/', 'https://user:secret@example.ts.net/', 'junk'])
+def test_memory_viewer_page_rejects_invalid_url(board, value):
+    answer = put(board, {'CCBOARD_MEM_VIEWER_URL': value})
+    assert answer.status_code == 400
+    assert 'HTTPS' in answer.text or 'credentials' in answer.text
+    assert not board[1].page_file.exists()
 
 
 @pytest.mark.parametrize('value', ['0.5', '0', '-1', '1e20', '10000', 'nan', 'inf'])
@@ -144,10 +166,10 @@ def test_doctor_node_name_fix_names_its_source(board, monkeypatch, source):
     assert ('in Settings > Options' if source == 'page' else 'in /etc/ccboard/env') in str(result[2])
 
 
-def test_negative_integer_shows_bounds(board):
+def test_negative_number_shows_bounds(board):
     answer = put(board, {KEY: '-1'})
     assert answer.status_code == 400
-    assert answer.json()['reason'] == 'Use 0 to 999.'
+    assert answer.json()['reason'] == 'Use 0 to 86400.'
 
 
 @pytest.mark.parametrize('problem,reason', [
@@ -197,14 +219,14 @@ def test_round_trip_precedence_reset_and_pending(board, tmp_path, monkeypatch):
     assert stat.S_IMODE(settings.page_file.stat().st_mode) == 0o600
     assert json.loads(settings.page_file.read_text()) == {'version': 1, 'set': {KEY: '5'}}
     restarted = config.Settings(env)
-    assert restarted.node_lanes == 5 and restarted.sources[KEY] == 'page'
+    assert restarted.autoclose_grace == 5 and restarted.sources[KEY] == 'page'
     assert options.pending(settings, env) == [KEY]
     assert options.pending_state(settings)['count'] == 1 and main.BOOT == boot
     assert options.pending(restarted, env) == []
     reset = put(board, {KEY: None})
     assert reset.status_code == 200 and row(reset)['value'] == 3
     assert json.loads(settings.page_file.read_text())['set'] == {}
-    assert config.Settings(env).node_lanes == 3
+    assert config.Settings(env).autoclose_grace == 3
 
 
 def test_stamp_conflict_and_atomic_failure(board, monkeypatch):
@@ -237,13 +259,13 @@ def test_race_during_write_leaves_newer_file(board, monkeypatch):
 
 
 @pytest.mark.parametrize('key,value', [
-    (KEY, '1000'), (KEY, '-1'), (KEY, 'no'), (KEY, '1.5'),
+    (KEY, '86401'), (KEY, '-1'), (KEY, 'no'), (KEY, 'nan'),
     ('CCBOARD_AUTOCLOSE_GRACE', '86400'), ('CCBOARD_AUTOCLOSE_GRACE', 'inf'),
     ('CCBOARD_EPIC_LEASE_MIN', '9'), ('CCBOARD_EPIC_MAX_WINDOW_PCT', '101'),
-    ('CCBOARD_EPIC_WORKER_POLL', '29'), ('CCBOARD_EPIC_WORKER_MAX_PER_HOUR', '61'),
-    ('CCBOARD_EPIC_WORKER_MAX_PER_DAY', '501'), ('CCBOARD_NODES_POLL', '4'),
-    ('CCBOARD_NODE_PORTS', '443,bad'), ('CCBOARD_NODE_PORTS', '1,2,3,4,5,6,7,8,9'), ('CCBOARD_NODE_TAGS', 'invalid!tag'),
-    ('CCBOARD_SUBAGENT_MODEL', 'bad model'), ('CCBOARD_NODE_NAME', 'x' * 501),
+    ('CCBOARD_EPIC_WORKER_POLL', '29'),
+    ('CCBOARD_NODES_POLL', '4'),
+    ('CCBOARD_NODE_PORTS', '443,bad'), ('CCBOARD_NODE_PORTS', '1,2,3,4,5,6,7,8,9'),
+    ('CCBOARD_NODE_NAME', 'x' * 501),
     ('NTFY_TOPIC', 'https://user:fixture-secret-marker@example.invalid/'),
     ('NTFY_TOPIC', 'https://example.invalid/?token=fixture-secret-marker'),
     ('NTFY_TOPIC', 'fixture-secret-marker'), ('NTFY_TOPIC', 'line\nbreak'),
@@ -264,7 +286,7 @@ def test_validation_handles_future_page_kinds(kind, choices, value):
     assert options.validate_value(option, value, {})
 
 
-@pytest.mark.parametrize('key,reason', [('CCBOARD_HUB_TOKEN', 'file_only'), ('CCBOARD_PORT', 'installer'), ('CCBOARD_AUTO_CONTINUE', 'needs_confirm')])
+@pytest.mark.parametrize('key,reason', [('CCBOARD_HUB_TOKEN', 'file_only'), ('CCBOARD_PORT', 'installer'), ('CCBOARD_AUTO_CONTINUE', 'file_only')])
 def test_classes_cannot_write_or_load(board, key, reason, caplog):
     answer = put(board, {key: 'fixture-secret-marker'})
     assert answer.status_code == 403 and answer.json()['reason'] == reason
@@ -272,7 +294,7 @@ def test_classes_cannot_write_or_load(board, key, reason, caplog):
     board[1].page_file.write_text(json.dumps({'version': 1, 'set': {key: 'fixture-secret-marker', KEY: '5'}}))
     board[1].page_file.chmod(0o600)
     loaded = config.Settings(board[2])
-    assert loaded.sources[key] != 'page' and loaded.node_lanes == 5
+    assert loaded.sources[key] != 'page' and loaded.autoclose_grace == 5
     assert key in caplog.text and 'fixture-secret-marker' not in caplog.text
 
 
@@ -290,13 +312,13 @@ def test_bad_files_start_and_doctor_warns(board, monkeypatch, caplog, problem):
         path.symlink_to(target)
     else:
         path.write_text('x' * 65537 if problem == 'size' else '{' if problem == 'json' else
-                        '{"version":1,"set":{"CCBOARD_NODE_LANES":5}}' if problem == 'schema' else
+                        '{"version":1,"set":{"CCBOARD_AUTOCLOSE_GRACE":5}}' if problem == 'schema' else
                         '{"version":1,"set":{"CCBOARD_NODE_NAME":"https://u:fixture-secret-marker@example.invalid/"}}' if problem == 'credential' else data)
         path.chmod(0o644 if problem == 'mode' else 0o600)
         if problem == 'owner':
             monkeypatch.setattr(plat, 'current_uid', lambda: path.stat().st_uid + 1)
     loaded = config.Settings(env)
-    assert loaded.node_lanes == 3
+    assert loaded.autoclose_grace == 3
     monkeypatch.setattr(doctor, 'settings', loaded)
     assert doctor._c_settings_page(None)[0] == 'warn'
     count = len(caplog.records)
@@ -321,7 +343,7 @@ def test_audit_and_secrets(board, caplog):
     assert len(listing['audit']) == 1 and len(listing['refusals']) == 1
 
 
-def test_non_person_refusals_do_not_write_audit(board, caplog):
+def test_non_person_refusals_only_debug_log(board, caplog):
     from app import main, hooks, nodes, mcp_tokens
     headers = [{}, {'Tailscale-User-Login': 'alice'}, {**PERSON, 'Tailscale-User-Login': 'stranger'},
                {**PERSON, hooks.TOKEN_HEADER: hooks.ensure_token()}, {**PERSON, 'X-CCBoard-Hub': 'fixture-secret-marker'}]
@@ -335,12 +357,13 @@ def test_non_person_refusals_do_not_write_audit(board, caplog):
         for header in headers:
             assert board[0].put(URL, headers=header, json={'changes': {KEY: '5'}}).status_code in (401, 403)
     assert not board[1].page_file.exists()
-    assert nodes.audit_list(db=main.db, action='settings_refused') == []
+    anonymous = len(nodes.audit_list(100, db=main.db, action='settings_refused'))
+    assert anonymous == 0
     assert 'settings request refused' in caplog.text
     assert board[0].put(URL, headers={**PERSON, 'Origin': 'https://foreign.invalid'}, json={'changes': {KEY: '5'}}).status_code == 403
     assert put(board, {'CCBOARD_PORT': '8001'}).status_code == 403
     records = nodes.audit_list(db=main.db, action='settings_refused')
-    assert len(records) == 2 and all(r['user'] == 'alice' for r in records)
+    assert len(records) == anonymous + 2 and all(r['user'] == 'alice' for r in records[:2])
     assert URL not in str(nodes.NODE_ROUTES)
     assert board[0].put(URL, headers={**PERSON, 'Origin': 'http://testserver'}, json={'changes': {KEY: '5'}}).status_code == 200
 
@@ -366,19 +389,19 @@ def test_missing_file_leaves_existing_values_unchanged(tmp_path):
         if key not in {'_input_env', 'page_file'}:
             assert getattr(fresh, key) == value, key
     # A mapping with a data directory never discovers a real file implicitly.
-    (tmp_path / 'settings.page.json').write_text('{"version":1,"set":{"CCBOARD_NODE_LANES":"5"}}')
-    assert config.Settings({'CCBOARD_DATA_DIR': str(tmp_path)}).node_lanes == 3
+    (tmp_path / 'settings.page.json').write_text('{"version":1,"set":{"CCBOARD_AUTOCLOSE_GRACE":"5"}}')
+    assert config.Settings({'CCBOARD_DATA_DIR': str(tmp_path)}).autoclose_grace == 45
 
 
 def test_process_default_path_and_disabled_file(tmp_path, monkeypatch):
     monkeypatch.setenv('CCBOARD_DATA_DIR', str(tmp_path))
     monkeypatch.delenv('CCBOARD_PAGE_FILE', raising=False)
     path = tmp_path / 'settings.page.json'
-    path.write_text('{"version":1,"set":{"CCBOARD_NODE_LANES":"5"}}')
+    path.write_text('{"version":1,"set":{"CCBOARD_AUTOCLOSE_GRACE":"5"}}')
     path.chmod(0o600)
-    assert config.Settings().node_lanes == 5
+    assert config.Settings().autoclose_grace == 5
     monkeypatch.setenv('CCBOARD_PAGE_FILE', '')
-    assert config.Settings().node_lanes == 3
+    assert config.Settings().autoclose_grace == 45
 
 
 def test_body_limits_and_audit_window(board):
@@ -407,7 +430,7 @@ def test_state_reports_pending_and_simulated_boot(board, monkeypatch):
     assert put(board, {KEY: '5'}).status_code == 200
     after = board[0].get('/api/state', headers=PERSON).json()
     assert after['settings_pending']['count'] == 1 and after['boot'] == before['boot']
-    assert after['settings_pending']['labels'] == ['Task lanes']
+    assert after['settings_pending']['labels'] == ['Auto-close grace']
     monkeypatch.setattr(main, 'settings', config.Settings(board[2]))
     monkeypatch.setattr(main, 'BOOT', {'id': 'simulated-next-boot', 'at': before['boot']['at']})
     restarted = board[0].get('/api/state', headers=PERSON).json()
@@ -443,17 +466,17 @@ def test_audit_keeps_every_key_in_a_batch(board):
 def test_listing_never_pairs_an_old_value_with_a_new_stamp(board, monkeypatch):
     real = options.next_settings
     changed = False
-    def during_read(settings, env=None):
+    def during_read(settings, env=None, **kwargs):
         nonlocal changed
-        old = real(settings, env)
+        old = real(settings, env, **kwargs)
         if not changed:
             changed = True
-            plat.secure_write(settings.page_file, b'{"version":1,"set":{"CCBOARD_NODE_LANES":"8"}}', 0o600)
+            plat.secure_write(settings.page_file, b'{"version":1,"set":{"CCBOARD_AUTOCLOSE_GRACE":"8"}}', 0o600)
         return old
     monkeypatch.setattr(options, 'next_settings', during_read)
     listing = board[0].get(URL, headers=PERSON).json()
     assert put(board, {KEY: '5'}, stamp=listing['stamp']).status_code == 409
-    assert config.Settings(board[2]).node_lanes == 8
+    assert config.Settings(board[2]).autoclose_grace == 8
 
 
 def test_deep_json_is_refused_without_breaking_startup_or_audit(board, caplog):
@@ -461,7 +484,7 @@ def test_deep_json_is_refused_without_breaking_startup_or_audit(board, caplog):
     nested = '[' * 2000 + '0' + ']' * 2000
     path.write_text(nested)
     path.chmod(0o600)
-    assert config.Settings(board[2]).node_lanes == 3
+    assert config.Settings(board[2]).autoclose_grace == 3
     assert 'ignoring settings.page.json' in caplog.text
     assert board[0].put(URL, headers=PERSON, content=nested).status_code == 400
 

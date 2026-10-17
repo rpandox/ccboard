@@ -2,6 +2,13 @@
 
 Working rules: one phase at a time; each item is one commit; tick items as they land.
 
+## v0.5.83 - Settings widening (P4)
+
+- [x] File-only master switch, exact typed phrases, atomic comparison, worker prerequisites and redacted audit.
+- [x] File/installer access controls pinned; worker caps, node lanes and subagent model require confirmation and ignore legacy page entries.
+- [x] Native dialog, opt-in chip, demo behavior, Doctor notes and trust-boundary tests.
+- [x] Local demo screenshots at 1280, 1024 coarse and 390 coarse: disabled/enabled confirmation and the header chip; no horizontal overflow, 44 px touch buttons.
+
 ## v0.5.78 - Restart board (P3)
 
 - [x] Person-only restart route, runtime-specific board commands, readiness warnings, persistent minute limit and audit.
@@ -15,7 +22,7 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 - [x] Person-only saves for the page class, startup validation, private atomic overrides and stale-tab conflicts.
 - [x] Save and refusal audit, running versus next-start values, boot identity and pending banners on Options and Home.
 - [x] Inline editors, reset to file, demo controls and the settings-page doctor check.
-- [ ] P4: typed confirmation and file-only master switch for widening options.
+- [x] P4: typed confirmation and file-only master switch for widening options.
 
 ## v0.5.71 - Settings option registry (P1)
 

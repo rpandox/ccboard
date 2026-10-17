@@ -15,7 +15,21 @@ async function world(fixture = FX) {
   await settle();
   return w;
 }
-const row = (w, key = 'CCBOARD_NODE_LANES') => page(w).querySelector('[data-key=' + key + ']');
+const row = (w, key = 'CCBOARD_AUTOCLOSE_GRACE') => page(w).querySelector('[data-key=' + key + ']');
+
+test('the memory dashboard URL can be saved from Options', async () => {
+  const w = await world();
+  const key = 'CCBOARD_MEM_VIEWER_URL';
+  const value = 'https://memory.example.ts.net:8446/';
+  assert.ok(row(w, key));
+  button(row(w, key), 'Edit').click();
+  row(w, key).querySelector('.set-option-input').value = value;
+  button(row(w, key), 'Save').click();
+  await settle();
+  assert.deepEqual(calls(w).filter(c => c.method === 'PUT'), [
+    { method: 'PUT', path: '/api/settings/options', body: { changes: { [key]: value }, stamp: FX.stamp } },
+  ]);
+});
 
 test('recent saves and refusals have separate sections', async () => {
   const fx = structuredClone(FX);
@@ -37,14 +51,14 @@ for (const [kind, choices, selector] of [
 ]) {
   test(`${kind} with ${choices?.length || 0} choices gets the right editor`, async () => {
     const fx = structuredClone(FX);
-    Object.assign(fx.options.find(o => o.key === 'CCBOARD_NODE_LANES'), { kind, choices });
+    Object.assign(fx.options.find(o => o.key === 'CCBOARD_AUTOCLOSE_GRACE'), { kind, choices });
     const w = await world(fx);
     button(row(w), 'Edit').click();
     assert.ok(row(w).querySelector(selector));
     if (kind === 'int' || kind === 'float') {
       const input = row(w).querySelector(selector);
       assert.equal(input.getAttribute('min'), '0');
-      assert.equal(input.getAttribute('max'), '999');
+      assert.equal(input.getAttribute('max'), '86400');
       assert.equal(input.getAttribute('step'), kind === 'int' ? '1' : 'any');
     }
   });
@@ -61,25 +75,25 @@ test('Save sends only the changed key and the loaded stamp; unchanged saves do n
   button(row(w), 'Save').click();
   await settle();
   const writes = calls(w).filter(c => c.method === 'PUT');
-  assert.deepEqual(writes, [{ method: 'PUT', path: '/api/settings/options', body: { changes: { CCBOARD_NODE_LANES: '7' }, stamp: FX.stamp } }]);
+  assert.deepEqual(writes, [{ method: 'PUT', path: '/api/settings/options', body: { changes: { CCBOARD_AUTOCLOSE_GRACE: '7' }, stamp: FX.stamp } }]);
 });
 
 test('the real API sends the CSRF header and preserves server errors', async () => {
   const w = makeWorld(); w.load('core.js');
   let got;
   w.ctx.fetch = async (url, opts) => { got = opts; return { ok: true, json: async () => ({}) }; };
-  await w.run('api("PUT", "/api/settings/options", {changes:{CCBOARD_NODE_LANES:"5"}})');
+  await w.run('api("PUT", "/api/settings/options", {changes:{CCBOARD_AUTOCLOSE_GRACE:"5"}})');
   assert.equal(got.headers['X-CCBoard'], '1');
 });
 
 test('400 keeps typed input and shows the board sentence next to the row', async () => {
   const w = await world();
-  w.ctx.__answers['/api/settings/options'] = () => { const e = new Error('bad'); e.status = 400; e.body = { key: 'CCBOARD_NODE_LANES', reason: 'Use 0 to 999.' }; throw e; };
+  w.ctx.__answers['/api/settings/options'] = () => { const e = new Error('bad'); e.status = 400; e.body = { key: 'CCBOARD_AUTOCLOSE_GRACE', reason: 'Use 0 to 86400.' }; throw e; };
   button(row(w), 'Edit').click();
   const input = row(w).querySelector('.set-option-input'); input.value = '1000';
   button(row(w), 'Save').click(); await settle();
   assert.equal(input.value, '1000');
-  assert.equal(text(row(w).querySelector('.set-option-error')), 'Use 0 to 999.');
+  assert.equal(text(row(w).querySelector('.set-option-error')), 'Use 0 to 86400.');
   assert.equal(button(row(w), 'Save').disabled, false);
 });
 
@@ -92,7 +106,7 @@ test('conflict reloads, reset sends null, Cancel closes and only one editor is o
   assert.equal(page(w).querySelectorAll('.set-option-editor').length, 0);
   button(row(w), 'Edit').click();
   button(row(w), "Use the file's value").click(); await settle();
-  assert.deepEqual(calls(w).find(c => c.method === 'PUT').body.changes, { CCBOARD_NODE_LANES: null });
+  assert.deepEqual(calls(w).find(c => c.method === 'PUT').body.changes, { CCBOARD_AUTOCLOSE_GRACE: null });
   w.ctx.__answers['/api/settings/options'] = ({ method }) => { if (method === 'GET') return FX; const e = new Error('changed'); e.status = 409; throw e; };
   button(row(w), 'Edit').click(); row(w).querySelector('.set-option-input').value = '6';
   button(row(w), 'Save').click(); await settle();
@@ -104,26 +118,26 @@ test('read-only classes have no editor and pending rows compare values', async (
   const w = await world();
   for (const key of ['CCBOARD_HUB_TOKEN', 'CCBOARD_PORT', 'CCBOARD_AUTO_CONTINUE']) assert.equal(button(row(w, key), 'Edit'), undefined);
   assert.match(text(row(w)), /saved, needs restart/);
-  assert.match(text(row(w)), /running .*next start 5/);
+  assert.match(text(row(w)), /running .*next start 50/);
 });
 
 test('Home pending callout names registry labels, limits the list, and separates the copyable restart command', async () => {
   const st = fakeState();
-  st.settings_pending = { count: 1, keys: ['CCBOARD_NODE_LANES'], labels: ['Task lanes'], restart_hint: FX.restart_hint };
+  st.settings_pending = { count: 1, keys: ['CCBOARD_AUTOCLOSE_GRACE'], labels: ['Auto-close grace'], restart_hint: FX.restart_hint };
   const { w } = homeWorld({ state: st });
   w.location.hash = '#/';
   await settle();
   const banner = () => page(w).querySelector('.home-settings-pending');
   assert.ok(banner().classList.contains('bp5-callout'));
   assert.ok(banner().classList.contains('bp5-intent-warning'));
-  assert.equal(text(banner().querySelector('p')), 'A saved setting waits for a restart: Task lanes.');
+  assert.equal(text(banner().querySelector('p')), 'A saved setting waits for a restart: Auto-close grace.');
   assert.doesNotMatch(text(banner()), /Saved\.|CCBOARD_/);
   assert.equal(text(banner().querySelector('.doc-cmdline code')), FX.restart_hint);
   assert.ok(banner().querySelector('.doc-cmdline .copy-btn'));
   assert.equal(banner().querySelector('a').getAttribute('href'), '#/settings?sec=options');
   assert.equal(text(banner().querySelector('a')), 'Open Settings > Options');
-  w.run('state.settings_pending = {count:5, labels:["Task lanes", "Node name", "Task model", "Fourth", "Fifth"], restart_hint:"new restart"}; updateCurrentPage(state)');
-  assert.equal(text(banner().querySelector('p')), 'Saved settings wait for a restart: Task lanes, Node name, Task model and 2 more.');
+  w.run('state.settings_pending = {count:5, labels:["Auto-close grace", "Node name", "Task model", "Fourth", "Fifth"], restart_hint:"new restart"}; updateCurrentPage(state)');
+  assert.equal(text(banner().querySelector('p')), 'Saved settings wait for a restart: Auto-close grace, Node name, Task model and 2 more.');
   assert.doesNotMatch(text(banner()), /Fourth|Fifth/);
   assert.equal(text(banner().querySelector('code')), 'new restart');
   w.run('state.settings_pending = {count:0}; updateCurrentPage(state)');
@@ -137,7 +151,7 @@ test('Options pending callout uses labels and one separate command; without pend
   assert.equal(p.firstChild, banner);
   assert.ok(banner.classList.contains('bp5-callout'));
   assert.ok(banner.classList.contains('bp5-intent-warning'));
-  assert.match(text(banner.querySelector('p')), /restart: Task lanes\./);
+  assert.match(text(banner.querySelector('p')), /restart: Auto-close grace\./);
   assert.doesNotMatch(text(banner), /CCBOARD_/);
   assert.equal(text(banner.querySelector('.doc-cmdline code')), FX.restart_hint);
   assert.ok(banner.querySelector('.copy-btn'));
@@ -158,10 +172,10 @@ test('Options pending callout uses labels and one separate command; without pend
 test('demo saves and resets to the file value without a network write', async () => {
   const w = await world();
   w.ctx.demoApi = async () => structuredClone(FX);
-  const saved = await w.run('demoSettingsOptions({changes:{CCBOARD_NODE_LANES:"7"}})');
-  assert.equal(saved.options.find(o => o.key === 'CCBOARD_NODE_LANES').value, '7');
-  const reset = await w.run('demoSettingsOptions({changes:{CCBOARD_NODE_LANES:null}})');
-  const option = reset.options.find(o => o.key === 'CCBOARD_NODE_LANES');
+  const saved = await w.run('demoSettingsOptions({changes:{CCBOARD_AUTOCLOSE_GRACE:"7"}})');
+  assert.equal(saved.options.find(o => o.key === 'CCBOARD_AUTOCLOSE_GRACE').value, '7');
+  const reset = await w.run('demoSettingsOptions({changes:{CCBOARD_AUTOCLOSE_GRACE:null}})');
+  const option = reset.options.find(o => o.key === 'CCBOARD_AUTOCLOSE_GRACE');
   assert.equal(option.value, option.running);
   assert.equal(option.source, 'file');
   assert.equal(option.pending, false);

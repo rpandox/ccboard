@@ -1036,23 +1036,29 @@ def _c_ccusage(db) -> Outcome:
 
 def _c_settings_page(db) -> Outcome:
     from .config import read_page_file
-    from .options import pending
+    from .options import live_widening, pending
     from . import restart
     via = restart.info()
     method = "\nrestart method: " + via["method"] + (" (" + via["why"] + ")" if via["why"] else "")
+    wider = live_widening(settings)
+    if wider:
+        method += "\nLive page values widen settings file/environment permissions: " + ", ".join(wider)
     info = {}
     read_page_file(settings.page_file, env=settings.raw, info=info)
     if info.get("problem"):
         return _warn("Page settings file " + info["problem"] + method)
     if info.get("ignored"):
-        return _warn("Ignored page options: " + ", ".join(info["ignored"]) + method)
+        count = info.get("ignored_widening", 0)
+        note = f"{count} saved widening values ignored while CCBOARD_PAGE_WIDEN is off; " if count else ""
+        return _warn(note + "Ignored page options: " + ", ".join(info["ignored"]) + method)
     try:
         age = time.time() - settings.page_file.stat().st_mtime if settings.page_file else 0
     except OSError:
         age = 0
     if age > 86400 and pending(settings):
         return _warn("Saved options have waited more than a day for a restart" + method, fix("Restart the board", plat.hint("restart", "ccboard")))
-    return _pass("Page settings file is absent or valid" + method)
+    note = "; Information: Settings can widen agent permissions (CCBOARD_PAGE_WIDEN=1)" if settings.page_widen else ""
+    return _pass("Page settings file is absent or valid" + note + method)
 
 
 def _c_identity(db) -> Outcome:
@@ -1973,8 +1979,13 @@ def _mem_viewer(db, ctx: dict) -> Outcome:
     """The optional claude-mem viewer on the tailnet (CCBOARD_MEM_HTTPS_PORT, issue #9). Not set: skip. Set: the worker has no sign-in of its
     own and its API can write, so a mapping that points at the current worker port is a warning that says who can reach it; a missing or
     stale mapping is a warning with the installer as the fix; a mapping that cannot be read is reported as unknown, never as healthy."""
+    if settings.mem_viewer_url_bad:
+        return _warn("CCBOARD_MEM_VIEWER_URL was rejected: use HTTPS, or HTTP on loopback, without credentials",
+                     fix("Correct or clear CCBOARD_MEM_VIEWER_URL in Settings > Options, then restart the board"))
     port = settings.mem_https_port
     if not port:
+        if settings.mem_viewer_url_override:
+            return _skip("CCBOARD_MEM_VIEWER_URL links to an existing dashboard; no local viewer mapping is needed (dashboard availability not checked)")
         return _skip("not set: the claude-mem worker is not exposed on the tailnet (CCBOARD_MEM_HTTPS_PORT is empty)")
     web = _mem_serve_web()
     if web is None:
