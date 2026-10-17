@@ -159,6 +159,12 @@ def test_fixture_matches_registry():
     assert [o["key"] for o in fixture["options"]] == [o.key for o in options.registry()]
     assert fixture["groups"] == [{"id": k, "label": v} for k, v in options.GROUPS]
     assert all(o["value"] is None for o in fixture["options"] if o["secret"])
+    lanes = next(o for o in fixture["options"] if o["key"] == "CCBOARD_NODE_LANES")
+    assert lanes["value"] == int(lanes["edit_value"])
+    assert lanes["line"] == "CCBOARD_NODE_LANES=" + lanes["edit_value"]
+    assert lanes["pending"] == (lanes["value"] != lanes["running"])
+    assert lanes["pending"] == (lanes["key"] in fixture["pending"])
+
 
 
 def test_existing_mcp_page_switch_is_reported(endpoint):

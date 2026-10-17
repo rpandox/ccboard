@@ -74,3 +74,12 @@ def test_pending_pairing_upgrade_explains_mixed_version_support():
     entry = next(e for e in _entries() if e["heading"].startswith("## v0.5.77 "))
     upgrade = next(line for line in entry["lines"] if line.startswith("Upgrade: "))
     assert "a new pairing between an updated and an older board still works" in upgrade.lower()
+
+
+def test_settings_widening_release_describes_added_switch_and_file_only_options():
+    entry = next(e for e in _entries() if e['heading'].startswith('## v0.5.83 '))
+    assert '### Added' in entry['lines']
+    bullets = [line for line in entry['lines'] if line.startswith('- ')]
+    assert len(bullets) <= 5
+    assert any('CCBOARD_PAGE_WIDEN' in line for line in bullets)
+    assert any('file-only' in line.lower() and 'CCBOARD_CODEX_HOOK_TRUST' in line and 'CCBOARD_NODE_TAGS' in line for line in bullets)

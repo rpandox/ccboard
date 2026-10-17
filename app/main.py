@@ -5273,14 +5273,14 @@ def api_settings_options(request: Request):
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
-def _settings_refused(key, reason, status=400, user=None):
+def _settings_refused(key, reason, status=400, user=None, **detail):
     from .options import safe_key
     key = safe_key(key, settings.raw)
     if user:
         nodes.audit("in", "", "settings_refused", False, f"{key or 'request'}: {reason}", user=user, target="settings", status="refused", db=db)
     else:
         log.debug("settings request refused without an identified allowed person")
-    return JSONResponse({"key": key, "reason": reason}, status_code=status, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"key": key, "reason": reason, **detail}, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 _restart_lock = threading.Lock()
@@ -5363,7 +5363,7 @@ async def api_settings_options_save(request: Request):
     except (ValueError, UnicodeError, RecursionError):
         return _settings_refused(None, "Use a JSON object with changes.", user=user)
     changes = body.get("changes") if isinstance(body, dict) else None
-    if (not isinstance(changes, dict) or not 1 <= len(changes) <= 20 or set(body) - {"changes", "stamp"}
+    if (not isinstance(changes, dict) or not 1 <= len(changes) <= 20 or set(body) - {"changes", "stamp", "confirm"}
             or ("stamp" in body and not isinstance(body["stamp"], str))):
         return _settings_refused(None, "Use 1 to 20 changes and an optional file stamp.", user=user)
     registry = {o.key: o for o in options.registry()}
@@ -5371,21 +5371,26 @@ async def api_settings_options_save(request: Request):
         option = registry.get(key)
         if option is None:
             return _settings_refused(key, "Choose a known option.", user=user)
-        if option.cls != "page" or option.secret:
-            reason = {"file": "file_only", "installer": "installer", "confirm": "needs_confirm"}.get(option.cls, "file_only")
+        if option.cls not in ("page", "confirm") or option.secret:
+            reason = {"file": "file_only", "installer": "installer"}.get(option.cls, "file_only")
             return _settings_refused(key, reason, 403, user)
         reason = options.validate_value(option, value, settings.raw) if value is not None else None
         if reason:
             return _settings_refused(key, reason, user=user)
     try:
-        detail = options.save(settings, changes, body.get("stamp"))
+        wider, detail = options.save(settings, changes, body.get("stamp"), confirm=body.get("confirm"))
+    except options.ChangeRefused as e:
+        if e.reason == "needs_confirm":
+            return JSONResponse({"key": None, "reason": e.reason, **e.detail}, status_code=e.status, headers={"Cache-Control": "no-store"})
+        detail = dict(e.detail)
+        return _settings_refused(detail.pop("key", None), e.reason, e.status, user, **detail)
     except plat.WriteRaced:
         return _settings_refused(None, "changed", 409, user)
     except ValueError as e:
         return _settings_refused(None, str(e), user=user)
     except OSError:
         return _settings_refused(None, "The page file could not be written.", 500, user)
-    nodes.audit("in", "", "settings_set", True, detail, user=user, target="settings", status="ok", db=db)
+    nodes.audit("in", "", "settings_widen" if wider else "settings_set", True, detail + ("; phrase typed" if wider else ""), user=user, target="settings", status="ok", db=db)
     response = api_settings_options(request)
     result = json.loads(response.body)
     result["saved"] = list(changes)
