@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.71 - 2026-10-17
+
+### Added
+- Settings > Options lists all startup options in nine groups, with values, defaults, sources, restart badges and a key or label filter.
+- One registry describes the options; the read-only API is for signed-in people, hides secrets and masks URL userinfo and credential query values in displayed values and copy lines.
+- Empty environment values report the default source; Linux silently skips service files it cannot safely inspect. Empty values use type-specific wording, with automatic behavior shown only where documented by the option.
+- The demo includes every group, and the settings tables record each option's editing class.
+
+Upgrade: nothing to do.
+
 ## v0.5.65 - 2026-10-17
 
 ### Added

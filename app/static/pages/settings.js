@@ -1,4 +1,4 @@
-/* ccboard settings page (#/settings[?sec=notify|nodes|team|box|doctor|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the Team panel (issue #197:
+/* ccboard settings page (#/settings[?sec=notify|nodes|team|box|options|doctor|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the Team panel (issue #197:
    the login this board acts as, the Team GitHub access rows of the Doctor and the per-repo "shared with my team" switches, drawn by team.js, a lazy bundle), the
    box health, the Doctor (v0.5.19: the checklist, pages/doctor.js), the agents (v0.5.19: a card each for Claude and Codex with version, login, hooks, the models the launcher offers,
    the doctor's checks and the sessions started outside the board; Log in leads to the Accounts add blocks), the subscription Accounts (v0.5.17b: label, email, plan, windows, last seen, Rename, and how to add another)
@@ -11,7 +11,7 @@
 'use strict';
 
 const SETTINGS_SECTIONS = [
-  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'team', label: 'Team' }, { id: 'box', label: 'Box' }, { id: 'doctor', label: 'Doctor' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
+  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'team', label: 'Team' }, { id: 'box', label: 'Box' }, { id: 'options', label: 'Options' }, { id: 'doctor', label: 'Doctor' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
 const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null, wantCx: false, vis: null, ext: null, extAsked: false, teamStop: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
 
@@ -41,6 +41,92 @@ function settingsKv(label, ...kids) {
 
 /* A section heading inside a panel: 13 px, upper case, dim. */
 function settingsHead(text) { return el('h2', { class: 'set-h', text }); }
+
+/* Options is a read-only startup snapshot, fetched only when its tab opens. */
+function settingsOptionsLink(group) {
+  return el('a', { href: buildHash('settings', {}, { sec: 'options', group }), text: 'see Options' });
+}
+
+function settingsOptionText(value, option) {
+  if (value === null || value === undefined || value === '') {
+    if (option.kind === 'bool') return 'off';
+    if (option.kind === 'choice' && option.default) return option.default;
+    return /\bempty\b[^.]*\bautomatic(?:ally)?\b/i.test(option.help || '') ? 'automatic' : 'empty';
+  }
+  if (typeof value === 'boolean') return value ? 'on (1)' : 'off (0)';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'empty';
+  return String(value);
+}
+
+function settingsOptionsPaint(p, data) {
+  p.textContent = '';
+  const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
+  p.append(el('p', { class: 'dim set-note', text: 'Read only. Startup values, with any existing page override shown.' }), filter);
+  if (data.restart_hint) p.append(el('p', { class: 'dim set-note', text: 'After changing startup options: ' + data.restart_hint }));
+  const sections = [];
+  const glyphs = { default: '○', file: '▤', environment: '◇', page: '▣' };
+  for (const group of data.groups) {
+    const section = el('details', { class: 'set-options-group', 'data-group': group.id });
+    section.open = !settingsPage.optionGroup || settingsPage.optionGroup === group.id;
+    section.append(el('summary', {}, settingsHead(group.label)));
+    const rows = [];
+    for (const option of data.options.filter((o) => o.group === group.id)) {
+      const chips = el('div', { class: 'set-chips' }, el('span', { class: 'badge', text: (glyphs[option.source] || '○') + ' ' + option.source }));
+      if (option.applies === 'restart') chips.append(el('span', { class: 'badge warn', text: 'needs restart' }));
+      if (option.cls === 'file' || option.cls === 'installer') chips.append(el('span', { class: 'badge', text: option.cls === 'file' ? 'file only' : 'install.sh' }));
+      const row = settingsKv(option.label,
+        el('span', { class: 'v', text: option.secret ? (option.set ? 'set (hidden)' : 'not set') : settingsOptionText(option.value, option) }),
+        el('span', { class: 'dim', text: 'default ' + (option.secret ? 'not set' : settingsOptionText(option.default, option)) }), chips,
+        el('span', { class: 'dim', text: option.help }));
+      row.classList.add('set-option');
+      row.setAttribute('data-key', option.key);
+      row.querySelector('.k').append(el('code', { class: 'mono set-option-key', text: option.key }));
+      if (option.problem) row.add(el('span', { class: 'warn', text: option.problem }));
+      if (option.cls === 'file' || option.cls === 'installer') {
+        row.add(el('code', { class: 'set-option-line', text: option.secret ? option.key + '=<value>' : option.line }));
+      }
+      section.append(row);
+      rows.push({ row, match: (option.key + ' ' + option.label).toLowerCase() });
+    }
+    p.append(section);
+    sections.push({ section, rows });
+  }
+  const empty = el('p', { class: 'dim hidden', role: 'status', text: 'No matching options.' });
+  p.append(empty, el('p', { class: 'dim set-note', text: String(data.other_lines || 0) + ' other lines in the settings file; their contents are not shown.' }));
+  const opened = sections.find(({ section }) => section.getAttribute('data-group') === settingsPage.optionGroup);
+  if (opened && typeof opened.section.scrollIntoView === 'function') opened.section.scrollIntoView({ block: 'start' });
+  filter.addEventListener('input', () => {
+    const term = filter.value.trim().toLowerCase();
+    let matches = 0;
+    for (const { section, rows } of sections) {
+      let count = 0;
+      for (const { row, match } of rows) {
+        const visible = match.includes(term);
+        row.classList.toggle('hidden', !visible);
+        if (visible) count++;
+      }
+      section.classList.toggle('hidden', !count);
+      section.open = term ? !!count : !settingsPage.optionGroup || section.getAttribute('data-group') === settingsPage.optionGroup;
+      matches += count;
+    }
+    empty.classList.toggle('hidden', !!matches);
+  });
+}
+
+function settingsOptions(p) {
+  p.textContent = '';
+  p.append(el('p', { class: 'dim', role: 'status', text: 'Loading options…' }));
+  const request = {};
+  p.ccOptionsRequest = request;
+  api('GET', '/api/settings/options').then((data) => {
+    if (settingsPage.refs && settingsPage.refs.panels.options === p && p.ccOptionsRequest === request) settingsOptionsPaint(p, data);
+  }, (err) => {
+    if (p.ccOptionsRequest !== request) return;
+    p.textContent = '';
+    p.append(el('p', { class: 'bad', role: 'alert', text: 'Could not load options: ' + err.message }),
+      el('button', { type: 'button', text: 'Retry', onclick: () => settingsOptions(p) }));
+  });
+}
 
 /* What to notify (v0.5.18): five switches stored on the box (kv notify_prefs through /api/notify/prefs) and an example of the notice each one
    sends, built by the same code that builds the real ones (GET answers {prefs, samples}). The panel is rebuilt on a minute tick: what was
@@ -1291,6 +1377,7 @@ function settingsTeamClose() {
 
 function settingsBox(p) {
   p.textContent = '';
+  p.append(settingsOptionsLink('agents'));
   const h = state.health;
   p.append(settingsHead('Host'));
   p.append(settingsKv('Box', el('span', { class: 'v', text: `${state.node_name || (h && h.host) || 'this box'}${state.user ? ' · ' + state.user : ''}` })));
@@ -1486,6 +1573,7 @@ function settingsExtRepaint() { if (settingsPage.refs && settingsPage.active ===
 
 function settingsAgents(p) {
   p.textContent = '';
+  p.append(settingsOptionsLink('safety'));
   settingsPage.ext = null;
   const c = state.claude || {};
   const ac = (state.agents && state.agents.claude) || {};
@@ -2712,10 +2800,11 @@ function settingsApp(p) {
 /* core.js / shell.js call renderAppPanel() when the browser hands over (or withdraws) the install prompt: rebuild the panel if the page is open. */
 function renderAppPanel() { settingsFill('app', true); }
 
-const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, team: (p) => settingsTeam(p), box: settingsBox, doctor: (p) => settingsDoctor(p), agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
+const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, team: (p) => settingsTeam(p), box: settingsBox, options: settingsOptions, doctor: (p) => settingsDoctor(p), agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
+  if (id === 'options') return settingsPage.optionGroup || 'all';
   const minute = Math.floor(Date.now() / 60000);                       // ages ("3h ago") move on, so the minute is part of the key
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, st.config && st.config.auto_continue, minute]);
   if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
@@ -2755,10 +2844,11 @@ function settingsFill(id, force) {
 function settingsShow(id) {
   const r = settingsPage.refs;
   if (!r) return;
+  const opening = settingsPage.active !== id;
   settingsPage.active = id;
   for (const sec of SETTINGS_SECTIONS) r.panels[sec.id].classList.toggle('hidden', sec.id !== id);
   r.tabs.set(id);
-  settingsFill(id, false);
+  settingsFill(id, id === 'options' && opening);
   if (id === 'nodes') settingsNdOpen();                              // opening the tab is the ask: one look, never a timer
   if (id === 'team') settingsTeamOpen(); else settingsTeamClose();     // the Team panel watches the board's team view only while it is the tab in front
   if (id === 'accounts') settingsAcctPatch();                       // a Log in tapped on another page starts the add flow here
@@ -2788,6 +2878,7 @@ registerPage('settings', {
   title: 'Settings',
   mount(root, route) {
     const active = settingsSecOf(route);
+    settingsPage.optionGroup = (route && route.query && route.query.group) || null;
     settingsPage.focus = (route && route.query && route.query.acct) || null;                    // ?acct=<key>: the account row to scroll to (the Accounts panel takes it once)
     const tabCtl = settingsTabs(active, (id) => navigate(buildHash('settings', {}, { sec: id }), { replace: true }));
     const panels = {};
@@ -2815,6 +2906,7 @@ registerPage('settings', {
   },
   update() { settingsFill(settingsPage.active, false); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
   onRoute(route) {
+    settingsPage.optionGroup = (route && route.query && route.query.group) || null;
     settingsPage.focus = (route && route.query && route.query.acct) || null;
     settingsShow(settingsSecOf(route));
     if (settingsPage.focus && settingsPage.active === 'accounts') settingsFill('accounts', true);           // already on the page: the rows are rebuilt so the focus finds its row

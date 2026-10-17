@@ -1079,9 +1079,9 @@ const renameBtn = (row) => row.querySelectorAll('button').find((b) => text(b) ==
 const openRename = (w, i = 0) => { renameBtn(acctRows(w)[i]).click(); return sheet(w); };
 const submitSheet = (w) => sheet(w).querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
 
-test('settings tabs: Team sits after Nodes (issue #197), Doctor after Box, Accounts after Agents and before App', () => {
+test('settings tabs: Team sits after Nodes (issue #197), Options after Box and Doctor after Options, Accounts after Agents and before App', () => {
   const w = acctWorld();
-  assert.deepEqual(page(w).querySelectorAll('.tab').map((t) => t.getAttribute('data-tab')), ['notify', 'nodes', 'team', 'box', 'doctor', 'agents', 'accounts', 'app']);
+  assert.deepEqual(page(w).querySelectorAll('.tab').map((t) => t.getAttribute('data-tab')), ['notify', 'nodes', 'team', 'box', 'options', 'doctor', 'agents', 'accounts', 'app']);
   assert.equal(page(w).querySelector('.tab[data-tab=accounts]').getAttribute('aria-selected'), 'true');
   assert.equal(acctPanel(w).classList.contains('hidden'), false);
 });
