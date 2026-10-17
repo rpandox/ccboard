@@ -817,6 +817,7 @@ function settingsNdPeerActions(rec, incoming) {
   const busy = settingsNdPeers.act[p.id];
   const wait = (word) => el('button', { class: 'danger', type: 'button', disabled: true, text: word });
   if (incoming) {
+    if (p.pendingUntil !== null) return [busy ? wait('Removing…') : confirmButton(`node-rv:${p.id}`, 'Remove', () => settingsNdRemove(p, true), false)];
     if (busy) return [wait('Revoking…')];
     const rv = confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false);
     return [rv, ...(!p.keyId || p.keySource === 'upgrade' ? [el('button', { type: 'button', text: 'Pair again', onclick: () => settingsNdCodeSheet(null) })] : [])];

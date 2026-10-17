@@ -1262,8 +1262,9 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
   const audit = await w.run('api("GET", "/api/nodes/audit?limit=50")');
   assert.deepEqual(asked, ['/static/demo/nodes.json', '/static/demo/nodes.json', '/static/demo/nodes.json']);
   assert.equal(list.nodes.length, 3);
-  assert.equal(list.pairs.length, 5, 'GET /api/nodes carries both lists like the board\'s');
-  assert.equal(pairs.pairs.length, 5);
+  assert.equal(list.pairs.length, 6, 'GET /api/nodes carries both lists like the board\'s');
+  assert.equal(pairs.pairs.length, 6);
+  assert.equal(pairs.pairs.filter((x) => x.pending_until).length, 1, 'the demo has one unfinished pairing (lab-mini, issue #260), for the screen to show');
   const old = pairs.pairs.find((x) => x.peer_id === 'p-build-box-old');
   assert.equal(old.superseded_by, 'p-build-box-new', 'the demo has one pair that a newer one replaced, for the screen to show');
   assert.equal(old.superseded_by_url, 'https://build-box.example.ts.net:8443');
@@ -1287,7 +1288,7 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
   const gone = plain(await w.run('api("DELETE", "/api/nodes/p-build-box", { also_revoke: ["p-build-box-old"] })'));
   assert.deepEqual(gone.auto_revoked, pv.auto.map(({ peer_id, name }) => ({ peer_id, name })));
   assert.deepEqual([gone.removed, gone.peer_notified, gone.also_revoked, gone.other_pairs.map((x) => x.peer_id)], [true, true, ['p-build-box-old'], ['p-build-box-claim']]);
-  assert.deepEqual(plain((await w.run('api("GET", "/api/nodes/pairs")')).pairs.map((x) => x.peer_id)), ['p-desk-pc', 'p-phone-board', 'p-build-box-claim'], 'the pair at its address and the ticked one went; the other stayed');
+  assert.deepEqual(plain((await w.run('api("GET", "/api/nodes/pairs")')).pairs.map((x) => x.peer_id)), ['p-desk-pc', 'p-phone-board', 'p-build-box-claim', 'p-lab-mini'], 'the pair at its address and the ticked one went; the other stayed (and the unfinished lab-mini pairing is untouched)');
   assert.deepEqual(plain((await w.run('api("GET", "/api/nodes")')).nodes.map((n) => n.peer_id)), ['p-alice-mac', 'demo-box-2']);
   const acts = plain((await w.run('api("GET", "/api/nodes/audit")')).rows.slice(0, 4).map((r) => r.action));
   assert.deepEqual(acts, ['unpair', 'unpair', 'paired', 'code_created'], 'each write left a row, newest first');
@@ -1876,4 +1877,30 @@ test('pair key states use glyphs and words, and upgrade pins offer Pair again', 
   assert.equal(view.keyState({}), '○ unkeyed, pair again');
   assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ peer signing key changed; remove its pair here first');
   assert.match(view.keyState({ last_error: 'own_key_changed' }), /this board.*signing key changed/);
+});
+
+
+test('pending incoming pair uses plain words, an expiry and Remove', async () => {
+  const { w, server } = pairWorld({ inn: [caller({ pending_until: iso(-600), last_seen: null })] });
+  await settle();
+  const row = incomingRows(w)[0];
+  assert.match(text(row), /Pairing with desk-pc not finished, expires in 10 min/);
+  assert.doesNotMatch(text(row), /unkeyed, pair again|The pair works/);
+  assert.ok(btn(row, 'Remove'));
+  assert.equal(btn(row, 'Revoke'), undefined);
+  assert.equal(btn(row, 'Pair again'), undefined);
+  btn(row, 'Remove').click();
+  await settle();
+  btn(incomingRows(w)[0], 'Confirm Remove').click();
+  await settle();
+  assert.equal(server.inn.length, 0);
+});
+
+
+test('pending outgoing refusal shows the explanation without a re-pair warning', async () => {
+  const message = 'the other board has not confirmed this pairing yet; pair again if it does not finish';
+  const { w } = pairWorld({ out: [peer({ last_error: message, needs_repair: false })] });
+  await settle();
+  assert.match(text(pairedRows(w)[0]), new RegExp(message));
+  assert.doesNotMatch(text(pairedRows(w)[0]), /re-pair needed|saved token stopped working/i);
 });
