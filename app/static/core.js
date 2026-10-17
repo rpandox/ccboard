@@ -341,6 +341,7 @@ async function demoApi(method, path, body) {
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
+  else if (bare === '/api/settings/options') name = 'options';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
   else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || bare === '/api/mcp/tokens' || /^\/api\/nodes\/[^/]+\/(agents|permissions|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
   else if (bare === '/api/nodes/auth') name = 'nodes-auth';   // Settings > Nodes > Device check (issue #136): one fixture, a state per ?authstate=

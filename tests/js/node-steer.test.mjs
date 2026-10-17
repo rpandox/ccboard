@@ -1139,7 +1139,7 @@ test('the first-paint files grew by a few bytes only: the steering code is in th
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   const scripts = [...html.matchAll(/<script[^>]*src="(\/static\/[^"]+)"/g)].map((m) => m[1]);
   const total = scripts.reduce((n, s) => n + fs.statSync(path.join(STATIC, s.slice('/static/'.length))).size, 0);
-  assert.ok(total <= 543000, `${total} bytes of script up front`);                  // 542500 until Home listed the other nodes' sessions (#82; one Home line, about 40 bytes; the rest is in the lazy hub bundle); 541500 until the queued-prompts chip (#79; about 900 bytes of the shared chip and its three call sites); 541000 until the Device check (#136) added its demo dispatch line (about 320 bytes; its demo answer and words are in the lazy settings bundle); 540000 until the epic worker (#157) added its demo dispatch line and its lazy bundle's line (about 540 bytes); 530000 until the epic view (#147) added its Epics switch hook, the #/epic/ address and a demo dispatch line (about 4 KB); the budget of record is tests/test_static_perf.py
+  assert.ok(total <= 543500, `${total} bytes of script up front`);                  // 543000 until Settings > Options (#239) added its demo dispatch line (about 30 bytes; the page itself is in the lazy settings bundle); 542500 until Home listed the other nodes' sessions (#82; one Home line, about 40 bytes; the rest is in the lazy hub bundle); 541500 until the queued-prompts chip (#79; about 900 bytes of the shared chip and its three call sites); 541000 until the Device check (#136) added its demo dispatch line (about 320 bytes; its demo answer and words are in the lazy settings bundle); 540000 until the epic worker (#157) added its demo dispatch line and its lazy bundle's line (about 540 bytes); 530000 until the epic view (#147) added its Epics switch hook, the #/epic/ address and a demo dispatch line (about 4 KB); the budget of record is tests/test_static_perf.py
   for (const f of ['nodes-hub.js', 'pages/node.js']) assert.ok(!html.includes(f));
   const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
   for (const name of ['permAnswer', 'sendPrompt', 'permsSync', 'sendKey']) assert.ok(!eager.includes(name), `${name} is not in the eager nodes.js`);
@@ -1171,4 +1171,35 @@ test('the audit-friendly cadence: a list already held is read again only when th
   await poll(w, { force: true });
   await flush(4);
   assert.equal(h.calls(/permissions$/).length, 4, 'a failed read is not repeated on the next beat');
+});
+
+test('terminal prompt cards preserve choices and answer only through permission_answer', async () => {
+  const p = { ...PERMS()[0], kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] };
+  const h = await steerWorld({ perms: [p], alone: true });
+  const { w } = h;
+  await go(w, '#/');
+  w.run('updateCurrentPage(state)');
+  await tick();
+  const card = cardOf(w, p.id);
+  assert.match(text(card), /terminal prompt/);
+  assert.ok(text(card).includes(p.summary));
+  assert.match(text(card), /2\. Yes · 4\. No/);
+  btn(card, 'Deny').click();
+  await flush();
+  assert.deepEqual(h.writes().map((c) => c.path), [`/api/nodes/build-box/permissions/${p.id}/deny`]);
+});
+
+test('an epic on a hub uses the same permission card for its task on that node', async () => {
+  const p = { ...PERMS()[0], kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] };
+  const h = await steerWorld({ perms: [p], alone: true });
+  const { w } = h;
+  w.load('pages/epic.js');
+  w.run(`Nodes.M.recs[0].state.tasks = [{ id: 71, tmux: 'shop--api--s1' }];
+    globalThis.__epChild = { task: { ref: 'build-box:71', node: 'build-box' } };
+    globalThis.__epPhase = epWorkPhaseNode(__epChild);
+    globalThis.__epPerm = epPermissionNode(epPermission(__epChild));`);
+  assert.match(text(w.get('__epPhase')), /waiting for a person/);
+  btn(w.get('__epPerm'), 'Allow').click();
+  await flush();
+  assert.deepEqual(h.writes().map((c) => c.path), [`/api/nodes/build-box/permissions/${p.id}/allow`]);
 });

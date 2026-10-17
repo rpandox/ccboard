@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import login_problem, nodes, projects, scheduler, team
+from . import login_problem, nodes, projects, scheduler, team, tasks as task_helpers
 from .config import settings
 from .db import iso
 
@@ -179,6 +179,7 @@ def _task_row(t: dict, keys: dict | None = None) -> dict:
     return {"id": t.get("id") if isinstance(t.get("id"), int) else None, "title": clean(t.get("title")), "phase": clean(t.get("phase") or "running", 20),
             "agent": clean(t.get("agent") or "claude", 20), "project": clean(t.get("project")), "repo": clean(t.get("repo")),
             "repo_slug": (keys or {}).get((t.get("project"), t.get("repo"))), "branch": clean(t.get("branch")), "tmux": clean(t.get("tmux_name")),
+            **({"failure_reason": clean(reason, 400)} if (reason := task_helpers.trust_failure(t)) else {}),
             "issue_ref": f"#{n}" if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None, "updated_at": clean(t.get("updated_at"), 40)}
 
 
@@ -234,7 +235,7 @@ def build(db, scan: dict) -> dict:
     keys = _repo_keys(projs)
     sess_all = [_session_row(p, r, s, keys) for p, r, s in _groups(projs)]
     sess_all = [s for s in sess_all if s["tmux"]]
-    needs = {"permissions": len(db.perm_pending()),
+    needs = {"permissions": len(scan["pending_permissions"] if "pending_permissions" in scan else db.perm_pending()),
              "input": sum(1 for s in sess_all if s["needs_you"] and s["state"] in ("waiting", "done")),
              "errors": sum(1 for s in sess_all if s["needs_you"] and s["state"] == "errored")}
     sess = sorted(sess_all, key=lambda s: s["state"] == "ended")             # stable: live sessions first, the scan's order inside each group
@@ -252,7 +253,8 @@ def build(db, scan: dict) -> dict:
         for r in (p.get("repos") or [])[:REPOS_MAX]:
             git = r.get("state") == "ok"
             repos.append({"name": clean(r.get("name")), "slug": repo_slug(r["path"]) if git and r.get("path") else None, "branch": clean(r.get("branch")),
-                          "dirty": r["dirty"] if isinstance(r.get("dirty"), bool) else None})
+                          "dirty": r["dirty"] if isinstance(r.get("dirty"), bool) else None,
+                          **({"claude_trust_warning": clean(r["claude_trust_warning"], 400)} if r.get("claude_trust_warning") else {})})
         if len(p.get("repos") or []) > REPOS_MAX:
             truncated = True
         plist.append({"name": clean(p.get("name")), "repos": repos})

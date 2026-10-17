@@ -548,9 +548,9 @@ function nhTaskRow(t) {
   return el('div', { class: 'nd-item nd-task', 'data-key': Ref.key({ kind: 'task', node: t.node, id: t.id }), 'data-phase': phase },
     el('span', { class: 'nd-g' }, el('span', { class: 'glyph', 'aria-hidden': 'true', text: ownKey(NH_PHASE, phase) ? NH_PHASE[phase] : '·' }), agentGlyph(nhAgent(t.agent))),
     el(href ? 'a' : 'span', { class: 'nd-name', href: href || null, text: title }), el('span', { class: 'dim nd-where', text: nhWhere(t) + (t.issue_ref ? ` ${t.issue_ref}` : '') }),
-    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: t.pending === 'starting' ? `Starting on ${Nodes.nameOf(t.node)}` : [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ') }));
+    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: t.failure_reason || (t.pending === 'starting' ? `Starting on ${Nodes.nameOf(t.node)}` : [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ')) }));
 }
-function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
+function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.failure_reason, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
 
 const NH_HOME_ROWS = 10;                                     // sessions of one node on Home before "Show all" (its node page)
 
@@ -1023,6 +1023,7 @@ Nodes.errText = function (err, handle, o) {
       const retry = typeof b.retry === 'number' && b.retry >= 0 && b.retry <= 86400 ? Math.max(1, Math.floor(b.retry)) : null;
       return `${nsSentence(own) || 'The session is busy.'} ${retry === null ? 'Waiting will not help.' : `Try again in ${nhAgo(retry)}.`}`;
     }
+    case 'changed': return 'The terminal prompt changed; nothing was sent. Refresh and check it again.';
     case 'answered': case 'expired': case 'gone': return NS_ANSWERS[reason];
     case 'not_found': return perm ? NS_ANSWERS.gone : `That session is gone from ${name}.`;
     case 'refused': return nsSentence(own) || NS_WIDE;
@@ -1142,7 +1143,8 @@ function nsCleanPerms(body) {
   for (const r of rows) {
     if (!r || typeof r !== 'object' || !Number.isSafeInteger(r.id) || r.id < 1 || !Ref.isTmux(r.tmux)) continue;
     out.push({ id: r.id, tmux: r.tmux, tool: typeof r.tool === 'string' && r.tool ? r.tool.slice(0, 60) : 'tool', summary: typeof r.summary === 'string' ? r.summary.slice(0, 300) : '',
-      since: typeof r.since === 'string' && !Number.isNaN(Date.parse(r.since)) ? r.since : null });
+      since: typeof r.since === 'string' && !Number.isNaN(Date.parse(r.since)) ? r.since : null,
+      ...(r.kind === 'terminal_prompt' ? { kind: r.kind, choices: Array.isArray(r.choices) ? r.choices.slice(0, 9).filter((c) => c && /^[1-9]$/.test(c.number) && typeof c.label === 'string').map((c) => ({ number: c.number, label: c.label.slice(0, 300) })) : [] } : {}) });
   }
   return out;
 }
@@ -1241,7 +1243,7 @@ Nodes.permAnswer = async function (card, decision) {
     return { ok: true };
   } catch (e) {
     const f = nsFail(e, card.node, 'perm');
-    const final = f.reason === 'answered' || f.reason === 'expired' || f.reason === 'gone' || f.reason === 'not_found';
+    const final = f.reason === 'changed' || f.reason === 'answered' || f.reason === 'expired' || f.reason === 'gone' || f.reason === 'not_found';
     P.st.set(key, { phase: final ? 'closed' : 'failed', decision: '', text: f.text, check: f.check || '', at: Date.now() });
     nsQuiet(f.text, final ? 'warn' : 'bad');
     Nodes.changed(false);
@@ -1260,7 +1262,7 @@ function nsSessionName(handle, tmux) {
   return String((row && row.session) || tmux);
 }
 
-function nsPermSig(c) { return JSON.stringify([c.key, c.stub, c.count, c.why, c.tool, c.summary, c.since && Math.floor(Date.parse(c.since) / 60000), c.phase, c.decision, c.text, !!c.lead, c.tmux, Math.floor(Date.now() / 60000), Nodes.sig({ node: c.node }), (Nodes.get(c.node) || {}).url, Nodes.TF.has(`${c.node}/${c.tmux}`)]); }
+function nsPermSig(c) { return JSON.stringify([c.key, c.stub, c.count, c.why, c.tool, c.summary, c.kind, c.choices, c.since && Math.floor(Date.parse(c.since) / 60000), c.phase, c.decision, c.text, !!c.lead, c.tmux, Math.floor(Date.now() / 60000), Nodes.sig({ node: c.node }), (Nodes.get(c.node) || {}).url, Nodes.TF.has(`${c.node}/${c.tmux}`)]); }
 
 /* The notice of a node whose requests cannot be answered from here: how many wait, why the buttons are off, and a way to answer on the node's own board. */
 function nsPermStub(c) {
@@ -1268,7 +1270,7 @@ function nsPermStub(c) {
   const name = rec ? nhName(rec) : c.node;
   const open = rec ? nhOpenLink(`Open on ${name}`, rec, '', 'btn small') : null;
   return el('div', { class: 'inbox-card nd-pcard nd-pstub attn', 'data-key': c.key },
-    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: 'permission' }), el('div', { class: 'ib-ctx', text: `${c.count} permission request${c.count === 1 ? ' is' : 's are'} waiting on ${name}.` })),
+    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: c.kind === 'terminal_prompt' ? 'terminal prompt' : 'permission' }), el('div', { class: 'ib-ctx', text: `${c.count} permission request${c.count === 1 ? ' is' : 's are'} waiting on ${name}.` })),
     el('div', { class: 'ib-sub' }, Nodes.chip(c.node)),
     Nodes.acts(Nodes.off('Allow', c.why), Nodes.off('Deny', c.why), open));
 }
@@ -1297,9 +1299,9 @@ function nsPermNode(c) {
   if (open) acts.append(open);
   acts.append(Nodes.termBtn(c.node, c.tmux, { cls: 'small' }));                                  // issue #144: its terminal, on the node itself
   return el('div', { class: 'inbox-card nd-pcard attn kind-permission' + (c.lead ? ' lead' : '') + (c.phase === 'closed' ? ' closed' : ''), 'data-key': c.key },
-    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: 'permission' }),
+    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: c.kind === 'terminal_prompt' ? 'terminal prompt' : 'permission' }),
       el('div', { class: 'ib-ctx mono', title: c.summary, text: c.summary || c.tool }),
-      el('div', { class: 'ib-extra' }, c.tool && !dup ? el('span', { class: 'ib-note dim', text: c.tool }) : null)),
+      el('div', { class: 'ib-extra' }, c.kind === 'terminal_prompt' ? el('span', { class: 'ib-note dim', text: (c.choices || []).map((x) => `${x.number}. ${x.label}`).join(' · ') }) : null, c.tool && !dup ? el('span', { class: 'ib-note dim', text: c.tool }) : null)),
     sub,
     c.text ? el('p', { class: 'nd-perr ' + (c.phase === 'closed' ? 'warn' : 'bad'), role: 'alert' }, c.text, c.check ? [' ', Nodes.checkLink(c.check)] : null) : null,
     acts);

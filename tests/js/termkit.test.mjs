@@ -3343,3 +3343,34 @@ test('#84 tune: OPTIONS carries an Auto-continue switch for Claude and Codex (ne
   sh.open(anchorAt(w), false);
   assert.equal(sh.root.querySelector('.tk-auto'), null, 'a shell has nothing to continue');
 });
+
+test('termPane terminal prompts offer only Allow and Deny, not a second hook handoff', () => {
+  const { w, kit } = paneWorld();
+  const host = w.document.createElement('div');
+  w.document.body.append(host);
+  const p = kit.termPane(SESS, { mode: 'tail' });
+  host.append(p.root);
+  p.update(paneRow({ pending: [{ id: 123, kind: 'terminal_prompt', summary: 'Bash command' }] }), {});
+  assert.ok(p.root.querySelector('[data-decision="tui"]').classList.contains('hidden'));
+  assert.equal(p.root.querySelector('[data-decision="allow"]').classList.contains('hidden'), false);
+  p.destroy();
+});
+
+
+test('tileMenu omits In terminal for terminal_prompt even if its caller supplies tui', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx({ perm: { pending: true, kind: 'terminal_prompt', summary: 'Bash command: git commit' } });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  assert.deepEqual(names(group(m.root, 'input')), ['Send a prompt…', 'Keys here', 'Allow', 'Deny']);
+});
+
+test('termPane shows the full capped terminal summary', () => {
+  const { w, kit } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'tail' });
+  w.document.body.append(p.root);
+  const summary = 'Bash command: ' + 'x'.repeat(286);
+  p.update(paneRow({ pending: [{ id: 123, kind: 'terminal_prompt', summary }] }), {});
+  assert.equal(p.root.querySelector('.tp-perm-text').textContent, summary);
+  p.destroy();
+});
