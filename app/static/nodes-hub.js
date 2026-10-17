@@ -184,6 +184,8 @@ Nodes.can = function (rec, scope) {
   const name = nhName(rec);
   if (rec.legacy) return { ok: false, why: `${name} was added without a token: pair it to act on it` };
   if (!(Array.isArray(rec.scopes) && rec.scopes.includes(scope))) return { ok: false, why: `needs the ${scope} scope on ${name}` };
+  if (rec.error_kind === 'clock') return { ok: false, why: 'Fix the clocks on both boards; signatures need them within 120 seconds' };
+  if (rec.error_kind === 'key_changed') return { ok: false, why: 'Key changed; remove the pair and pair again with a new code' };
   if (rec.status === 'unauthorized' || rec.needs_repair === true) return { ok: false, why: `${name} no longer takes this board's token: re-pair it in Settings, Nodes` };
   if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { ok: false, why: `This address now belongs to another device, not ${name}: remove it or pair again` };
   if (rec.status === 'unpaired') return { ok: false, why: `${name} answers as another node: remove it and pair it again` };
@@ -217,6 +219,10 @@ Nodes.apiWords = function (rec) {
 Nodes.hardNotice = function (rec) {
   if (!rec) return null;
   const name = nhName(rec);
+  if (rec.error_kind === 'clock') return { key: 'clock', cls: 'bad', repair: false, remove: false,
+    text: 'Fix the clocks on both boards. Signed calls need them within 120 seconds.' };
+  if (rec.error_kind === 'key_changed') return { key: 'key_changed', cls: 'bad', repair: true, remove: false,
+    text: '✕ Key changed. Remove this pair and pair again with a new code; compare the key ids.' };
   if (rec.status === 'unauthorized') return { key: 'unauthorized', cls: 'bad', repair: true, remove: false,
     text: `${name} removed this pairing, pair again. Its token was refused, so nothing can be sent to it until it is paired again.` };
   if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { key: 'identity_changed', cls: 'bad', repair: true, remove: true,

@@ -54,6 +54,8 @@ function nodeNotes(rec) {
 function nodeHeader(rec) {
   const v = Nodes.view(rec);
   const card = rec.card && typeof rec.card === 'object' ? rec.card : {};
+  const keyId = typeof rec.key_id === 'string' && /^[0-9a-f]{16}$/.test(rec.key_id) ? rec.key_id.match(/.{4}/g).join(' ') : '';
+  const keyState = rec.error_kind === 'key_changed' ? '✕ key changed, pair again' : rec.pubkey ? `✓ keyed (${['pairing', 'upgrade', 'rotation'].includes(rec.key_source) ? rec.key_source : 'upgrade'})` : '○ unkeyed, pair again';
   const os = NodeView.osName(card.os && (card.os.tailscale_os || card.os.system));
   const ver = (rec.state && rec.state.node && rec.state.node.version) || card.version;
   const facts = [os, ver ? `v${String(ver).replace(/^v/, '')}` : '', card.runtime || '', `handle ${rec.handle}`].filter(Boolean);
@@ -69,6 +71,7 @@ function nodeHeader(rec) {
       el('span', { class: 'nd-head-state' }, nhStatusLine(v),                     // the status and the skew chip stay together at the end of the line
         rec.skew_warn ? NodeView.chip(`clock off by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s`, 'warn', '!', 'This node\'s clock differs from this board\'s by more than 5 s, so ages from it may be off.') : null)),
     el('p', { class: 'dim nd-facts', text: facts.join(' · ') }),
+    el('p', { class: 'dim nd-note', text: keyState + (keyId ? ' · ' + keyId : '') }),
     plat.name ? el('div', { class: 'nd-plat' }, NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim nd-load', text: `Load: ${plat.load}` }),
       ...Nodes.platNotes(card, plat.name).map((t) => el('p', { class: 'dim nd-note', text: t }))) : null,
     ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', 'data-notice': n.key || null, text: n.text })), acts,

@@ -1035,7 +1035,7 @@ test('a pasted code in lower case with spaces, and a bare host name, are sent as
   assert.deepEqual(server.added, { url: 'https://node-b.example.ts.net:8443', code: CODE, both_ways: false });
 });
 
-test('a handle and both ways go with the request; success closes the sheet, clears the code, toasts, reads the lists again and returns the focus', async () => {
+test('a handle and both ways go with the request; success shows the key comparison, clears the code, toasts and reads the lists again', async () => {
   const { w, server } = pairWorld();
   await settle();
   const d = await openAdd(w);
@@ -1044,13 +1044,13 @@ test('a handle and both ways go with the request; success closes the sheet, clea
   submitForm(d);
   await settle();
   assert.deepEqual(server.added, { url: 'https://node-b.example.ts.net', code: CODE, handle: 'box-2', both_ways: true });
-  assert.equal(dlg(w), null);
-  assert.equal(text(d), '');
+  assert.ok(dlg(w));
+  assert.match(text(d), /Unkeyed\. Pair again/);
   assert.deepEqual(lastToast(w), { text: 'Paired with box-2.', kind: 'ok' });
   assert.equal(nodeCalls(w, 'GET').length, before + 3, 'the three lists are read again');
   assert.equal(pairedRows(w).length, 1);
   assert.match(text(pairedRows(w)[0].querySelector('.nd-chips')), /waiting for first contact/, 'Paired is said after the first read, not at saving');
-  assert.equal(w.document.activeElement, btn(panel(w), 'Add node'));
+
   assert.ok(!text(w.document.body).includes('K7Q2M'));
 });
 
@@ -1825,4 +1825,29 @@ test('demo mode: ?nodestate=repair plays the lost rotation and Update address is
   const ok = plain(await w.run("demoNodesWrite('POST', '/api/nodes/p-build-box/address', { url: 'https://build-box-2.example.ts.net:8443' }, {})"));
   assert.equal(ok.peer_id, 'p-build-box');
   assert.doesNotMatch(JSON.stringify([e.body, ok]), /ccbnode_/);
+});
+
+test('node keys show a grouped id, mode and date; Rotate key needs two taps', async () => {
+  const { w } = pairWorld({ over: { node: { ...CARD, key_mode: 'prefer', key: { alg: 'ed25519', id: '9f2c41aa07bed310', created_at: '2026-10-17' } } } });
+  await settle();
+  assert.match(text(panel(w)), /9f2c 41aa 07be d310/);
+  assert.match(text(panel(w)), /CCBOARD_NODE_KEYSprefer/);
+  assert.match(text(panel(w)), /Key created2026-10-17/);
+  assert.match(text(panel(w)), /lost or stolen key means Remove/);
+  btn(panel(w), 'Rotate key').click();
+  assert.equal(writes(w).length, 0);
+  btn(panel(w), 'Confirm Rotate key').click();
+  await settle();
+  assert.equal(nodeCalls(w, 'POST').filter((c) => c.path === '/api/nodes/key/rotate').length, 1);
+});
+
+test('pair key states use glyphs and words, and upgrade pins offer Pair again', async () => {
+  const { w } = pairWorld({ out: [peer({ pubkey: 'A'.repeat(43), key_id: '9f2c41aa07bed310', key_source: 'upgrade' })] });
+  await settle();
+  assert.match(text(pairedRows(w)[0]), /✓ keyed \(upgrade\).*9f2c 41aa 07be d310/);
+  assert.ok(btn(pairedRows(w)[0], 'Pair again'));
+  const view = w.get('NodeView');
+  assert.equal(view.keyState({ pubkey: 'A'.repeat(43), key_source: 'pairing' }), '✓ keyed (pairing)');
+  assert.equal(view.keyState({}), '○ unkeyed, pair again');
+  assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ key changed, pair again');
 });

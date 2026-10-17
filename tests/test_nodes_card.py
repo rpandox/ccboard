@@ -28,7 +28,7 @@ from tests.test_tasks_v2 import backlog, board, db  # noqa: F401 (board is a fix
 ID = {"Tailscale-User-Login": "alice@example.com"}
 H = {**ID, "X-CCBoard": "1"}
 HELLO_KEYS = {"app", "api", "node_id"}
-CARD_KEYS = {"app", "api", "node_id", "name", "url", "version", "os", "runtime", "owner_login", "owner_id", "now", "agents", "accounts", "lanes", "load", "sessions",
+CARD_KEYS = {"key", "key_mode", "app", "api", "node_id", "name", "url", "version", "os", "runtime", "owner_login", "owner_id", "now", "agents", "accounts", "lanes", "load", "sessions",
              "capabilities", "tailscale"}
 
 

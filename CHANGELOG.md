@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.73 - 2026-10-17
+
+### Added
+- Nodes keep a private Ed25519 key and pin public keys when pairing; signed calls reject tampering, replay and changed keys.
+- Settings shows key ids to compare and a two-tap Rotate key action; offline peers can catch up for 30 days.
+- Existing pairs keep working in prefer mode and can upgrade; Doctor names unkeyed pairs and checks key storage.
+
+Upgrade: nothing to do.
+
 ## v0.5.65 - 2026-10-17
 
 ### Added

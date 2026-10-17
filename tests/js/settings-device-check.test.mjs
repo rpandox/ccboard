@@ -51,7 +51,7 @@ test('the default is token: the mode in words, no banner, nothing about Tailscal
   const w = authWorld();
   await settle();
   assert.equal(text(auth(w, 'mode')), 'token');
-  assert.match(text(section(w)), /Pair token only\. The default\./);
+  assert.match(text(section(w)), /Pair token only\. The default device setting\. Node signatures still apply/);
   assert.equal(auth(w, 'banner'), null);
   assert.equal(auth(w, 'version'), null, 'the host is asked nothing in token mode');
   assert.match(text(section(w)), /The board asks Tailscale nothing in this mode\. Press Check/);

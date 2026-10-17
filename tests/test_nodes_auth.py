@@ -132,22 +132,35 @@ def test_every_scoped_row_refuses_a_pair_without_that_scope(board, method, path)
     assert any(x["action"] == "scope_refused" and x["target"] == f"{method} {path}" and x["status"] == "refused" for x in rows(db))
 
 
-def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets, fake_tmux):
+@pytest.mark.parametrize("signed", [False, True])
+def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets, fake_tmux, signed):
     """The walk: every route of the app, every method, with a token that holds all four scopes. Only NODE_ROUTES is answered by a handler; a route that is
     added later without a row is a 403 here by default. (tmux is the in-memory fake: the pane row looks for a session.)"""
     c, db = board
-    _, tok = mint(db, nodes.SCOPES)
+    pair, tok = mint(db, nodes.SCOPES)
+    if signed:
+        db.node_pair_update(pair["peer_id"], peer_pubkey=nodes.node_keys.public(), peer_node_id=nodes.node_id(), peer_key_source="pairing")
+    def request(method, path, **kw):
+        if signed:
+            h = kw["headers"]
+            h["X-CCBoard-Node"] = nodes.node_id()
+            h.update(nodes.node_keys.sign_headers(method, path, kw.get("content"), recipient_id=nodes.node_id(), token=tok,
+                                                  acting_user=h.get("X-CCBoard-Acting-User")))
+        return c.request(method, path, **kw)
     listed, closed = 0, 0
     for method, path in live_routes():
         if not path.startswith("/api/"):
             continue
+        if signed:
+            unsigned = c.request(method, concrete(path), headers=bearer(tok))
+            assert unsigned.status_code == 401 and unsigned.json()["reason"] == "signature_required", (method, path)
         if (method, path) in EXPECTED_NODE_ROUTES:
             listed += 1
             if EXPECTED_NODE_ROUTES[(method, path)] != nodes.SCOPE_ANY:             # rotate and unpair change the pair: their own tests call them
-                r = c.request(method, concrete(path), headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice"}))      # the steering rows need a named person; the others ignore it
+                r = request(method, concrete(path), headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice"}))      # the steering rows need a named person; the others ignore it
                 assert r.status_code == LISTED_STATUS.get((method, path), 200), (method, path, r.status_code)
             continue
-        r = c.request(method, concrete(path), headers=bearer(tok), content=b"{}" if method != "GET" else None)
+        r = request(method, concrete(path), headers=bearer(tok), content=b"{}" if method != "GET" else None)
         closed += 1
         assert r.status_code == 403 and r.json()["error"] == CLOSED, (method, path, r.status_code, r.text[:120])
     assert listed == len(EXPECTED_NODE_ROUTES) and closed > 100          # the walk saw the whole app, not a short list

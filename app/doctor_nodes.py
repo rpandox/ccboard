@@ -144,7 +144,11 @@ def _health_rows(regs: list[dict], recs: list[dict]) -> list[tuple[int, str, str
         rec = by_id.get(reg.get("peer_id")) or {}
         name = reg.get("name") or reg.get("handle") or "a node"
         status = rec.get("status")
-        if reg.get("needs_repair") or status == "unauthorized":
+        if rec.get("error_kind") == "clock" or reg.get("last_error") == "clock":
+            out.append((0, name, f"{name} refused the signature because the clocks differ by more than 120 seconds", SKEW_TEXT))
+        elif rec.get("error_kind") == "key_changed" or reg.get("last_error") == "key_changed":
+            out.append((0, name, f"{name} has a different signing key", "Remove the pair and pair again with a new code; compare the key ids"))
+        elif reg.get("needs_repair") or status == "unauthorized":
             out.append((0, name, f"{name} no longer takes this board's token (the pairing was removed there, or a rotation answer was lost)",
                         f"Open Settings > Nodes and press Re-pair on {name} (Remove, then Add node with a new code made on {name})"))
         elif status == "unpaired" and rec.get("error_kind") == "identity_changed":

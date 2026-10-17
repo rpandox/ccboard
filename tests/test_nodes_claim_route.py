@@ -247,7 +247,7 @@ def test_with_github_writes_off_on_the_node_nothing_reaches_gh_and_the_hub_says_
     [out] = audit(w.a, action="claim_issue")
     assert out["status"] == "failed" and "claim_refused" in out["detail"]
     [inn] = audit(w.b, action="claim_issue")
-    assert inn["direction"] == "in" and inn["status"] == "failed" and inn["detail"] == "claim_refused: writes_off" and inn["target"] == "claim acme/shop#205"
+    assert inn["direction"] == "in" and inn["status"] == "failed" and inn["detail"] == "verified; claim_refused: writes_off" and inn["target"] == "claim acme/shop#205"
 
 
 def test_an_issue_another_node_holds_is_taken_with_the_winners_alias_and_nothing_is_written(world):

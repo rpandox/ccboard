@@ -268,7 +268,7 @@ def test_with_writes_off_the_route_refuses_before_any_claim_task_or_gh_command(w
     assert w.b.db.tasks() == [] and w.two.tmux_b["created"] == [] and nodes_work.has_records(w.b.db) is False
     assert not [x for x in ran if x and isinstance(x[0], list) and x[0][:2] == ["git", "worktree"]], "no worktree was made"
     [inn] = audit(w.b, action="work_issue")
-    assert inn["status"] == "failed" and inn["detail"] == "work_refused: writes_off" and inn["target"] == "work acme/shop#201"
+    assert inn["status"] == "failed" and inn["detail"] == "verified; work_refused: writes_off" and inn["target"] == "work acme/shop#201"
 
 
 def test_the_library_refuses_first_when_writes_are_off(w, monkeypatch):
@@ -370,7 +370,7 @@ def test_a_repository_that_is_not_cloned_here_is_404_repo_not_here_and_no_claim_
     r = run_route(w)
     assert r.status_code == 404 and r.json()["reason"] == "repo_not_here" and w.gh.writes() == [] and w.gh.thread(f"{REPO}#201") == [], "no clone, no claim"
     assert w.b.db.tasks() == []
-    assert audit(w.b, action="work_issue")[0]["detail"] == "repo_not_here: repo_not_here"
+    assert audit(w.b, action="work_issue")[0]["detail"] == "verified; repo_not_here: repo_not_here"
 
 
 def test_what_a_peer_or_github_names_never_chooses_another_repository(w):

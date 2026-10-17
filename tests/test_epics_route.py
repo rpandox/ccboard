@@ -1030,7 +1030,7 @@ def test_run_on_two_boards_routes_to_the_node_that_holds_the_repository_and_the_
     assert w.two.tmux_b["created"] and not w.two.tmux_a["created"], "the sessions are on the node, never on the hub"
     first = v["assigned"]["201"]
     assert first["task_ref"].startswith(f"{w.h}:") and first["why"].startswith(f"chose {w.h}: ")
-    out = [r for r in w.a.db.node_audit_list(100) if r["direction"] == "out" and r["action"] != "paired"]
+    out = [r for r in w.a.db.node_audit_list(100) if r["direction"] == "out" and r["action"] not in ("paired", "key_pinned")]
     assert {r["action"] for r in out} == {"work_issue", "epic_route"} and all(r["user"] == "alice@example.com" for r in out)
     assert len([r for r in out if r["action"] == "epic_route"]) == len(v["assigned"])
 

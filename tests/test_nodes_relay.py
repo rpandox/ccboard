@@ -139,6 +139,17 @@ def token_of(two, row) -> str:
         return nodes._load_outgoing(row["peer_id"])
 
 
+def signed_get(two, reg, path, *, headers, **kw):
+    import httpx
+    with two.b.enter():
+        recipient = nodes.node_id()
+    with two.a.enter():
+        headers = {**headers, "X-CCBoard-Node": nodes.node_id()}
+        headers.update(nodes.node_keys.sign_headers("GET", httpx.URL(path).raw_path.decode(), None,
+                       recipient_id=recipient, token=headers["Authorization"][7:], acting_user=headers.get("X-CCBoard-Acting-User")))
+    return two.b.get(path, headers=headers, **kw)
+
+
 def audit_rows(board, **kw):
     return board.db.node_audit_list(500, **kw)
 
@@ -766,7 +777,7 @@ def test_a_tasks_detail_is_the_state_row_and_a_few_facts_and_never_the_prompt_or
     assert d["has_result"] is True and d["branch"] == "worktree-fix-it" and d["tmux"] == "shop--api--t-fix-it"
     assert PROMPT_MARKER not in r.text and "secret/path" not in r.text and "sess-uuid" not in r.text
     assert {"prompt", "result", "worktree", "claude_session_id"}.isdisjoint(d)
-    direct = two.b.get(f"/api/node/tasks/{tid}", owner=False, headers=bearer(token_of(two, reg)))
+    direct = signed_get(two, reg, f"/api/node/tasks/{tid}", owner=False, headers=bearer(token_of(two, reg)))
     assert direct.status_code == 200 and PROMPT_MARKER not in direct.text, "nor does the peer's own answer hold it"
 
 
@@ -780,7 +791,7 @@ def test_a_missing_task_is_404_and_a_bad_task_id_is_422_on_both_sides(hub):
     r = two.a.get(hub_path(BY["task"], reg["handle"], tid="1" * 13))
     assert r.status_code == 422 and count.seen == seen, "the hub refused it early"
     tok = token_of(two, reg)
-    r = two.b.get("/api/node/tasks/abc", owner=False, headers=bearer(tok))
+    r = signed_get(two, reg, "/api/node/tasks/abc", owner=False, headers=bearer(tok))
     assert r.status_code == 422, "and the peer does not trust the hub's check"
 
 
@@ -798,7 +809,7 @@ def test_the_pane_row_is_the_last_40_lines_with_control_characters_out_and_token
     d = r.json()["data"]
     assert r.status_code == 200 and d["name"] == name and d["cap"] == 40 and len(d["lines"]) == 40, len(d["lines"])
     assert d["lines"][-1] == "last line" and d["lines"][0].startswith("line 0")
-    direct = two.b.get(fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg))).json()
+    direct = signed_get(two, reg, fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg))).json()
     assert len(direct["lines"]) == 40 and direct["cap"] == 40, "the peer cuts the tail itself; the hub's cut is a second one"
     joined = "\n".join(d["lines"])
     assert tok not in joined and "[redacted]" in joined and SCREEN_MARKER in joined
@@ -822,8 +833,8 @@ def test_the_pane_row_takes_a_smaller_line_count_and_refuses_a_larger_one_or_any
     assert count.seen == seen, "the hub refused every one early"
     tok = token_of(two, reg)
     for q in ("?lines=41", "?lines=5&lines=6", "?cmd=ls"):
-        assert two.b.get(fill(BY["pane"].peer_path, name=name) + q, owner=False, headers=bearer(tok)).status_code == 422, "the peer refuses them itself"
-    assert len(two.b.get(fill(BY["pane"].peer_path, name=name) + "?lines=40", owner=False, headers=bearer(tok)).json()["lines"]) == 40
+        assert signed_get(two, reg, fill(BY["pane"].peer_path, name=name) + q, owner=False, headers=bearer(tok)).status_code == 422, "the peer refuses them itself"
+    assert len(signed_get(two, reg, fill(BY["pane"].peer_path, name=name) + "?lines=40", owner=False, headers=bearer(tok)).json()["lines"]) == 40
 
 
 def test_the_pane_row_refuses_a_session_that_is_not_there_a_bad_name_and_the_login_session(hub, fake_tmux):
@@ -834,7 +845,7 @@ def test_the_pane_row_refuses_a_session_that_is_not_there_a_bad_name_and_the_log
     r = two.a.get(hub_path(BY["pane"], reg["handle"], name="shop--api--nothere"))
     assert r.status_code == 404 and r.json()["reason"] == "not_found"
     for bad in ("_ccboard-login", "no_dashes", "a--b", "a--b--c--d", "a%20b--c--d"):
-        r = two.b.get(f"/api/node/sessions/{bad}/pane", owner=False, headers=bearer(tok))
+        r = signed_get(two, reg, f"/api/node/sessions/{bad}/pane", owner=False, headers=bearer(tok))
         assert r.status_code in (404, 422) and "CODE-123456" not in r.text, bad
     r = two.a.get(f"/api/nodes/{reg['handle']}/sessions/_ccboard-login/pane")
     assert r.status_code == 422 and "CODE-123456" not in r.text
@@ -960,11 +971,11 @@ def test_the_acting_user_is_a_claim_never_a_credential(hub):
     two, reg, count = hub
     tok = token_of(two, reg)
     for claim in ("root", "alice@example.com", "x" * 500, "bad\tuser"):
-        r = two.b.get("/api/node/agents", owner=False, headers=bearer(tok, **{"X-CCBoard-Acting-User": claim}))
+        r = signed_get(two, reg, "/api/node/agents", owner=False, headers=bearer(tok, **{"X-CCBoard-Acting-User": claim}))
         assert r.status_code == 200
     users = [x["user"] for x in audit_rows(two.b, action="read_agents")]
     assert len(users) == 4 and all(u.startswith("for ") and len(u) <= 68 and "\t" not in u for u in users)
-    r = two.b.get("/api/node/agents", owner=False, headers=bearer(nodes.TOKEN_PREFIX + "B" * 43, **{"X-CCBoard-Acting-User": "alice@example.com"}))
+    r = signed_get(two, reg, "/api/node/agents", owner=False, headers=bearer(nodes.TOKEN_PREFIX + "B" * 43, **{"X-CCBoard-Acting-User": "alice@example.com"}))
     assert r.status_code == 401, "naming an allowed login opens nothing"
 
 
@@ -1119,7 +1130,7 @@ def test_the_pane_row_redacts_every_shape_the_hook_token_and_the_hub_token_on_bo
     fake_tmux["screen"] = "\n".join(["$ env", *SECRETS.values(), f"hook {two.b.hook_token}", "hub HUBSECRET-0123456789", *(a + b for a, b in KV_SECRETS.values()),
                                        PEM, f"visible {SCREEN_MARKER}"])
     via_hub = two.a.get(hub_path(BY["pane"], reg["handle"], name=name))
-    direct = two.b.get(fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg)))
+    direct = signed_get(two, reg, fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg)))
     assert via_hub.status_code == direct.status_code == 200
     for blob in (via_hub.text, direct.text, json.dumps(audit_rows(two.a) + audit_rows(two.b)), caplog.text):
         for secret in planted:
@@ -1148,7 +1159,7 @@ def test_the_task_and_agents_rows_carry_nothing_beyond_what_read_promises(hub):
     assert set(task) == {"id", "title", "phase", "agent", "project", "repo", "branch", "tmux", "issue_ref", "updated_at", "slug", "mode", "base", "created_at",
                          "assigned_at", "done_at", "pr_number", "pr_state", "has_result"}, "a fixed list: no origin or login, no path, no session id"
     assert "carol@example.com" not in json.dumps(task)
-    direct = two.b.get(fill(BY["task"].peer_path), owner=False, headers=bearer(token_of(two, reg)))
+    direct = signed_get(two, reg, fill(BY["task"].peer_path), owner=False, headers=bearer(token_of(two, reg)))
     assert "carol@example.com" not in direct.text and "origin" not in direct.json()
     agents = two.a.get(hub_path(BY["agents"], reg["handle"])).json()["data"]
     assert set(agents) == {"agents"}
@@ -1176,10 +1187,10 @@ def test_path_parameters_are_checked_on_both_sides_before_use(hub, fake_tmux):
     bad_names = ["p--r--s%0A", "%EF%BD%90--r--s", "p--r", "p--r--s--t", "p%2F..--r--s", "p--r--s%00", "a%20b--c--d", "%E2%80%AE--r--s"]
     for t in bad_tids:
         assert two.a.get(f"/api/nodes/{reg['handle']}/tasks/{t}").status_code == 422, t
-        assert two.b.get(f"/api/node/tasks/{t}", owner=False, headers=bearer(tok)).status_code in (404, 422), t
+        assert signed_get(two, reg, f"/api/node/tasks/{t}", owner=False, headers=bearer(tok)).status_code in (404, 422), t
     for n in bad_names:
         assert two.a.get(f"/api/nodes/{reg['handle']}/sessions/{n}/pane").status_code in (404, 422), n       # a decoded slash is no route at all
-        assert two.b.get(f"/api/node/sessions/{n}/pane", owner=False, headers=bearer(tok)).status_code in (403, 404, 422), n
+        assert signed_get(two, reg, f"/api/node/sessions/{n}/pane", owner=False, headers=bearer(tok)).status_code in (403, 404, 422), n
     assert count.seen == seen, "the hub sent none of them"
 
 
@@ -1191,18 +1202,18 @@ def test_lines_is_one_or_two_plain_ascii_digits_from_1_to_40(hub, fake_tmux, val
     seen = count.seen
     r = two.a.get(hub_path(BY["pane"], reg["handle"], name=name) + "?lines=" + value.replace(" ", "%20"))
     assert r.status_code == 422 and count.seen == seen, (value, r.status_code)
-    assert two.b.get(fill(BY["pane"].peer_path, name=name) + "?lines=" + value.replace(" ", "%20"), owner=False, headers=bearer(token_of(two, reg))).status_code == 422
+    assert signed_get(two, reg, fill(BY["pane"].peer_path, name=name) + "?lines=" + value.replace(" ", "%20"), owner=False, headers=bearer(token_of(two, reg))).status_code == 422
 
 
 def test_text_a_caller_makes_up_is_capped_and_cleaned_before_it_reaches_an_answer_or_an_audit_row(hub, fake_tmux):
     two, reg, count = hub
     tok = token_of(two, reg)
     key = "k" * 400 + "%07" + "ccbnode_" + "Z" * 43
-    r = two.b.get(fill(BY["pane"].peer_path) + f"?{key}=1", owner=False, headers=bearer(tok))
+    r = signed_get(two, reg, fill(BY["pane"].peer_path) + f"?{key}=1", owner=False, headers=bearer(tok))
     assert r.status_code == 422 and len(r.json()["error"]) <= 130 and "\x07" not in r.text and nodes.TOKEN_PREFIX not in r.text
     r = two.a.get(hub_path(BY["card"], reg["handle"]) + f"?{key}=1")
     assert r.status_code == 422 and len(r.json()["error"]) <= 130 and "\x07" not in r.text and nodes.TOKEN_PREFIX not in r.text
-    r = two.b.get("/api/node/tasks/%E2%80%AEevil" + "A" * 300, owner=False, headers=bearer(tok))
+    r = signed_get(two, reg, "/api/node/tasks/%E2%80%AEevil" + "A" * 300, owner=False, headers=bearer(tok))
     assert r.status_code == 422
     for board in (two.a, two.b):
         for row in audit_rows(board):

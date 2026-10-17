@@ -292,7 +292,7 @@
               "state": "errored",
               "state_at": "2026-10-03T00:12:00+00:00",
               "last_event": "StopFailure",
-              "last_message": "5-hour limit reached · resets 6:25am",
+              "last_message": "5-hour limit reached \u00b7 resets 6:25am",
               "last_prompt": "do it",
               "stats": {
                 "model": "Fable 5.1",
@@ -809,7 +809,7 @@
       "installed": true,
       "version": "2.1.288",
       "loggedIn": true,
-      "glyph": "◆",
+      "glyph": "\u25c6",
       "hooks": {
         "installed": true
       },
@@ -821,7 +821,7 @@
       "version": "0.58.0",
       "loggedIn": true,
       "authMethod": "chatgpt",
-      "glyph": "◇",
+      "glyph": "\u25c7",
       "hooks": {
         "installed": true,
         "trust": "review"
@@ -2323,17 +2323,51 @@
     "name": "box",
     "url": "https://box.example.ts.net",
     "version": "0.5.29",
-    "os": {"system": "Linux", "release": "6.8.0-demo", "tailscale_os": "linux"},
+    "os": {
+      "system": "Linux",
+      "release": "6.8.0-demo",
+      "tailscale_os": "linux"
+    },
     "runtime": "systemd",
     "owner_login": "alice",
     "owner_id": 1001,
     "now": "2026-10-03T03:00:00.000+00:00",
-    "lanes": {"cap": 3, "running": 1, "free": 2},
-    "load": {"load1": 1.32, "cores": 8, "cpu_pct": 18.4, "mem_pct": 43.1, "disk_pct": 41.2},
-    "sessions": {"live": 8, "working": 1, "needs_you": 4},
-    "capabilities": ["state", "tasks", "sessions", "stream"],
-    "tailscale": {"dns_name": "box.example.ts.net", "tags": [], "user_owned": true},
-    "handle": "local"
+    "lanes": {
+      "cap": 3,
+      "running": 1,
+      "free": 2
+    },
+    "load": {
+      "load1": 1.32,
+      "cores": 8,
+      "cpu_pct": 18.4,
+      "mem_pct": 43.1,
+      "disk_pct": 41.2
+    },
+    "sessions": {
+      "live": 8,
+      "working": 1,
+      "needs_you": 4
+    },
+    "capabilities": [
+      "state",
+      "tasks",
+      "sessions",
+      "stream"
+    ],
+    "tailscale": {
+      "dns_name": "box.example.ts.net",
+      "tags": [],
+      "user_owned": true
+    },
+    "handle": "local",
+    "key": {
+      "alg": "ed25519",
+      "pub": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "id": "648aa5c579fb30f3",
+      "created_at": "2026-10-17T00:00:00+00:00"
+    },
+    "key_mode": "prefer"
   },
   "claude_defaults": {
     "subagent_model": "inherit",
@@ -2342,7 +2376,7 @@
   "rate_limited": {
     "value": {
       "session": "petroit--api--s2",
-      "message": "5-hour limit reached · resets 6:25am",
+      "message": "5-hour limit reached \u00b7 resets 6:25am",
       "kind": "5h",
       "resets_at": 1791006000
     },
