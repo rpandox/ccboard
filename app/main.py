@@ -5977,6 +5977,9 @@ async def api_permission(request: Request):
 def api_permission_decide(pid: int, decision: str, request: Request):
     if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
         raise projects.BadRequest("decision must be allow, deny or tui")
+    # A person's answer only: the hook token is held by every agent session on this board, so an agent could otherwise approve its own request
+    # (the hub's relayed answer goes through peer_permission_answer, not this route).
+    _epic_person(request, "only a signed-in person can answer a permission request")
     row = db.perm_get(pid)
     if not row:
         raise projects.NotFound("no such permission request")

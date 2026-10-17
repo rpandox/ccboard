@@ -10,6 +10,13 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.65a - 2026-10-17
+
+### Fixed
+- Allow, Deny and In terminal for a permission request (`POST /api/permission/<id>/<decision>`) now answer only for a signed-in person, like the other routes that change what an agent may do. The local hook token, the hub, node tokens and MCP device tokens get `403`, and the request stays undecided. The phone notification buttons and the board's pages are unchanged (they act as the signed-in person); a hub's relayed answer keeps its own path and scope rules. Found in a review of #249.
+
+Upgrade: nothing to do.
+
 ## v0.5.65 - 2026-10-17
 
 ### Added
