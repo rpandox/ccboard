@@ -847,7 +847,7 @@ def serve(two, board, method, path, headers, body):
 
     def authed(need):
         a = h.get("authorization", "")
-        pair = nodes.verify_token(a[7:], ip="100.64.0.9") if a.startswith("Bearer ") else None
+        pair = nodes.verify_token(a[7:], ip="100.64.0.9", allow_pending=path == "/api/node/pair/ack") if a.startswith("Bearer ") else None
         if pair is None:
             return None, out(401, {"error": "bad token"})
         if not nodes.scope_ok(pair["scopes"], nodes.route_scope(method, path)):
@@ -859,7 +859,7 @@ def serve(two, board, method, path, headers, body):
         if "origin" in h or h.get("x-ccboard") != "1":
             return out(403, {"error": "refused"})
         try:
-            return out(200, nodes.handle_pair(j, "100.64.0.9"))
+            return out(200, nodes.handle_pair(j, "100.64.0.9", will_ack=h.get("x-ccboard-pair-ack") == "1"))
         except nodes.PairError as e:
             return out(e.status, e.payload(), {"retry-after": str(e.retry_after)} if e.retry_after else None)
     if (method, path) == ("POST", "/api/nodes/pair/confirm"):
@@ -868,6 +868,9 @@ def serve(two, board, method, path, headers, body):
     if (method, path) == ("GET", "/api/node"):
         pair, err = authed("read")
         return err or out(200, {"node_id": nodes.node_id(), "name": nodes.display_name(), "key": nodes.node_keys.card()})
+    if (method, path) == ("POST", "/api/node/pair/ack"):
+        pair, err = authed(None)
+        return err or out(200, nodes.acknowledge_pair(pair["peer_id"], j))
     if (method, path) == ("POST", "/api/node/rotate"):
         pair, err = authed(None)
         return err or out(200, {"token": nodes.rotate_token(pair["peer_id"])})
@@ -908,6 +911,11 @@ def a_in_flight(two, code, **extra) -> dict:
     with two.a.enter():
         nodes.begin_confirm(nodes.normalize_code(code), nonce, two.b.url)                 # A typed B's address
     return {"code": code, "node": claim_a(two), "confirm": nonce, **extra}
+
+
+def ack_pair(answer, reverse=None):
+    pending = nodes.verify_token(answer["token"], allow_pending=True)
+    return nodes.acknowledge_pair(pending["peer_id"], {"reverse": reverse} if reverse else {})
 
 
 def pair(two, scopes=("read", "tasks"), **kw):
@@ -967,7 +975,7 @@ def test_pairing_gives_a_token_that_reads_the_card_and_the_registry_rows_on_both
         assert inc["direction"] == "in" and inc["name"] == "node-a" and inc["url"] == pair2.a.url and inc["scopes"] == ["read", "tasks"]
         assert inc["callback_unverified"] is False and inc["last_seen"]
         assert nodes.code_status()["active"] is False
-    assert [c[1:] for c in pair2.log if c[0] == "node-a"][:2] == [("POST", "node-b", "/api/nodes/pair", 200), ("GET", "node-b", "/api/node", 200)]
+    assert [c[1:] for c in pair2.log if c[0] == "node-a"][:3] == [("POST", "node-b", "/api/nodes/pair", 200), ("POST", "node-b", "/api/node/pair/ack", 200), ("GET", "node-b", "/api/node", 200)]
     assert ("node-b", "POST", "node-a", "/api/nodes/pair/confirm", 200) in pair2.log                # B asked A to confirm the pairing
 
 
@@ -1090,13 +1098,16 @@ def test_a_callback_that_names_another_node_refuses_the_pair_and_revokes_it(pair
         assert "pair_refused" in {r["action"] for r in nodes.audit_list(20)}
 
 
-def test_an_unreachable_callback_pairs_with_the_flag_and_nothing_breaks(pair2):
+def test_an_unreachable_callback_stays_pending_until_ack(pair2):
     pair2.offline.add("node-a")                                                                   # A is the caller, and its address does not answer B
     with pair2.b.enter():
         code = nodes.create_code()["code"]
         me = claim_a(pair2)
-        r = nodes.handle_pair({"code": code, "node": me}, "100.64.0.9")
-        assert r["callback_unverified"] is True and nodes.verify_token(r["token"])
+        r = nodes.handle_pair({"code": code, "node": me}, "100.64.0.9", will_ack=True)
+        assert r["callback_unverified"] is True and nodes.verify_token(r["token"]) is None
+        assert nodes.peers() == []
+        pending = nodes.verify_token(r["token"], allow_pending=True)
+        nodes.acknowledge_pair(pending["peer_id"], {})
         (inc,) = nodes.peers()
         assert inc["callback_unverified"] is True
         assert "callback_unverified" in {x["action"] for x in nodes.audit_list(20)}
@@ -1163,8 +1174,8 @@ def test_both_ways_that_cannot_be_kept_still_pairs_one_way(pair2, monkeypatch):
         code = nodes.create_code()["code"]
         monkeypatch.setattr(nodes, "save_outgoing", lambda *a: (_ for _ in ()).throw(OSError("full")))
         r = nodes.handle_pair({"code": code, "node": claim_a(pair2),
-                               "reverse": {"token": nodes._new_token(), "scopes": ["read", "tasks"]}}, "100.64.0.9")
-        assert r["reverse"] is False and r["token"] and [p["direction"] for p in nodes.peers()] == ["in"]
+                               "reverse": {"token": nodes._new_token(), "scopes": ["read", "tasks"]}}, "100.64.0.9", will_ack=True)
+        assert r["reverse"] is False and r["token"] and nodes.peers() == []
 
 
 def test_both_ways_that_fails_to_pair_revokes_the_reverse_token(pair2):
@@ -1306,7 +1317,9 @@ def test_an_unverified_pair_claiming_a_paired_nodes_id_replaces_and_revokes_noth
         old_row = dict(pair2.b.db.node_pair_get(inc["peer_id"]))
         code = nodes.create_code()["code"]
         pair2.offline.add("node-a")                                          # the callback to the claimed address does not answer
-        r = nodes.handle_pair({"code": code, "node": {**claim_a(pair2), "name": "intruder"}}, "100.64.0.9")
+        r = nodes.handle_pair({"code": code, "node": {**claim_a(pair2), "name": "intruder"}}, "100.64.0.9", will_ack=True)
+        assert nodes.verify_token(r["token"]) is None
+        ack_pair(r)
         assert r["callback_unverified"] is True and nodes.verify_token(r["token"])
         ins = [p for p in nodes.peers() if p["direction"] == "in"]
         assert len(ins) == 2 and {p["callback_unverified"] for p in ins} == {False, True}
@@ -1322,13 +1335,16 @@ def test_a_verified_repair_of_the_same_node_replaces_the_old_pair(pair2):
         toks = []
         for _ in range(2):
             code = nodes.create_code()["code"]
-            toks.append(nodes.handle_pair(a_in_flight(pair2, code), "100.64.0.9")["token"])
+            answer = nodes.handle_pair(a_in_flight(pair2, code), "100.64.0.9")
+            ack_pair(answer)
+            toks.append(answer["token"])
         assert nodes.verify_token(toks[0]) is None and nodes.verify_token(toks[1])
         ins = [p for p in nodes.peers() if p["direction"] == "in"]
         assert len(ins) == 1 and ins[0]["callback_unverified"] is False
         code = nodes.create_code()["code"]
         pair2.offline.add("node-a")
         unverified = nodes.handle_pair({"code": code, "node": claim_a(pair2)}, "100.64.0.9")
+        ack_pair(unverified)
         assert nodes.verify_token(toks[1]) and nodes.verify_token(unverified["token"]), "and an unverified repair after it replaces nothing"
 
 
@@ -1337,11 +1353,12 @@ def test_the_reverse_token_of_an_unverified_pair_is_never_saved(pair2):
     with pair2.b.enter():
         code = nodes.create_code()["code"]
         rev = nodes._new_token()
-        r = nodes.handle_pair({"code": code, "node": claim_a(pair2), "reverse": {"token": rev, "scopes": ["read", "tasks"]}}, "100.64.0.9")
+        r = nodes.handle_pair({"code": code, "node": claim_a(pair2), "reverse": {"token": rev, "scopes": ["read", "tasks"]}}, "100.64.0.9", will_ack=True)
         assert r["callback_unverified"] is True and r["reverse"] is False and r["reverse_reason"] == "callback_unverified"
-        assert r["token"] and [p["direction"] for p in nodes.peers()] == ["in"], "no outgoing row was planted"
+        assert r["token"] and nodes.peers() == [], "no outgoing row was planted"
         assert rev.encode() not in files_text(pair2.b.data_dir), "the token is in no file and no database"
         assert nodes._read_tokens() == {}
+        ack_pair(r, {"token": rev, "scopes": ["read", "tasks"]})
         assert "reverse_dropped" in {x["action"] for x in nodes.audit_list(20)}
 
 
@@ -1359,8 +1376,10 @@ def test_a_verified_pair_keeps_its_reverse_token(pair2):
     with pair2.b.enter():
         code = nodes.create_code()["code"]
         rev = nodes._new_token()
-        r = nodes.handle_pair(a_in_flight(pair2, code, reverse={"token": rev, "scopes": ["read", "tasks"]}), "100.64.0.9")
+        r = nodes.handle_pair(a_in_flight(pair2, code, reverse={"token": rev, "scopes": ["read", "tasks"]}), "100.64.0.9", will_ack=True)
         assert r["callback_unverified"] is False and r["reverse"] is True and "reverse_reason" not in r
+        assert nodes.peers() == []
+        ack_pair(r, {"token": rev, "scopes": ["read", "tasks"]})
         (out,) = [p for p in nodes.peers() if p["direction"] == "out"]
         assert nodes._load_outgoing(out["peer_id"]) == rev
 
@@ -1490,6 +1509,7 @@ def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_en
     with pair2.b.enter():
         r = nodes.handle_pair(body, "100.64.0.9")
         assert r["callback_unverified"] is True and r["reverse"] is False and r["reverse_reason"] == "callback_unverified"
+        ack_pair(r, body["reverse"])
         (mine,) = [p for p in nodes.peers() if p["direction"] == "in" and p["peer_id"] != inc["peer_id"]]
         assert mine["callback_unverified"] is True and nodes.verify_token(r["token"])
         assert dict(pair2.b.db.node_pair_get(inc["peer_id"])) == before, "A's pair is untouched, not revoked"
@@ -1785,6 +1805,7 @@ def test_a_board_that_claims_another_nodes_id_from_its_own_address_cuts_none_of_
         r = nodes.handle_pair(body, "100.64.0.9")
         assert [s[1] for s in seen] == ["/api/nodes/pair/confirm"]
         assert r["callback_unverified"] is False, "M's address vouched for the id it claims, which is all the answer can say"
+        ack_pair(r)
         mine = [p for p in nodes.peers() if p["direction"] == "in" and p["url"] == M_URL]
         assert len(mine) == 1 and mine[0]["node_id"] == C_ID
         for keep in (c_in, other_port):
@@ -1978,3 +1999,149 @@ def test_unpair_incoming_keeps_the_outgoing_pair_at_another_address_and_says_so_
     real, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
     assert nodes.unpair_incoming(real["peer_id"], db=db) is True and nodes.peer(out["peer_id"], db) is None
     assert audit_actions(db).count("unpair_kept_outgoing") == 1, "a removal that kept nothing writes no 'kept' row"
+
+
+def test_legacy_caller_without_ack_keeps_both_pairs(two_nodes, clock):
+    a, b = two_nodes.a, two_nodes.b
+    with b.enter():
+        code = nodes.create_code()['code']
+    with a.enter():
+        me = nodes.own_claim()
+        back, back_token = nodes.add_incoming(db=a.db)
+        nonce = secrets.token_urlsafe(16)
+        progress = nodes.begin_confirm(nodes.normalize_code(code), nonce, b.url, me.get('pubkey'))
+        try:
+            answer = nodes.peer_call(b.url, 'POST', '/api/nodes/pair', body={
+                'code': code, 'node': me, 'confirm': nonce,
+                'reverse': {'token': back_token, 'scopes': ['read']}}).json
+        finally:
+            nodes.end_confirm(progress)
+        assert 'token' in answer, answer
+        assert answer.get('pending') is not True
+        a.db.node_pair_update(back['peer_id'], peer_node_id=answer['node']['id'], peer_url=b.url,
+                              peer_pubkey=answer['node'].get('pubkey'), peer_key_source='pairing')
+        out = nodes.put_peer({'url': b.url, 'node_id': answer['node']['id'], 'name': 'node-b', 'scopes': ['read']})
+        nodes.save_outgoing(out['peer_id'], answer['token'])
+    clock.t += nodes.PAIR_PENDING_TTL + 1
+    for board in (a, b):
+        with board.enter():
+            assert nodes.expire_pending() == 0
+            outgoing = next(p for p in nodes.peers() if p['direction'] == 'out')
+            assert nodes.PeerClient(outgoing).get('/api/node').ok
+    assert not any(call[3] == '/api/node/pair/ack' for call in two_nodes.log)
+
+
+def test_new_caller_announces_ack_and_accepts_old_active_answer(two_nodes, monkeypatch):
+    inner = nodes.peer_transport
+    def old_acceptor(target, method, path, headers, body, timeout):
+        if path == '/api/nodes/pair':
+            assert headers.get('X-CCBoard-Pair-Ack') == '1'
+            headers = {k: v for k, v in headers.items() if k.lower() != 'x-ccboard-pair-ack'}
+        assert path != '/api/node/pair/ack', 'an old acceptor has no ack route'
+        status, rh, data = inner(target, method, path, headers, body, timeout)
+        if path == '/api/nodes/pair':
+            answer = json.loads(data)
+            answer.pop('pending', None)
+            data = json.dumps(answer).encode()
+        return status, rh, data
+    monkeypatch.setattr(nodes, 'peer_transport', old_acceptor)
+    with two_nodes.b.enter():
+        code = nodes.create_code()['code']
+    with two_nodes.a.enter():
+        out = nodes.add_node(two_nodes.b.url, code, both_ways=True)
+        assert nodes.PeerClient(out).get('/api/node').ok
+    with two_nodes.b.enter():
+        out = next(p for p in nodes.peers() if p['direction'] == 'out')
+        assert nodes.PeerClient(out).get('/api/node').ok
+
+
+@pytest.mark.parametrize('failure', ['refused', 'unanswered'])
+def test_failed_repair_ack_preserves_working_pair(two_nodes, monkeypatch, failure):
+    a, b = two_nodes.a, two_nodes.b
+    with b.enter():
+        code = nodes.create_code()['code']
+    with a.enter():
+        old = nodes.add_node(b.url, code)
+        old_token = nodes._load_outgoing(old['peer_id'])
+        saved_tokens = nodes.tokens_path().read_bytes()
+    inner = nodes.peer_transport
+    during_ack = []
+    def fail_ack(target, method, path, headers, body, timeout):
+        if path == '/api/node/pair/ack':
+            with a.enter():
+                during_ack.append((nodes._load_outgoing(old['peer_id']), nodes.peer(old['peer_id'])))
+            if failure == 'unanswered':
+                raise TimeoutError('ack did not reach the board')
+            return 409, {}, b'{"active":false}'
+        return inner(target, method, path, headers, body, timeout)
+    monkeypatch.setattr(nodes, 'peer_transport', fail_ack)
+    with b.enter():
+        code = nodes.create_code()['code']
+    with a.enter():
+        with pytest.raises(nodes.PairError):
+            nodes.add_node(b.url, code)
+        assert during_ack == [(old_token, old)]
+        assert nodes.peer(old['peer_id']) == old
+        assert nodes.tokens_path().read_bytes() == saved_tokens
+        assert nodes.PeerClient(old).get('/api/node').ok
+
+
+def test_lost_both_ways_repair_ack_keeps_activated_reverse_token(two_nodes, monkeypatch):
+    a, b = two_nodes.a, two_nodes.b
+    with b.enter():
+        code = nodes.create_code()['code']
+    with a.enter():
+        old = nodes.add_node(b.url, code, both_ways=True)
+        old_token = nodes._load_outgoing(old['peer_id'])
+    with b.enter():
+        old_reverse = nodes.out_peers(b.db)[0]
+        old_reverse_token = nodes._load_outgoing(old_reverse['peer_id'])
+        code = nodes.create_code()['code']
+    inner = nodes.peer_transport
+    def lose_ack(target, method, path, headers, body, timeout):
+        answer = inner(target, method, path, headers, body, timeout)
+        if path == '/api/node/pair/ack':
+            assert answer[0] == 200 and json.loads(answer[2])['active'] is True
+            raise TimeoutError('the acceptor activated but its answer was lost')
+        return answer
+    monkeypatch.setattr(nodes, 'peer_transport', lose_ack)
+    with a.enter():
+        with pytest.raises(nodes.PairError) as error:
+            nodes.add_node(b.url, code, both_ways=True)
+        assert nodes.peer(old['peer_id']) == old
+        assert nodes._load_outgoing(old['peer_id']) == old_token
+    with b.enter():
+        reverse = next(p for p in nodes.out_peers(b.db) if p['peer_id'] != old_reverse['peer_id'])
+        assert nodes._load_outgoing(reverse['peer_id']) != old_reverse_token
+        assert nodes.PeerClient(reverse).get('/api/node').ok
+    assert 'outcome is unknown' in str(error.value).lower()
+    assert 'pair again' in str(error.value).lower() and 'if calls fail' in str(error.value).lower()
+
+
+def test_expire_pending_skips_revoked_rows(db, clock):
+    row, _ = nodes.add_incoming({'name': 'abandoned'}, pending=True, db=db)
+    assert nodes.revoke(row['peer_id'], db=db)
+    clock.t += nodes.PAIR_PENDING_TTL + 1
+    assert nodes.expire_pending(db) == 0
+    assert db.node_pair_get(row['peer_id'])['revoked_at']
+    assert not any(r['action'] == 'pair_expired' for r in nodes.audit_list(db=db))
+
+
+def test_pending_401_has_plain_words_without_needs_repair(db, monkeypatch):
+    out, _ = out_peer(db)
+    monkeypatch.setattr(nodes, 'peer_transport', Recorder((401, {}, b'{"reason":"pairing_not_acknowledged"}')))
+    assert nodes.PeerClient(out, db=db).get('/api/node').status == 401
+    saved = nodes.peer(out['peer_id'], db)
+    assert saved['last_error'] == 'the other board has not confirmed this pairing yet; pair again if it does not finish'
+    assert saved['needs_repair'] is False
+
+
+def test_abandoned_pending_pairs_count_only_up_to_three(db):
+    for _ in range(nodes.MAX_PEERS):
+        nodes.add_incoming(pending=True, db=db)
+    assert not nodes.incoming_full(db)
+    for _ in range(nodes.MAX_PEERS - 4):
+        nodes.add_incoming(db=db)
+    assert not nodes.incoming_full(db)
+    nodes.add_incoming(db=db)
+    assert nodes.incoming_full(db)

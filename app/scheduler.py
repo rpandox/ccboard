@@ -452,6 +452,8 @@ class Worker(threading.Thread):
             return self._tick()
 
     def _tick(self) -> list[int]:
+        from . import nodes
+        nodes.expire_pending(self.db)
         with self.lock:
             self.running = {rid: t for rid, t in self.running.items() if t.is_alive()}
             slots = CAP - len(self.running)

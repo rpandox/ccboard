@@ -424,6 +424,8 @@ def _open(request: Request, handle: str, db, hub):
                 raise Gone("upstream_error", f"{name} could not be reached") from None
             if not reply.ok:
                 if reply.status == 401:
+                    if isinstance(reply.json, dict) and reply.json.get("reason") == "pairing_not_acknowledged":
+                        raise Gone("pairing_not_acknowledged", nodes.PAIR_PENDING_MESSAGE)
                     raise Gone("repair", f"{name} no longer takes this board's token: re-pair")
                 if reply.status == 403:
                     raise nr.RelayError(409, "scope", f"needs the sessions scope on {name}", kind="failed")
