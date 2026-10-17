@@ -3,7 +3,7 @@ wiring). The core (the writer, the queue, the protocol) is tests/test_nodes_clai
 
 Two in-process boards (`two_nodes`): board a is the hub, board b the node that claims. GitHub is tests/fake_github.py served from this process (no gh, no network); the
 protocol's waits and the queue's spacing run on the fake server clock, so nothing sleeps for real. Pinned: the row is `tasks`, write class, human only, acting, never an
-agent (mcp stays closed); the body is repo, issue and epic and nothing else; the hub rebuilds the answer from a whitelist and uses its own words; a timeout is `unconfirmed` and
+agent (mcp stays closed); the body is repo, issue and epic with a hub-generated correlation token; the hub rebuilds the answer from a whitelist and uses its own words; a timeout is `unconfirmed` and
 is never retried; with CCBOARD_EPIC_WRITES off nothing at all reaches gh on the node; both boards leave an audit row with the repository and the issue number only.
 """
 from __future__ import annotations
@@ -124,8 +124,8 @@ def audit(board, **kw):
 def test_the_row_is_a_tasks_write_a_person_only_and_never_an_agents():
     assert (ROW.peer_method, ROW.peer_path, ROW.hub_path, ROW.scope, ROW.rate_class, ROW.audit_action) == ("POST", "/api/node/epics/claim", CLAIM_ROUTE, "tasks", "write", "claim_issue")
     assert ROW.human_only and ROW.acting and not ROW.mcp and ROW.agent_model is None and ROW.agent_shape is None and not ROW.guard
-    assert ROW.timeout == nr.CLAIM_TIMEOUT == 45.0 and all(r.timeout == nr.RELAY_TIMEOUT for r in nr.RELAY if r.name not in ("epic_claim", "epic_work")), "only the claim and the run wait longer than 10 s"
-    assert ROW.body_model.model_config.get("extra") == "forbid" and set(ROW.body_model.model_fields) == {"repo", "issue", "epic"}
+    assert ROW.timeout == nr.CLAIM_TIMEOUT == 90.0 and all(r.timeout == nr.RELAY_TIMEOUT for r in nr.RELAY if r.name not in ("epic_claim", "epic_work")), "only the claim and the run wait longer than 10 s"
+    assert ROW.body_model.model_config.get("extra") == "forbid" and set(ROW.body_model.model_fields) == {"repo", "issue", "epic", "claim_id"}
     assert ROW.target({}) == "claim" and ROW.body_target({}, {"repo": REPO, "issue": 205}) == "claim acme/shop#205"
 
 
@@ -163,7 +163,7 @@ def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(wor
     assert w.gh.calls() == [], "none of these reached GitHub"
 
 
-# ================================================================ the body is three plain values
+# ================================================================ three claim values and an optional correlation token
 
 @pytest.mark.parametrize("body", [
     {}, {"repo": REPO}, {"issue": 5}, {"repo": "acme", "issue": 5}, {"repo": "acme/shop/extra", "issue": 5}, {"repo": "../etc/passwd", "issue": 5}, {"repo": "acme/shop#5", "issue": 5},
@@ -213,7 +213,7 @@ def test_a_claim_through_the_hub_is_made_on_the_node_and_answered_from_a_whiteli
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["claimed"] is True and data["reason"] == "won" and data["repo"] == REPO and data["issue"] == 205 and data["attempt"] == 1 and data["winner"]
-    assert set(data) <= {"claimed", "reason", "repo", "issue", "winner", "attempt"}, "no claim_ref, no login, no comment id leaves the node"
+    assert set(data) <= {"claimed", "reason", "repo", "issue", "winner", "attempt", "claim_id"}, "no claim_ref, no login, no comment id leaves the node"
     assert w.count.paths == [("POST", "/api/node/epics/claim", nr.CLAIM_TIMEOUT)], "one call, with the claim's own timeout (not 10 s)"
     [c] = w.gh.claims_on(f"{REPO}#205")
     assert c["body"].startswith("<!-- ccboard:claim v1 -->") and "alias=" + data["winner"] in c["body"]
@@ -347,10 +347,45 @@ def test_a_timeout_is_unconfirmed_names_the_claim_wait_and_is_not_retried(world)
     w.count = Answer(raises=TimeoutError("slow"))
     nodes.peer_transport = w.count
     r = claim(w)
-    assert r.status_code == 504 and r.json()["reason"] == "unconfirmed" and "45 s" in r.json()["error"] and "not retried" in r.json()["error"], r.text
+    assert r.status_code == 504 and r.json()["reason"] == "unconfirmed" and "90 s" in r.json()["error"] and "not retried" in r.json()["error"], r.text
     assert w.count.seen == 1 and w.count.timeout == nr.CLAIM_TIMEOUT
     [out] = audit(w.a, action="claim_issue")
     assert out["status"] == "failed" and "unconfirmed" in out["detail"]
+
+
+def test_a_slow_node_wins_and_the_next_read_confirms_without_a_second_claim(world):
+    w = world
+    transport = w.two.transport
+    calls = []
+
+    def slow(target, method, path, headers, body, timeout):
+        calls.append((method, path))
+        answer = transport(target, method, path, headers, body, timeout)
+        if method == "POST":
+            w.gh.world["now"] += timeout + 1
+            raise TimeoutError()
+        return answer
+
+    nodes.peer_transport = slow
+    assert claim(w).json()["reason"] == "unconfirmed"
+    before = list(w.gh.calls())
+    r = w.a.get(hub_path(w.handle) + "/status", params={"repo": REPO, "issue": "205"})
+    assert r.status_code == 200 and r.json()["data"]["claimed"] is True
+    assert r.json()["data"]["reason"] == "won"
+    assert w.gh.calls() == before, "the follow-up reads only the node's stored record"
+    assert [m for m, _ in calls] == ["POST", "GET"]
+    assert len(w.gh.claims_on(f"{REPO}#205")) == 1
+
+
+def test_the_follow_up_reports_a_refusal_and_never_calls_github(world):
+    w = world
+    w.gh.world["issues"][f"{REPO}#205"]["state"] = "closed"
+    refusal = claim(w).json()
+    assert refusal["why"] == "closed"
+    before = list(w.gh.calls())
+    r = w.a.get(hub_path(w.handle) + "/status", params={"repo": REPO, "issue": "205"})
+    assert r.status_code == 200 and r.json()["data"] == {"claimed": False, "reason": "closed", "claim_id": refusal["claim_id"]}
+    assert w.gh.calls() == before
 
 
 def test_a_connection_that_breaks_after_the_request_went_out_is_unconfirmed_too(world):
@@ -604,3 +639,116 @@ def test_only_a_few_claims_run_at_once_on_a_node_and_the_next_is_told_busy_befor
     assert claim(w, {"repo": REPO, "issue": 204, "epic": 147}).status_code == 200
     assert nodes_epics.claim_slots.acquire(blocking=False) and nodes_epics.claim_slots._value == nodes_epics.CLAIMS_IN_FLIGHT - 1, "a finished claim gave its place back"
     nodes_epics.claim_slots.release()
+
+
+def test_claim_exception_finishes_pending_marker(world, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("claim interrupted")
+    monkeypatch.setattr(nodes_epics, "claim_issue", broken)
+    with world.b.enter():
+        with pytest.raises(nr.Refusal):
+            nr.peer_epic_claim(world.b.db, {}, {"repo": REPO, "issue": 205})
+        result = nr.peer_epic_claim_status(world.b.db, {}, {"repo": REPO, "issue": "205"})
+    assert result["reason"] == "error"
+    assert nodes_epics.claim_slots._value == nodes_epics.CLAIMS_IN_FLIGHT
+
+
+def test_abandoned_pending_claim_expires_without_github(world):
+    import time
+    body = {"repo": REPO, "issue": "205"}
+    world.b.db.kv_set(nr._claim_result_key(body), {"claimed": False, "reason": "pending", "started_at": time.time() - nr.CLAIM_TIMEOUT - 31})
+    with world.b.enter():
+        assert nr.peer_epic_claim_status(world.b.db, {}, body)["reason"] == "unknown"
+    assert world.gh.calls() == []
+
+
+def test_new_pending_attempt_takes_precedence_over_old_claim_records(world, monkeypatch):
+    import time
+    body = {"repo": REPO, "issue": "205"}
+    for state in ("held", "lost"):
+        monkeypatch.setattr(nodes_epics, "own_claims", lambda *a: [{"state": state, "alias": "old", "attempt": 1}])
+        world.b.db.kv_set(nr._claim_result_key(body), {"claimed": False, "reason": "pending", "claim_id": "a" * 32, "started_at": time.time()})
+        with world.b.enter():
+            result = nr.peer_epic_claim_status(world.b.db, {}, body)
+        assert result["reason"] == "pending" and result["claim_id"] == "a" * 32
+
+
+def test_hub_attempt_id_survives_unknown_and_released_result(world, monkeypatch):
+    transport = world.two.transport
+    def slow(target, method, path, headers, body, timeout):
+        answer = transport(target, method, path, headers, body, timeout)
+        if method == "POST":
+            raise TimeoutError()
+        return answer
+    nodes.peer_transport = slow
+    out = claim(world).json()
+    assert out["reason"] == "unconfirmed" and len(out["claim_id"]) == 32
+    marker = world.b.db.kv_get(nr._claim_result_key({"repo": REPO, "issue": 205}))["value"]
+    assert marker["claim_id"] == out["claim_id"]
+    monkeypatch.setattr(nodes_epics, "own_claims", lambda *a: [])
+    before = list(world.gh.calls())
+    result = world.a.get(hub_path(world.handle) + "/status", params={"repo": REPO, "issue": "205"}).json()["data"]
+    assert result == {"claimed": False, "reason": "released", "claim_id": out["claim_id"]}
+    assert world.gh.calls() == before
+
+
+def test_an_already_held_result_without_an_attempt_still_reads_as_held(world, monkeypatch):
+    """already_held stores no attempt; the status read must not call a claim the node still holds 'released'."""
+    world.b.db.kv_set(nr._claim_result_key({"repo": REPO, "issue": 205}), {"claimed": True, "reason": "already_held", "repo": REPO, "issue": 205, "winner": "willow-3f"})
+    monkeypatch.setattr(nodes_epics, "own_claims", lambda *a: [{"state": "held", "attempt": 1}])
+    held = world.a.get(hub_path(world.handle) + "/status", params={"repo": REPO, "issue": "205"}).json()["data"]
+    assert held["claimed"] is True and held["reason"] == "already_held"
+    monkeypatch.setattr(nodes_epics, "own_claims", lambda *a: [])
+    gone = world.a.get(hub_path(world.handle) + "/status", params={"repo": REPO, "issue": "205"}).json()["data"]
+    assert gone == {"claimed": False, "reason": "released"}
+
+
+@pytest.mark.parametrize('case', ['writes_off', 'other_repo', 'bad_request'])
+def test_cheap_refusals_never_store_claim_results(world, monkeypatch, case):
+    body = {"repo": REPO, "issue": 205}
+    if case == 'writes_off':
+        monkeypatch.setattr(settings, 'epic_writes', False)
+    elif case == 'other_repo':
+        body['repo'] = 'elsewhere/project'
+    else:
+        body['issue'] = 0
+    with world.b.enter(), pytest.raises(nr.Refusal):
+        nr.peer_epic_claim(world.b.db, {}, body)
+    assert world.b.db.kv_list_prefix('claim-result:') == []
+    assert world.gh.calls() == []
+
+
+@pytest.mark.parametrize('operation', ['claim', 'status'])
+def test_claim_result_rows_older_than_one_day_are_pruned_in_request_path(world, operation):
+    import time
+    old = 'claim-result:acme/shop#999'
+    fresh = 'claim-result:acme/shop#998'
+    world.b.db.kv_set(old, {"claimed": False, "reason": "closed", "started_at": time.time() - 86401})
+    world.b.db.kv_set(fresh, {"claimed": False, "reason": "closed", "started_at": time.time()})
+    if operation == 'claim':
+        assert claim(world).status_code == 200
+    else:
+        assert world.a.get(hub_path(world.handle) + '/status', params={'repo': REPO, 'issue': '205'}).status_code == 200
+        assert world.gh.calls() == []
+    assert world.b.db.kv_get(old) is None
+    assert world.b.db.kv_get(fresh) is not None
+
+
+def test_an_older_completion_cannot_overwrite_a_newer_attempt(world, monkeypatch):
+    body = {"repo": REPO, "issue": 205}
+    depth = 0
+    def reordered(*args, **kwargs):
+        nonlocal depth
+        depth += 1
+        if depth == 1:
+            with pytest.raises(nr.Refusal):
+                nr.peer_epic_claim(world.b.db, {}, {**body, "claim_id": "b" * 32})
+            return {"claimed": True, "reason": "won", "attempt": 1}
+        return {"claimed": False, "reason": "closed"}
+    monkeypatch.setattr(nodes_epics, "claim_issue", reordered)
+    with world.b.enter():
+        nr.peer_epic_claim(world.b.db, {}, {**body, "claim_id": "a" * 32})
+        result = nr.peer_epic_claim_status(world.b.db, {}, body)
+    assert result['reason'] == 'closed' and result['claim_id'] == 'b' * 32
+    assert nodes_epics.claim_slots._value == nodes_epics.CLAIMS_IN_FLIGHT
+    assert world.gh.calls() == []
