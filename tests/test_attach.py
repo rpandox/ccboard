@@ -55,6 +55,7 @@ def test_script_is_executable_posix_sh_and_carries_the_v2_marker():
 
 
 @pytest.mark.parametrize("args, tmux_argv", [
+    (("bare-ticket-project--repo--s1",), ["-N", "-L", "ccboard", "attach-session", "-t", "=bare-ticket-project--repo--s1"]),
     (("shop--api--s1",), ["-N", "-L", "ccboard", "attach-session", "-t", "=shop--api--s1"]),
     (("shop--api--s1", "full"), ["-N", "-L", "ccboard", "attach-session", "-t", "=shop--api--s1"]),
     (("shop--api--s1", "grid"), ["-N", "-L", "ccboard", "attach-session", "-f", "ignore-size", "-t", "=shop--api--s1"]),

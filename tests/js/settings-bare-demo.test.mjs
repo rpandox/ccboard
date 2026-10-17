@@ -85,26 +85,87 @@ test('demo check, forget host key, remove and add stay local and retain their re
 });
 
 
-test('demo launcher and sidebar have two live device sessions; start/read/stop persist across state reads', async () => {
+test('demo launcher and sidebar have a device session in each state; start/read/stop persist across state reads', async () => {
   const { w, requests } = await demoWorld();
   for (const file of ['nodes.js', 'shell.js', 'launcher.js', 'bare.js']) w.load(file);
   w.run('Shell.patchTrees = () => {};');
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
   assert.equal(w.get('state.bare_devices.length'), 1);
-  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'alive'], ['shell', 'alive']]);
+  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'dialog'], ['shell', 'waiting'], ['claude', 'working'], ['shell', 'unconfirmed'], ['shell', 'stopping']]);
   w.run("Shell.open.add('bare:demo-lab-pi'); globalThis.kit = lxnKit({}, null, 'session'); globalThis.sidebar = el('div'); Shell.bareDevice(sidebar, state.bare_devices[0]);");
   assert.match(text(w.get('kit.pick')), /lab-pi \(no board\)/);
-  assert.equal(w.get('sidebar').querySelectorAll('.s-row').length, 2);
+  const rows = w.get('sidebar').querySelectorAll('.s-row');
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((r) => text(r.querySelector('.tn-sub'))), ['needs you', 'waiting', 'working', 'unconfirmed', 'stopping']);
   const selects = w.get('kit.ctl.form').querySelectorAll('select');
   selects[0].value = w.get('state.bare_devices[0].check.repos[0]');
   selects[1].value = 'claude'; selects[1].dispatchEvent({type:'change'});
   await w.run('kit.ctl.submit()');
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
-  assert.equal(w.get('state.bare_devices[0].sessions.length'), 3);
+  assert.equal(w.get('state.bare_devices[0].sessions.length'), 6);
   w.run("globalThis.started = state.bare_devices[0].sessions.at(-1).tmux_name");
   await w.run("api('POST', '/api/bare/demo-lab-pi/sessions/' + started + '/stop', {confirm:true})");
   await w.run("api('POST', '/api/bare/demo-lab-pi/sessions/read', {})");
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
-  assert.equal(w.get('state.bare_devices[0].sessions.length'), 2);
+  assert.equal(w.get('state.bare_devices[0].sessions.length'), 4);   // Read drops both stopping rows: the seeded one and the one just stopped
   assert.ok(requests.every((url) => url.startsWith('/static/demo/')));
+});
+
+test('demo lab-pi shows the state log installed; Remove and Install need a second tap and stay in memory', async () => {
+  const { w, requests } = await demoWorld();
+  const device = () => section(w).querySelector('.bare-device');
+  assert.match(text(device().querySelector('.bare-statelog')), /State log installed/);
+  assert.match(text(device().querySelector('.bare-statelog')), /no prompt text/);
+  assert.equal(button(w, 'Install state log'), undefined);
+  button(w, 'Remove state log').click();                               // first tap only arms
+  const log = () => device().querySelector('.bare-statelog');
+  const inLog = (word) => log().querySelectorAll('button').find((b) => text(b) === word);
+  assert.ok(inLog('Confirm') && inLog('Cancel'));
+  assert.equal(plain(await w.run("api('GET', '/api/bare')")).devices[0].state_log.installed, true);
+  inLog('Cancel').click();
+  assert.ok(button(w, 'Remove state log'));
+  button(w, 'Remove state log').click();
+  button(w, 'Confirm').click();
+  await settle();
+  assert.match(text(device().querySelector('.bare-statelog')), /State log not installed/);
+  assert.equal(button(w, 'Remove state log'), undefined);
+  assert.equal(plain(await w.run("api('GET', '/api/bare')")).devices[0].state_log, undefined);
+  button(w, 'Check again').click();                                    // a check keeps the (absent) log state
+  await settle();
+  button(w, 'Install state log').click();
+  button(w, 'Confirm').click();
+  await settle();
+  assert.match(text(device().querySelector('.bare-statelog')), /State log installed/);
+  await assert.rejects(w.run("api('POST', '/api/bare/demo-lab-pi/state-log/install', {})"), (e) => e.status === 400);
+  assert.ok(requests.every((url) => url.startsWith('/static/demo/')));
+});
+
+test('state log control survives a failing check, Install needs a passing one, and the Codex review sentence shows only with Codex', async () => {
+  const { w } = await demoWorld();
+  const log = () => section(w).querySelector('.bare-device .bare-statelog');
+  const sentence = /Codex asks you to review new hooks once: run \/hooks in a Codex session on the device\./;
+  // installed for Claude only: no Codex sentence
+  assert.doesNotMatch(text(log()), sentence);
+  // a failing check keeps Remove, enabled, and its text
+  w.run(`settingsBare.result = null; settingsBare.data.devices[0].check.ok = false;
+    settingsBare.data.devices[0].check.rows.find((r) => r.key === 'ssh').ok = false; settingsBarePaint();`);
+  assert.ok(log(), 'the control stays while the log is installed');
+  assert.ok(button(w, 'Remove state log') && !button(w, 'Remove state log').disabled);
+  assert.equal(button(w, 'Install state log'), undefined);
+  // installed with Codex: the sentence is in the installed text
+  w.run("settingsBare.data.devices[0].state_log.agents = ['claude', 'codex']; settingsBarePaint();");
+  assert.match(text(log()), sentence);
+  // not installed and a failing check: nothing to install, so no control
+  w.run("delete settingsBare.data.devices[0].state_log; settingsBarePaint();");
+  assert.equal(log(), null);
+  // not installed, passing check: Install is offered; the confirm text carries the sentence only when Codex was found
+  w.run("settingsBare.data.devices[0].check.ok = true; settingsBare.data.devices[0].check.rows.find((r) => r.key === 'ssh').ok = true; settingsBarePaint();");
+  assert.ok(button(w, 'Install state log') && !button(w, 'Install state log').disabled);
+  button(w, 'Install state log').click();
+  assert.doesNotMatch(text(log()), sentence);                           // the demo device has no Codex
+  button(w, 'Cancel').click();
+  w.run("settingsBare.data.devices[0].check.rows.find((r) => r.key === 'codex').ok = true; settingsBarePaint();");
+  button(w, 'Install state log').click();
+  assert.match(text(log()), sentence);
+  assert.match(text(log()), /Tap Confirm, or Cancel\./);
 });

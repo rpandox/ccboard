@@ -293,3 +293,8 @@ body.term.kbd #rail .rail-btn:nth-child(n+3), body.term.short #rail .rail-btn:nt
 }
 @media (min-width:840px) and (max-height:700px) { html.force-coarse #ctxstrip { display:none; } }
 @media (prefers-reduced-motion:reduce) { #rail, #tune::before, #tune::after { transition:none; } .bp5-dark #tune .bp5-button.tune-chip.pending { animation:none; } }
+
+/* Device terminals have no inspector or composer column; in demo mode a page-styled placeholder stands in for ttyd. */
+body.term.terminal-only #termmain { grid-template-columns:minmax(0, 1fr); grid-template-rows:minmax(0, 1fr); grid-template-areas:"tty"; }
+body.term.terminal-only #termmain::after { display:none; }
+body.term.terminal-only .demo-term { grid-area:tty; margin:0; padding:12px; color:var(--fg-2); background:transparent; font:13px/1.5 var(--mono, ui-monospace, Menlo, Consolas, monospace); white-space:pre-wrap; }

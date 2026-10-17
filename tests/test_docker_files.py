@@ -198,6 +198,8 @@ class Box:
         ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
         shutil.copytree(ROOT / "bin", self.app / "bin", ignore=ignore)
         shutil.copytree(ROOT / "scripts", self.app / "scripts", ignore=ignore)
+        (self.app / "app").mkdir()
+        shutil.copy(ROOT / "app/bare.py", self.app / "app/bare.py")
         shutil.copy(ROOT / "tmux.conf", self.app / "tmux.conf")
         self.log = tmp / "calls.log"
         q = shlex.quote(str(self.log))
@@ -237,10 +239,11 @@ def test_entrypoint_syncs_merges_registers_and_execs(tmp_path):
     r = box.run()
     assert r.returncode == 0, r.stderr
     app = box.data / "app"
-    for rel in ("bin/ccboard-hook", "bin/ccboard-hook-fast", "bin/ccboard-attach", "bin/ccboard-permission", "bin/ccboard-statusline"):
+    for rel in ("bin/ccboard-hook", "bin/ccboard-hook-fast", "bin/ccboard-attach", "bin/ccboard-attach-bare", "bin/ccboard-permission", "bin/ccboard-statusline"):
         assert (app / rel).stat().st_mode & 0o777 == 0o755, rel
     assert (app / "scripts" / "claude_settings.py").is_file() and (app / "scripts" / "ccboard_mcp.py").is_file()
     assert (app / "tmux.conf").read_text() == (ROOT / "tmux.conf").read_text()
+    assert (app / "app/bare.py").read_bytes() == (ROOT / "app/bare.py").read_bytes()
     assert not stale.exists(), "files the image no longer ships are pruned"
     assert not [p for p in app.rglob(".*.new")], "no half-copied temp files left behind"
     cmds = hook_commands(box.settings())

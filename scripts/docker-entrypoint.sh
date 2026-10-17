@@ -79,6 +79,8 @@ sync_dir() { # src dst
 sync_app() {
   arc=0
   mkdir -p "$APP_DST" || return 1
+  mkdir -p "$APP_DST/app" || arc=1
+  { cp -a "$APP_ROOT/app/bare.py" "$APP_DST/app/.bare.py.new" && mv -f "$APP_DST/app/.bare.py.new" "$APP_DST/app/bare.py"; } || arc=1
   sync_dir "$APP_ROOT/bin" "$APP_DST/bin" || arc=1
   sync_dir "$APP_ROOT/scripts" "$APP_DST/scripts" || arc=1
   { cp -a "$APP_ROOT/tmux.conf" "$APP_DST/.tmux.conf.new" && mv -f "$APP_DST/.tmux.conf.new" "$APP_DST/tmux.conf"; } || arc=1

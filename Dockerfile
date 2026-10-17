@@ -79,6 +79,7 @@ RUN python3 -m venv .venv \
 
 COPY --chown=1000:1000 app ./app
 COPY --chown=1000:1000 bin ./bin
+RUN chmod 0755 bin/ccboard-attach bin/ccboard-attach-bare
 COPY --chown=1000:1000 scripts ./scripts
 COPY --chown=1000:1000 tmux.conf ./
 

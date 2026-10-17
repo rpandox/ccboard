@@ -375,3 +375,8 @@ def test_plutil_lints_every_rendered_plist(job, tmp_path):
     lr.render_file(str(template(job)), str(out), VALUES)
     r = subprocess.run(["plutil", "-lint", str(out)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_ttyd_device_tickets_use_the_boards_data_directory():
+    assert render("ttyd")["EnvironmentVariables"]["CCBOARD_DATA_DIR"] == HOME + "/.local/share/ccboard"
+    assert render("ttyd", ENV_FILE="/srv/custom data/env")["EnvironmentVariables"]["CCBOARD_DATA_DIR"] == "/srv/custom data"

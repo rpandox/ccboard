@@ -1813,6 +1813,40 @@ function settingsBareMessage(device, row) {
   return `${device.name} is offline (last seen ${age}). Nothing was started.`;
 }
 
+/* Optional hooks on the device that log state changes (no prompt text). Two taps, like Stop: Install or Remove, then Confirm. */
+function settingsBareStateLog(d, check) {
+  const B = settingsBare, on = !!(d.state_log && d.state_log.installed), verb = on ? 'remove' : 'install';
+  const checkOk = !!(check && check.ok);
+  const codex = on ? !!(d.state_log.agents || []).includes('codex')
+    : !!(check && Array.isArray(check.rows) && check.rows.some((r) => r.key === 'codex' && r.ok));
+  const trust = codex ? ' Codex asks you to review new hooks once: run /hooks in a Codex session on the device.' : '';
+  const label = on ? 'Remove state log' : 'Install state log';
+  let armed = false, timer;
+  const notice = el('span', { role: 'status' });
+  const go = el('button', { type: 'button', text: label, disabled: B.busy || (!on && !checkOk) });
+  const cancel = el('button', { class: 'hidden', type: 'button', text: 'Cancel', hidden: true });
+  const disarm = () => {
+    armed = false; clearTimeout(timer); go.textContent = label;
+    cancel.classList.add('hidden'); cancel.setAttribute('hidden', ''); notice.textContent = '';
+  };
+  cancel.addEventListener('click', disarm);
+  go.addEventListener('click', () => {
+    if (!armed) {
+      armed = true; go.textContent = 'Confirm'; cancel.classList.remove('hidden'); cancel.removeAttribute('hidden');
+      notice.textContent = on ? 'Remove the state log hooks and files from this device? Your other hook settings stay. Tap Confirm, or Cancel.'
+        : 'Add small hooks to this user\u2019s Claude and Codex settings on the device? Your other settings stay.' + trust + ' Tap Confirm, or Cancel.';
+      timer = setTimeout(disarm, 5000);
+      return;
+    }
+    disarm();
+    settingsBareAction('POST', `/api/bare/${encodeURIComponent(d.ts_id)}/state-log/${verb}`, { confirm: true });
+  });
+  return el('div', { class: 'bare-statelog' },
+    el('p', { class: 'dim', text: on ? 'State log installed: hooks on the device write one line per state change (no prompt text) to ~/.ccboard-bare/state.log, and the board prefers it to the screen read.' + trust
+      : 'State log not installed. Optional: small hooks on the device record state changes for a better state than the screen read.' }),
+    go, cancel, notice);
+}
+
 function settingsBarePaint() {
   const B = settingsBare, ui = B.ui;
   if (!ui) return;
@@ -1869,6 +1903,7 @@ function settingsBarePaint() {
     const refused = check && Array.isArray(check.rows) && check.rows.some((r) => ['user', 'groups'].includes(r.key) && !r.ok && !r.skipped);
     body.append(el('p', { class: 'dim', text: added ? 'Saved device. Nothing was started.' : refused
       ? 'Device was refused and was not added.' : 'Not added yet: fix the rows marked ✕ and check again.' }), actions);
+    if (added && ((check && check.ok) || (d.state_log && d.state_log.installed))) body.append(settingsBareStateLog(d, check));
     for (const r of check && Array.isArray(check.rows) ? check.rows : []) {
       body.append(el('div', { class: 'bare-check' }, el('span', { class: r.ok ? 'ok' : 'bad', text: r.ok ? '✓' : '✕', 'aria-label': r.ok ? 'Passed' : 'Failed' }),
         el('div', {}, el('div', { text: settingsBareMessage(d, r) }), r.fix ? el('div', { class: 'dim', text: r.fix }) : null)));
@@ -1907,7 +1942,10 @@ async function settingsBareAction(method, path, body) {
     const data = await api('GET', '/api/bare');
     if (seq === B.seq) B.data = data;
     settingsNdLoadPeers();
-  } catch (e) { if (seq === B.seq) B.err = e.message || 'The device did not answer. Check again.'; }
+  } catch (e) {
+    if (seq === B.seq) B.err = e.message || 'The device did not answer. Check again.';
+    if (seq === B.seq && /\/state-log\//.test(path)) { try { const data = await api('GET', '/api/bare'); if (seq === B.seq) B.data = data; } catch (_) { /* the message above stands */ } }  // a part-done install changed the record
+  }
   finally { if (seq === B.seq) { B.busy = false; settingsBarePaint(); } }
 }
 

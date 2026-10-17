@@ -278,8 +278,12 @@ async def lifespan(app: FastAPI):
     log.info("%s", startup_line())
     threading.Thread(target=static_mount.warm, name="static-gzip", daemon=True).start()          # the gzip of every script and style, before the first page load asks for it
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
+    bare_poller = bare.Poller(db)
+    bare_poller.thread.start()
     yield
     try:
+        bare_poller.stop.set()
+        await asyncio.to_thread(bare_poller.thread.join, 15)
         taskflow_rt.stop()
         if team_github.poller is not None:
             team_github.poller.stop(5.0)
@@ -627,7 +631,7 @@ async def auth_middleware(request: Request, call_next):
         # ttyd's and never passes through the board, and frame-ancestors 'none' would block the fake from the terminal page's iframe.
         resp.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "same-origin"
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         # Always revalidate the shell and its assets (ETag), so an update never mixes old HTML with new JS. Only vendored
         # files and fonts are immutable, and only when they were found: a 404 must not be cached for a year.
@@ -940,7 +944,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["agents"] = agents.status_all()
     st["login"] = _login_payload()
-    st["pending_permissions"] = _pending_permissions()
+    st["pending_permissions"] = _pending_permissions() + bare.pending(db, user)
     st["tasks"] = _tasks_view()
     st["preview"] = previews.capability()                 # #126: {available, code, reason}: the Preview control says why it is off before the click
     st["jobs"] = _jobs_view()
@@ -4969,6 +4973,31 @@ class BareStopIn(BaseModel):
     confirm: bool = False
 
 
+class BareHookIn(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    confirm: bool = False
+
+
+def _bare_hook(request, tid, verb, body):
+    _node_manager(request)
+    _epic_person(request, "only a signed-in person can change hooks on a device")
+    try:
+        result = bare.hook_action(db, request.state.user, tid, verb, confirm=body.confirm)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/bare/{tid}/state-log/install")
+def api_bare_hook_install(tid: str, body: BareHookIn, request: Request):
+    return _bare_hook(request, tid, "install", body)
+
+
+@app.post("/api/bare/{tid}/state-log/remove")
+def api_bare_hook_remove(tid: str, body: BareHookIn, request: Request):
+    return _bare_hook(request, tid, "remove", body)
+
+
 def _bare_session(request, tid, verb, **fields):
     _node_manager(request)
     try:
@@ -4994,9 +5023,49 @@ def api_bare_sessions(tid: str, request: Request):
     return _bare_session(request, tid, "list")
 
 
+@app.post("/api/bare/{tid}/sessions/{session}/attach")
+def api_bare_attach(tid: str, session: str, request: Request):
+    return _bare_session(request, tid, "attach", session=session)
+
+
 @app.post("/api/bare/{tid}/sessions/{session}/stop")
 def api_bare_stop(tid: str, session: str, body: BareStopIn, request: Request):
     return _bare_session(request, tid, "stop", session=session, confirm=body.confirm)
+
+
+class BareAnswerIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    pid: int
+
+
+class BareReplyIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str
+
+
+def _bare_answer(request, tid, session, decision, **fields):
+    _node_manager(request)
+    _epic_person(request, "only a signed-in person can answer a device session")
+    try:
+        result = bare.answer(db, request.state.user, tid, session, decision, **fields)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/bare/{tid}/sessions/{session}/allow")
+def api_bare_allow(tid: str, session: str, body: BareAnswerIn, request: Request):
+    return _bare_answer(request, tid, session, "allow", pid=body.pid)
+
+
+@app.post("/api/bare/{tid}/sessions/{session}/deny")
+def api_bare_deny(tid: str, session: str, body: BareAnswerIn, request: Request):
+    return _bare_answer(request, tid, session, "deny", pid=body.pid)
+
+
+@app.post("/api/bare/{tid}/sessions/{session}/reply")
+def api_bare_reply(tid: str, session: str, body: BareReplyIn, request: Request):
+    return _bare_answer(request, tid, session, "reply", text=body.text)
 
 
 # ---------- team (issue #197): what GitHub shows about the people working in a shared repository; read only; the logic is in app/team.py and app/team_github.py ----------
@@ -6412,6 +6481,9 @@ def api_permission_decide(pid: int, decision: str, request: Request):
     if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
         raise projects.BadRequest("decision must be allow, deny or tui")
     if pid >= permissions.TERMINAL_ID_MIN:
+        device_prompt = bare.prompt_get(db, pid)
+        if device_prompt:
+            return _bare_answer(request, device_prompt['bare_device'], device_prompt['tmux_name'], decision, pid=pid)
         permissions.terminal_answer(db, pid, decision, request.state.user, _live_permissions)
         _invalidate_scan()
         return {"ok": True, "id": pid, "decision": decision}
@@ -6474,6 +6546,8 @@ def index():
 
 @app.get("/term/{name}")
 def term_page(name: str):
+    if bare.ticket_id_ok(name):
+        return FileResponse(STATIC / "term.html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     try:
         tmux.split_name(name)
     except ValueError:

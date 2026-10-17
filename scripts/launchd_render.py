@@ -17,6 +17,7 @@ Tokens (a value given with --set always wins over a default):
   APP_DIR          the checkout. Required by board, tmux, backup. APP_BIN defaults to <APP_DIR>/bin (ttyd, mem).
   SHELL            the account's login shell (absolute). Required by board, tmux, ttyd, code-server.
   CCBOARD_PORT, TTYD_PORT  loopback ports (1..65535). ENV_FILE  the settings file the board reads (board and backup; the installer passes <data dir>/env).
+  DATA_DIR         ttyd ticket directory root; defaults to the ENV_FILE directory, or <HOME>/.local/share/ccboard.
   TMUX_BIN, TTYD_BIN, CODE_SERVER_BIN  absolute paths of the tools (from `command -v` or `brew --prefix`).
   TMUX_SOCKET      defaults to ccboard. TMUX_TMPDIR defaults to /tmp and is the same value in the board, tmux and ttyd jobs (issue #125);
                    a value that makes <realpath(TMUX_TMPDIR)>/tmux-<uid>/<TMUX_SOCKET> longer than 100 bytes is refused (UID defaults to this
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import plistlib
 import re
 import sys
@@ -38,7 +40,7 @@ from xml.sax.saxutils import escape
 TOKEN_RE = re.compile(r"__([A-Z][A-Z0-9_]*)__")
 MAX_SOCKET_PATH = 100               # bytes; a socket path holds 103 on macOS (measured, issue #130: 104 fails with "File name too long") and 107 on Linux, with room to spare (issue #125)
 SESSION_TYPES = ("Aqua", "Background", "LoginWindow", "System")
-ABSOLUTE = {"HOME", "SHELL", "APP_DIR", "APP_BIN", "LOG_DIR", "ENV_FILE", "TMUX_BIN", "TTYD_BIN", "CODE_SERVER_BIN", "TMUX_TMPDIR", "BREW_PREFIX"}
+ABSOLUTE = {"DATA_DIR", "HOME", "SHELL", "APP_DIR", "APP_BIN", "LOG_DIR", "ENV_FILE", "TMUX_BIN", "TTYD_BIN", "CODE_SERVER_BIN", "TMUX_TMPDIR", "BREW_PREFIX"}
 PORTS = {"CCBOARD_PORT", "TTYD_PORT"}
 CLOCK_FIELDS = {"BACKUP_HOUR": (0, 23), "BACKUP_MINUTE": (0, 59)}      # whole numbers in range, written without a leading zero
 
@@ -105,6 +107,8 @@ def with_defaults(text: str, values: dict[str, str]) -> dict[str, str]:
     out = dict(values)
     need = set(tokens(text))
     home = out.get("HOME")
+    if "DATA_DIR" in need:
+        out.setdefault("DATA_DIR", str(Path(out["ENV_FILE"]).parent) if out.get("ENV_FILE") else (home or "") + "/.local/share/ccboard")
     if home:
         if "APP_BIN" in need and "APP_BIN" not in out and out.get("APP_DIR"):
             out["APP_BIN"] = out["APP_DIR"].rstrip("/") + "/bin"

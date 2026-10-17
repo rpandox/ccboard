@@ -140,7 +140,7 @@ def test_bin_scripts_use_only_posix_sh_and_portable_flags(script):
 
 
 def test_there_are_hook_scripts_to_scan():
-    assert {p.name for p in BIN_SCRIPTS} >= {"ccboard-hook", "ccboard-hook-fast", "ccboard-permission", "ccboard-statusline", "ccboard-attach"}
+    assert {p.name for p in BIN_SCRIPTS} >= {"ccboard-hook", "ccboard-hook-fast", "ccboard-permission", "ccboard-statusline", "ccboard-attach", "ccboard-attach-bare"}
 
 
 @pytest.mark.posix_sh

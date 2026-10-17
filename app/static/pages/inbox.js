@@ -95,7 +95,10 @@ Inbox.kind = function (s, st) {
 Inbox.items = function (st) {
   if (!st || typeof rosterSessions !== 'function') return [];
   const out = [];
-  for (const s of rosterSessions(st)) {
+  const bareRows = (st.bare_devices || []).flatMap((d) => (d.sessions || []).map((s) => ({
+    ...s, tmux: s.tmux_name, bare_device: d.ts_id, project: d.name, name: s.agent + ' on ' + d.name, folder: '',
+  })));
+  for (const s of [...rosterSessions(st), ...bareRows]) {
     const kind = Inbox.kind(s, st);
     const perm = Inbox.pending(s, st);
     if (!kind || !(perm || kind === 'needs' || s.needs_attention)) continue;   // acknowledged: gone, unless a permission or a blocked job still waits on you
@@ -254,7 +257,8 @@ function inboxCard(s, st, opts) {
     if (cur.nudge) replySlot.append(el('button', { class: `${v('reply') || 'minimal'} small ib-replybtn`, type: 'button', title: 'quick replies and a send box', onclick: toggleReply, text: 'Reply' }));
     syncReply();
     openSlot.textContent = '';
-    openSlot.append(el('a', { class: ['btn', v('open'), 'small'].filter(Boolean).join(' '), href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: 'Open' }));
+    if (cur.s.bare_device) openSlot.append(el('button', { class: 'small', type: 'button', text: 'Terminal', onclick: () => bareTerminal(cur.s) }));
+    else openSlot.append(el('a', { class: ['btn', v('open'), 'small'].filter(Boolean).join(' '), href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: 'Open' }));
     ackSlot.textContent = '';
     if (cur.ack) ackSlot.append(el('button', { class: [v('ack'), 'small'].filter(Boolean).join(' '), type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
   }
@@ -304,6 +308,7 @@ function inboxCard(s, st, opts) {
     setTextIfChanged(where, typeof sessionWhere === 'function' ? sessionWhere(s2, true) : `${s2.project}/${s2.repo || '?'}`);
     if (s2.project && typeof chipHue === 'function') chipHueSet(where, chipHue('project', s2.project));
     setTextIfChanged(nameNode, s2.name || tmux);
+    if (s2.bare_device) { nameNode.removeAttribute('href'); nameNode.onclick = () => bareTerminal(cur.s); }
     const title = s2.task && s2.task.title ? String(s2.task.title).slice(0, 120) : '';
     setTextIfChanged(task, title);
     task.classList.toggle('hidden', !title);
@@ -315,7 +320,7 @@ function inboxCard(s, st, opts) {
     const pr = Inbox.pending(s2, st2);
     cur.perm = pr;
     cur.allow = !!pr && (pr.kind === 'terminal_prompt' || inboxFullViewers(s2) === 0);           // terminal prompts remain answerable with a full client attached
-    cur.ack = !!s2.needs_attention;
+    cur.ack = !s2.bare_device && !!s2.needs_attention;
     cur.nudge = sessionNudgeable(s2);
     if (cur.allow) cur.permSig = `${pr.id}:${pr.summary || ''}`;
     paintActions();
