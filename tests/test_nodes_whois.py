@@ -123,6 +123,8 @@ def _board(monkeypatch, client, local="127.0.0.1", proxy=True):
     from fastapi.testclient import TestClient
     from app import hooks, main, notify
     from app.db import DB
+    # Device checks are exercised with the original unsigned token protocol.
+    monkeypatch.setattr(settings, "node_keys", "prefer")
 
     @contextlib.asynccontextmanager
     async def lite_lifespan(app):

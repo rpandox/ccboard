@@ -50,7 +50,7 @@ def _online(monkeypatch):
 
 
 @pytest.fixture
-def lone_board(lite_client):
+def lone_board(lite_client, unsigned_node_keys):
     from app import main
     nodes.reset()
     return lite_client, main.db

@@ -1415,9 +1415,9 @@
       "key": "CCBOARD_NODE_KEYS",
       "group": "safety",
       "label": "Node signing keys",
-      "help": "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.",
+      "help": "Unset, require once every pair has a key (prefer while one has none; nothing is cut). Typed: require refuses unkeyed pairs, prefer keeps and upgrades them, off turns signing off.",
       "kind": "choice",
-      "default": "prefer",
+      "default": "require",
       "cls": "file",
       "applies": "restart",
       "secret": false,
@@ -1427,9 +1427,9 @@
         "require",
         "off"
       ],
-      "value": "prefer",
+      "value": "require",
       "set": false,
-      "line": "CCBOARD_NODE_KEYS=prefer",
+      "line": "CCBOARD_NODE_KEYS=require",
       "source": "default",
       "problem": null
     },

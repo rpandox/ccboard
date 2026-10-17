@@ -29,6 +29,12 @@ B_URL = "https://100.64.0.2"
 CODE_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}")
 
 
+@pytest.fixture(autouse=True)
+def unsigned_pairing_protocol(monkeypatch):
+    """Keep the original unsigned handshake coverage; signing policy is covered in test_nodes_keys."""
+    monkeypatch.setattr(settings, "node_keys", "prefer")
+
+
 class Clock:
     def __init__(self, t=1_800_000_000.0):
         self.t = t

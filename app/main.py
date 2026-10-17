@@ -513,7 +513,9 @@ async def _node_auth(request: Request, call_next):
             message += "; this is transient: check the two clocks; they must be within 120 seconds."
         elif reason in ("stale", "replay"):
             message += "; this is transient: the request was refused once, nothing to do."
-        elif reason in ("key_changed", "key_required", "bad_signature", "signature_required"):
+        elif reason == "key_required":
+            message = node_keys.KEY_REQUIRED_MESSAGE
+        elif reason in ("key_changed", "bad_signature", "signature_required"):
             message += "; pair again if the key was lost"
         return JSONResponse({"error": message, "reason": reason}, status_code=401, headers=NODE_SECURITY_HEADERS)
     scope = nodes.route_scope(request.method, request.url.path)
@@ -973,6 +975,7 @@ def build_state(user: str) -> dict:
     st["node_name"] = settings.node_name or st["health"]["host"]
     st["node"] = nodes.card(db, health_snap=st["health"], sessions=None if st.get("tmux_down") else _state_sessions(st["projects"]), full=False,
                             identity=team_github.identity_cached())    # the node card without agents and accounts (issue #133); the login only if it is already known: the page poll never asks gh
+    st["node_keys"] = nodes.node_keys.view(db)             # issue #271: {mode (enforced now), setting, explicit, unkeyed (names), unkeyed_count}; always present
     st["claude_defaults"] = {"subagent_model": settings.subagent_model or "inherit", "fable_cap": settings.headless_fable_cap}     # CCBOARD_SUBAGENT_MODEL, CCBOARD_HEADLESS_FABLE_CAP: shown in Settings > Box
     st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's

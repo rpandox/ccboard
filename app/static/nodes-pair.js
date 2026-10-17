@@ -104,14 +104,16 @@ NodeView.list = function (answer, ...keys) {
 NodeView.keyId = function (id) {
   return typeof id === 'string' && /^[0-9a-f]{16}$/.test(id) ? id.match(/.{4}/g).join(' ') : '';
 };
-NodeView.keyState = function (rec) {
+NodeView.keyState = function (rec, keyMode = 'require') {
   if (rec.last_error === 'own_key_changed' || rec.error_kind === 'own_key_changed') return '✕ this board’s signing key changed; remove its pair on the peer first';
   if (rec.last_error === 'key_changed' || rec.error_kind === 'key_changed') return '✕ peer signing key changed; remove its pair here first';
+  if (rec.last_error === 'key_required' || rec.error_kind === 'key_required' || (!rec.pubkey && keyMode === 'require')) return '✕ unkeyed pair refused. Pair again or set CCBOARD_NODE_KEYS=prefer.';
+  if (!rec.pubkey && keyMode === 'soon') return '! no signing key: keys become required once this pair is paired again. Press Pair again.';     // issue #271: the default, held at prefer until every pair has a key
   const source = ['pairing', 'upgrade', 'rotation'].includes(rec.key_source) ? rec.key_source : 'upgrade';
   return rec.pubkey ? `✓ keyed (${source})` : '○ unkeyed, pair again';
 };
 
-NodeView.peer = function (rec) {
+NodeView.peer = function (rec, keyMode = 'require') {
   const r = rec && typeof rec === 'object' ? rec : {};
   const s = NodeView.str;
   const id = s(r.peer_id || r.id || r.handle, 80);
@@ -123,7 +125,7 @@ NodeView.peer = function (rec) {
     scopes: NodeView.scopeList(r.scopes), seen, unverified: r.callback_unverified === true, repair: r.needs_repair === true, legacy: r.legacy === true,
     revoked: !!r.revoked_at, error: s(r.last_error, 120), direction: r.direction === 'in' ? 'in' : 'out',
     superseded: s(r.superseded_by, 80), supersededHost: NodeView.hostOf(s(r.superseded_by_url, 300)),
-    device: NodeView.deviceOf(r), keyId: NodeView.keyId(r.key_id), keySource: r.key_source, keyState: NodeView.keyState(r),
+    device: NodeView.deviceOf(r), keyId: NodeView.keyId(r.key_id), keySource: r.key_source, keyState: NodeView.keyState(r, keyMode), keySoon: !r.legacy && !r.pubkey && keyMode === 'soon', keyRefused: !r.legacy && ((!r.pubkey && keyMode === 'require') || r.last_error === 'key_required'),
   };
 };
 
@@ -249,6 +251,7 @@ NodeView.authView = function (a) {
    node that calls this board (`incoming`) the words are about use. */
 NodeView.peerState = function (p, incoming) {
   if (incoming && Number.isFinite(p.pendingUntil)) return { word: "pairing not finished", tone: "warn", glyph: "·", hint: "The caller has not confirmed this pairing yet." };
+  if (p.keyRefused) return { word: 'unkeyed pair refused', tone: 'warn', glyph: '!', hint: 'Pair again or set CCBOARD_NODE_KEYS=prefer.' };
   if (p.repair) return { word: 're-pair needed', tone: 'warn', glyph: '!', hint: 'The saved token stopped working. Remove this node and pair it again.' };
   if (p.legacy && !incoming) return { word: 'read only', tone: '', glyph: '·', hint: 'Set in CCBOARD_NODES and read with the hub token: pair it to enable actions.' };
   if (p.seen !== null) return { word: incoming ? 'in use' : 'paired', tone: 'ok', glyph: '✓', hint: incoming ? 'This node has called this board.' : 'This board has reached the node.' };
@@ -301,20 +304,20 @@ NodeView.clock = function (epoch) {
 /* A pair as a row, in the shape of the found rows: name (and its handle), chips (state, scopes, flags), a note, and `actions` (elements) at the right. */
 NodeView.REPLACED = 'Another pair';
 
-NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0, deviceCheck = false } = {}) {
-  const p = NodeView.peer(rec);
+NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0, deviceCheck = false, keyMode = 'require' } = {}) {
+  const p = NodeView.peer(rec, keyMode);
   const st = NodeView.peerState(p, incoming);
   const scopes = NodeView.SCOPES.filter((s) => p.scopes.includes(s.id));
   const replaced = incoming && p.superseded;
   return el('div', { class: `nd-row${p.repair ? ' repair' : ''}${replaced ? ' superseded' : ''}`, 'data-key': p.key, 'data-kind': incoming ? 'in' : 'out' },
     el('div', { class: 'nd-main' },
       el('div', { class: 'nd-head' }, el('b', { class: 'nd-name', text: p.name }), p.handle ? el('span', { class: 'dim nd-handle', text: p.handle }) : null),
-      !p.legacy && p.pendingUntil === null ? el('p', { class: 'nd-key-note', text: `${p.keyState}${p.keyId ? ' · ' + p.keyId : ''}` }) : null,
+      !p.legacy && p.pendingUntil === null ? el('p', { class: `nd-key-note${p.keySoon ? ' nd-key-soon' : ''}`, role: p.keySoon ? 'note' : null, text: `${p.keyState}${p.keyId ? ' · ' + p.keyId : ''}` }) : null,
       p.keySource === 'upgrade' ? el('p', { class: 'dim', text: 'Pinned by upgrade using the token. Pair again to bind the key with a code.' }) : null,
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
         incoming ? NodeView.deviceChips(p, deviceCheck) : null,
-        p.unverified && p.pendingUntil === null ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
+        p.unverified && p.pendingUntil === null ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. Its name is not confirmed.') : null,
         replaced ? NodeView.chip('same node id', 'warn', '!', 'A newer pair from another address gave this node\'s id. A node id is only the word of the board at its address, so neither pair was cut.') : null),
       replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''} says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.` }) : null,
       el('div', { class: 'dim nd-note', text: NodeView.peerNote(p, { nowMs, incoming, rotatedMs }) })),
@@ -501,7 +504,8 @@ function demoNodesWrite(method, path, body, data) {
   if (method === 'POST' && path === '/api/nodes') {
     const host = String(b.url || '').replace(/^https?:\/\//, '').split(/[.:/]/)[0] || 'node';
     const handle = String(b.handle || host).toLowerCase().slice(0, 31);
-    const row = { peer_id: `demo-${handle}`, handle, node_id: `ts:nDEMO-${handle}`, name: handle, url: String(b.url || ''), scopes: ['read', 'tasks'], created_at: new Date().toISOString(), last_seen: null, direction: 'out' };
+    const keyed = (data.nodes || []).find((rec) => rec.pubkey) || {};
+    const row = { pubkey: keyed.pubkey, key_id: keyed.key_id, key_source: 'pairing', peer_id: `demo-${handle}`, handle, node_id: `ts:nDEMO-${handle}`, name: handle, url: String(b.url || ''), scopes: ['read', 'tasks'], created_at: new Date().toISOString(), last_seen: null, direction: 'out' };
     demoNodesMade.added.push(row);
     demoNodesNote('paired', handle, true, b.both_ways ? 'both ways' : '');
     return row;

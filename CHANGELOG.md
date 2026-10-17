@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.107 - 2026-10-19
+
+### Changed
+- Node signing keys are required by default, and the default never cuts a pair that has no key yet (#271). With `CCBOARD_NODE_KEYS` not set, the board reads its pairs (both directions, as it stores them) on every call: when each has a signing key it enforces `require`; when one or more has none it behaves as `prefer` until they do, so the update itself stops no pair. Re-pairing the last unkeyed pair (or its first signed call under `prefer`, which pins its key) makes the board enforce `require` on the next call, with no restart. A value set on purpose is never softened: `CCBOARD_NODE_KEYS=require` refuses an unkeyed pair at once (`key_required`, also when a recent card was restored at startup), and `prefer` stays `prefer`.
+- Doctor: the node-keys check warns "N node pair(s) have no signing key: keys become required once they are re-paired" and names the pairs. Settings > Nodes shows "Signing keys: required", or "required once every pair has a key (N without)", and every unkeyed pair row carries a notice and a Pair again button. `GET /api/state` gains `node_keys` ({mode, setting, explicit, unkeyed, unkeyed_count}, always present); `state.node.key_mode` is the mode in force.
+- `./install.sh` no longer stores a default for `CCBOARD_NODE_KEYS` (an empty value is the safe default above), and the first rerun on an install that stored the old `prefer` default turns it into empty and says so. A value you pass on the command line is kept, and a `prefer` set on purpose later is not touched again.
+
+Upgrade: Linux, WSL and Docker: rerun `./install.sh` once (it drops the old stored `prefer`). macOS: nothing. No pair stops working on the update; Doctor and Settings > Nodes name any pair without a signing key, and pairing it again makes keys required.
+
 ## v0.5.104 - 2026-10-18
 
 ### Changed
@@ -155,7 +164,7 @@ Upgrade: nothing to do.
 
 Upgrade: no installer rerun required. To enable worker setup from the page, set `CCBOARD_PAGE_WIDEN=1` in the trusted settings file and restart once; saved worker changes also need a board restart.
 
-## v0.5.89 - 2026-10-17
+## v0.5.107 - 2026-10-19
 
 ### Changed
 - README: one section, "Devices without a board", replaces the scattered notes: what such a device can and cannot do, the tailnet rule, the dedicated non-root user, the ten-second poll, the state log, removal, and a failure table in the board's own words.

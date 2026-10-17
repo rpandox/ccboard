@@ -127,3 +127,12 @@ test('settings renders text without innerHTML or inline style assignments', () =
   const source = fs.readFileSync(path.join(STATIC, 'pages/settings.js'), 'utf8');
   assert.doesNotMatch(source, /\.innerHTML\s*=|\.outerHTML\s*=|insertAdjacentHTML|setAttribute\(['"]style/);
 });
+
+
+test('Node signing keys shows require as the default on the Options page', async () => {
+  const w = world();
+  await settle();
+  const row = panel(w).querySelector('.set-option[data-key=CCBOARD_NODE_KEYS]');
+  assert.match(text(row), /default require/);
+  assert.match(text(row), /CCBOARD_NODE_KEYS=require/);
+});

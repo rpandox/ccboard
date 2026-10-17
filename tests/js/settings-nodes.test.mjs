@@ -464,8 +464,8 @@ test('the shipped demo fixture, if it is there, renders the section with found, 
 // fake of the board's routes (GET /api/nodes, /api/nodes/pairs, /api/nodes/audit, POST /api/nodes/pair-code, POST /api/nodes, POST /api/nodes/<peer>/rotate, DELETE /api/nodes/<peer>).
 
 const CODE = 'K7Q2M-4XD9R';
-const peer = (over) => ({ peer_id: 'p1', handle: 'build-box', node_id: 'ts:nBOX', name: 'build-box', url: 'https://build-box.example.ts.net:8443', scopes: ['read', 'tasks'], created_at: iso(86400), last_seen: iso(120), direction: 'out', ...over });
-const caller = (over) => ({ peer_id: 'c1', peer_node_id: 'ts:nDESK', name: 'desk-pc', url: 'https://desk-pc.example.ts.net', scopes: ['read', 'tasks', 'sessions'], created_at: iso(86400), last_used_at: iso(600), direction: 'in', ...over });
+const peer = (over) => ({ peer_id: 'p1', handle: 'build-box', node_id: 'ts:nBOX', name: 'build-box', url: 'https://build-box.example.ts.net:8443', scopes: ['read', 'tasks'], created_at: iso(86400), last_seen: iso(120), direction: 'out', pubkey: 'A'.repeat(43), key_source: 'pairing', ...over });
+const caller = (over) => ({ peer_id: 'c1', peer_node_id: 'ts:nDESK', name: 'desk-pc', url: 'https://desk-pc.example.ts.net', scopes: ['read', 'tasks', 'sessions'], created_at: iso(86400), last_used_at: iso(600), direction: 'in', pubkey: 'A'.repeat(43), key_source: 'pairing', ...over });
 const defer = () => { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; };
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
 const refuse = (status, message, reason) => { const e = new Error(message); e.status = status; if (reason) e.body = { error: message, reason }; return e; };
@@ -1350,10 +1350,16 @@ test('the pairing code never touches storage, the URL or an event: it is only ev
 const demoFile = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'nodes.json'), 'utf8'));
 
 test('the shipped demo fixture lists paired nodes (reached, never reached, needing a re-pair), callers and activity', async () => {
-  const { w } = pairWorld({ out: demoFile.nodes, inn: demoFile.pairs, audit: demoFile.audit });
+  const demoState = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8'));
+  assert.equal(demoState.node.key_mode, 'prefer', 'the demo board holds the default at prefer while old-laptop has no key');
+  assert.deepEqual(demoState.node_keys, { mode: 'prefer', setting: 'require', explicit: false, unkeyed: ['old-laptop'], unkeyed_count: 1 });
+  const { w } = pairWorld({ out: demoFile.nodes, inn: demoFile.pairs, audit: demoFile.audit, over: { node: demoState.node, node_keys: demoState.node_keys } });
   await settle();
   const chips = pairedRows(w).map((r) => text(r.querySelector('.nd-chips .badge')));
   assert.ok(chips.includes('✓ paired') && chips.includes('· waiting for first contact') && chips.includes('! re-pair needed'));
+  assert.equal(pairedRows(w).length, demoFile.nodes.length);
+  assert.ok(pairedRows(w).some((r) => /no signing key: keys become required once this pair is paired again.*Pair again/.test(text(r))));
+  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(1 without\)/);
   assert.ok(incomingRows(w).length >= 2);
   assert.ok(incomingRows(w).some((r) => /callback not verified/.test(text(r))));
   const words = panel(w).querySelectorAll('.nd-audit-word').map(text);
@@ -1406,6 +1412,8 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
   const added = await w.run('api("POST", "/api/nodes", { url: "https://box-2.example.ts.net", code: "K7Q2M-4XD9R", handle: "box-2" })');
   assert.equal(added.peer_id, 'demo-box-2');
   assert.equal(added.last_seen, null, 'a new pair has not been reached yet');
+  assert.ok(added.pubkey && added.key_id);
+  assert.equal(added.key_source, 'pairing');
   assert.equal((await w.run('api("GET", "/api/nodes")')).nodes.length, 4);
   assert.deepEqual(plain(await w.run('api("DELETE", "/api/nodes/p-old-laptop")')), { removed: true, peer_notified: false, auto_revoked: [], also_revoked: [], other_pairs: [] });
   const pv = plain(await w.run('api("POST", "/api/nodes/p-build-box/remove-preview")'));
@@ -1784,7 +1792,9 @@ test('hostile node and action names are text in the selects and the rows, never 
 test('the demo file has relay rows for the filters: both directions, a refusal, a failure-class row, several nodes and actions', async () => {
   const kinds = new Set(demoFile.audit.map((r) => `${r.direction}:${r.status}`));
   for (const k of ['in:ok', 'out:ok', 'out:refused', 'in:refused']) assert.ok(kinds.has(k), k);
-  const { w } = pairWorld({ out: demoFile.nodes, inn: demoFile.pairs, audit: demoFile.audit });
+  const demoState = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8'));
+  assert.equal(demoState.node.key_mode, 'prefer');
+  const { w } = pairWorld({ out: demoFile.nodes, inn: demoFile.pairs, audit: demoFile.audit, over: { node: demoState.node, node_keys: demoState.node_keys } });
   await settle();
   const actions = new Set(demoFile.audit.map((r) => r.action));
   for (const a of ['read_task', 'read_pane', 'read_agents', 'route_refused']) assert.ok(actions.has(a), a);
@@ -1979,7 +1989,7 @@ test('node keys show a grouped id, mode and date; Rotate key needs two taps', as
   const { w } = pairWorld({ over: { node: { ...CARD, key_mode: 'prefer', key: { alg: 'ed25519', id: '9f2c41aa07bed310', created_at: '2026-10-17' } } } });
   await settle();
   assert.match(text(panel(w)), /9f2c 41aa 07be d310/);
-  assert.match(text(panel(w)), /CCBOARD_NODE_KEYSprefer/);
+  assert.match(text(panel(w)), /Signing keysprefer/);
   assert.match(text(panel(w)), /Key created2026-10-17/);
   const { w: w2 } = pairWorld({ over: { node: { ...CARD, key_mode: 'prefer', key: { alg: 'ed25519', id: '9f2c41aa07bed310', created_at: '2026-10-17T07:31:49.123456+00:00' } } } });
   await settle();
@@ -2000,7 +2010,10 @@ test('pair key states use glyphs and words, and upgrade pins offer Pair again', 
   assert.ok(btn(pairedRows(w)[0], 'Pair again'));
   const view = w.get('NodeView');
   assert.equal(view.keyState({ pubkey: 'A'.repeat(43), key_source: 'pairing' }), '✓ keyed (pairing)');
-  assert.equal(view.keyState({}), '○ unkeyed, pair again');
+  assert.match(view.keyState({}), /unkeyed pair refused.*Pair again.*CCBOARD_NODE_KEYS=prefer/);
+  assert.equal(view.keyState({}, 'prefer'), '○ unkeyed, pair again');
+  assert.match(view.keyState({}, 'soon'), /no signing key: keys become required once this pair is paired again.*Pair again/);
+  assert.equal(view.keyState({ pubkey: 'A'.repeat(43), key_source: 'pairing' }, 'soon'), '✓ keyed (pairing)');
   assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ peer signing key changed; remove its pair here first');
   assert.match(view.keyState({ last_error: 'own_key_changed' }), /this board.*signing key changed/);
 });
@@ -2029,4 +2042,47 @@ test('pending outgoing refusal shows the explanation without a re-pair warning',
   await settle();
   assert.match(text(pairedRows(w)[0]), new RegExp(message));
   assert.doesNotMatch(text(pairedRows(w)[0]), /re-pair needed|saved token stopped working/i);
+});
+
+
+test('unkeyed incoming and outgoing pairs are refused by default; prefer keeps compatibility wording', async () => {
+  for (const key_mode of ['require', 'prefer', 'off']) {
+    const { w } = pairWorld({ out: [peer({ pubkey: null, key_source: null })], inn: [caller({ pubkey: null, key_source: null })], over: { node: { ...CARD, key_mode } } });
+    await settle();
+    for (const row of [...pairedRows(w), ...incomingRows(w)]) {
+      if (key_mode === 'require') assert.match(text(row), /unkeyed pair refused.*Pair again or set CCBOARD_NODE_KEYS=prefer/);
+      else {
+        assert.match(text(row), /unkeyed, pair again/);
+        assert.doesNotMatch(text(row), /unkeyed pair refused/);
+      }
+    }
+  }
+});
+
+
+test('the default held at prefer: every unkeyed pair row has a notice and Pair again, a keyed row has none, and the line says how many lack a key', async () => {
+  const node_keys = { mode: 'prefer', setting: 'require', explicit: false, unkeyed: ['old-laptop', 'desk-pc'], unkeyed_count: 2 };
+  const keyed = { pubkey: 'A'.repeat(43), key_id: '9f2c41aa07bed310', key_source: 'pairing' };
+  const { w } = pairWorld({ out: [peer({ pubkey: null, key_source: null }), peer({ peer_id: 'p-keyed', handle: 'keyed', name: 'keyed', ...keyed })],
+    inn: [caller({ pubkey: null, key_source: null })], over: { node: { ...CARD, key_mode: 'prefer' }, node_keys } });
+  await settle();
+  const [open, ok] = pairedRows(w);
+  const notice = /no signing key: keys become required once this pair is paired again/;
+  assert.match(text(open), notice);
+  assert.ok(btn(open, 'Pair again'));
+  assert.doesNotMatch(text(open), /unkeyed pair refused/);
+  assert.doesNotMatch(text(ok), notice);
+  assert.match(text(incomingRows(w)[0]), notice);
+  assert.ok(btn(incomingRows(w)[0], 'Pair again'));
+  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(2 without\)/);
+});
+
+test('signing keys read required when every pair has a key, and prefer typed on purpose does not claim the default', async () => {
+  const { w } = pairWorld({ over: { node: { ...CARD, key_mode: 'require' }, node_keys: { mode: 'require', setting: 'require', explicit: false, unkeyed: [], unkeyed_count: 0 } } });
+  await settle();
+  assert.match(text(panel(w)), /Signing keysrequired(?! once)/);
+  const typed = pairWorld({ out: [peer({ pubkey: null, key_source: null })], over: { node: { ...CARD, key_mode: 'prefer' }, node_keys: { mode: 'prefer', setting: 'prefer', explicit: true, unkeyed: ['x'], unkeyed_count: 1 } } });
+  await settle();
+  assert.match(text(panel(typed.w)), /Signing keysprefer/);
+  assert.doesNotMatch(text(pairedRows(typed.w)[0]), /keys become required/);
 });

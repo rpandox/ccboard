@@ -327,3 +327,66 @@ def test_a_setting_install_sh_binds_empty_has_a_default_cell_that_says_what_empt
     assert len(empty) > 10
     bare = [n for n in sorted(empty) if not (cells.get(n) or "").strip()]
     assert not bare, f"a Default cell is blank (say empty, or name the application default): {bare}"
+
+
+NODE_KEYS_NOTE = "Node signing keys are now required by default; set CCBOARD_NODE_KEYS=prefer to keep the old behaviour."
+
+
+def _node_keys_block():
+    m = re.search(r"^# >>> node signing keys\n(.*?)^# <<< node signing keys\n", INSTALL.read_text(), re.S | re.M)
+    assert m, "install.sh lost its node signing keys markers"
+    return m.group(1)
+
+
+def _node_keys_run(tmp_path, stored, caller, marker=False):
+    """The installer's own migration block, run the way install.sh runs it: the stored env-file value is read, the command-line value wins,
+    then the migration and the default binding. Returns what it printed: the value that would be written, and whether the marker is wanted."""
+    mark = tmp_path / "marker"
+    if marker:
+        mark.write_text("")
+    binding = next(line for line in INSTALL.read_text().splitlines() if line.startswith(': "${CCBOARD_NODE_KEYS:='))
+    lines = ["set -euo pipefail", "note() { printf '    %s\\n' \"$*\"; }", f"NODE_KEYS_MARKER={mark}", _node_keys_block()]
+    if stored is not None:
+        lines.append(f"CCBOARD_NODE_KEYS={stored}")
+    if caller:
+        lines.append(f"CCBOARD_NODE_KEYS={caller}")
+    lines += [f'node_keys_migrate "{caller or ""}"', binding, 'printf "VALUE=[%s] MARK=%s\\n" "$CCBOARD_NODE_KEYS" "$NODE_KEYS_MARK"']
+    r = subprocess.run(["bash", "-c", "\n".join(lines)], env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_a_fresh_install_stores_an_empty_node_keys_value_not_a_default(tmp_path):
+    out = _node_keys_run(tmp_path, None, None)
+    assert "VALUE=[] MARK=1" in out and NODE_KEYS_NOTE not in out
+    text = INSTALL.read_text()
+    assert "CCBOARD_NODE_KEYS:=prefer" not in text and "CCBOARD_NODE_KEYS:=require" not in text
+    from app.config import Settings
+    assert Settings({"CCBOARD_NODE_KEYS": ""}).node_keys == "require", "an empty stored value is the app default"
+
+
+def test_a_stored_prefer_becomes_empty_on_rerun_with_one_plain_line(tmp_path):
+    out = _node_keys_run(tmp_path, "prefer", None)
+    assert "VALUE=[] MARK=1" in out and out.count(NODE_KEYS_NOTE) == 1
+
+
+def test_a_prefer_passed_on_the_command_line_is_kept_and_not_migrated_later(tmp_path):
+    out = _node_keys_run(tmp_path, "prefer", "prefer")
+    assert "VALUE=[prefer] MARK=1" in out and NODE_KEYS_NOTE not in out
+    out = _node_keys_run(tmp_path, None, "prefer")
+    assert "VALUE=[prefer] MARK=1" in out and NODE_KEYS_NOTE not in out
+    again = _node_keys_run(tmp_path, "prefer", None, marker=True)
+    assert "VALUE=[prefer] MARK=0" in again and NODE_KEYS_NOTE not in again, "once the marker exists a prefer set on purpose stays"
+
+
+@pytest.mark.parametrize("stored", ["require", "off", "invalid", ""])
+def test_other_stored_node_keys_values_are_left_alone(tmp_path, stored):
+    out = _node_keys_run(tmp_path, stored, None)
+    assert f"VALUE=[{stored}] MARK=1" in out and NODE_KEYS_NOTE not in out
+
+
+def test_the_installer_calls_the_migration_with_the_callers_value_and_writes_the_marker_after_the_env_file():
+    text = INSTALL.read_text()
+    assert 'node_keys_migrate "${CALLER[CCBOARD_NODE_KEYS]}"' in text
+    assert text.index('node_keys_migrate "${CALLER') > text.index("\"${CALLER[$k]}\"; done")
+    assert text.index('sudo install -D -m 0644 /dev/null "$NODE_KEYS_MARKER"') > text.index('note "wrote $ENV_FILE"')
