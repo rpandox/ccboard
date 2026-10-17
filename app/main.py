@@ -478,6 +478,22 @@ async def _node_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
+    if request.url.path == "/api/settings/options" and request.method == "PUT":
+        from urllib.parse import urlsplit
+        user = identify(request.headers, settings)
+        origin = request.headers.get("origin")
+        origins = {str(request.base_url).rstrip("/")}
+        try:
+            public = urlsplit(settings.public_url)
+            if public.scheme and public.netloc:
+                origins.add(f"{public.scheme}://{public.netloc}")
+        except ValueError:
+            pass
+        if (any(name in request.headers for name in ("authorization", hooks.TOKEN_HEADER, health.HUB_HEADER))
+                or not csrf_ok(request.method, request.headers)):
+            user = None
+        if not user or (origin is not None and origin not in origins):
+            return _settings_refused(None, "A signed-in person on this board with X-CCBoard: 1 is required.", 403, user)
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
     if request.url.path == mcp_remote.PATH and mcp_tokens.enabled() and _node_bearer(request):
@@ -827,8 +843,14 @@ def _scan_entry() -> dict:
         return dict(st)
 
 
+BOOT = {"id": uuid.uuid4().hex, "at": datetime.now(timezone.utc).isoformat()}
+
+
 def build_state(user: str) -> dict:
+    from .options import pending_state
     st = _scan_entry()
+    st["boot"] = BOOT
+    st["settings_pending"] = pending_state(settings)
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime, "auto_continue": settings.auto_continue,
@@ -5159,13 +5181,66 @@ def _epic_canon(owner: str, repo: str) -> tuple[str, str]:
 
 @app.get("/api/settings/options")
 def api_settings_options(request: Request):
-    """The option registry and startup values, read only and redacted for a signed-in person."""
-    from .options import view
+    """Running and saved option values, redacted for a signed-in person."""
+    from .options import listing
     _epic_person(request, "settings options are for a signed-in person")
     rec = db.kv_get(mcp_tokens.KV_REMOTE) if db is not None else None
     saved = rec.get("value") if isinstance(rec, dict) else None
     page_values = {"CCBOARD_MCP_REMOTE": saved["enabled"]} if isinstance(saved, dict) and isinstance(saved.get("enabled"), bool) else {}
-    return JSONResponse(view(settings, page_values), headers={"Cache-Control": "no-store"})
+    return JSONResponse(listing(settings, page_values, db), headers={"Cache-Control": "no-store"})
+
+
+def _settings_refused(key, reason, status=400, user=None):
+    from .options import safe_key
+    key = safe_key(key, settings.raw)
+    if user:
+        nodes.audit("in", "", "settings_refused", False, f"{key or 'request'}: {reason}", user=user, target="settings", status="refused", db=db)
+    else:
+        log.debug("settings request refused without an identified allowed person")
+    return JSONResponse({"key": key, "reason": reason}, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/settings/options")
+async def api_settings_options_save(request: Request):
+    from . import options
+    user = _epic_person(request, "settings options are changed by a signed-in person")
+    raw = bytearray()
+    async for part in request.stream():
+        raw.extend(part)
+        if len(raw) > 64 * 1024:
+            return _settings_refused(None, "Use at most 20 changes of 500 characters each.", user=user)
+    try:
+        body = json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        return _settings_refused(None, "Use a JSON object with changes.", user=user)
+    changes = body.get("changes") if isinstance(body, dict) else None
+    if (not isinstance(changes, dict) or not 1 <= len(changes) <= 20 or set(body) - {"changes", "stamp"}
+            or ("stamp" in body and not isinstance(body["stamp"], str))):
+        return _settings_refused(None, "Use 1 to 20 changes and an optional file stamp.", user=user)
+    registry = {o.key: o for o in options.registry()}
+    for key, value in changes.items():
+        option = registry.get(key)
+        if option is None:
+            return _settings_refused(key, "Choose a known option.", user=user)
+        if option.cls != "page" or option.secret:
+            reason = {"file": "file_only", "installer": "installer", "confirm": "needs_confirm"}.get(option.cls, "file_only")
+            return _settings_refused(key, reason, 403, user)
+        reason = options.validate_value(option, value, settings.raw) if value is not None else None
+        if reason:
+            return _settings_refused(key, reason, user=user)
+    try:
+        detail = options.save(settings, changes, body.get("stamp"))
+    except plat.WriteRaced:
+        return _settings_refused(None, "changed", 409, user)
+    except ValueError as e:
+        return _settings_refused(None, str(e), user=user)
+    except OSError:
+        return _settings_refused(None, "The page file could not be written.", 500, user)
+    nodes.audit("in", "", "settings_set", True, detail, user=user, target="settings", status="ok", db=db)
+    response = api_settings_options(request)
+    result = json.loads(response.body)
+    result["saved"] = list(changes)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @app.put("/api/epics/{owner}/{repo}/{n}/settings")

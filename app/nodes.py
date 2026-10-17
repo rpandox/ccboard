@@ -970,7 +970,7 @@ def audit(direction: str, peer_id: str, action: str, ok: bool, detail: str | Non
         d = _db(db)
         d.node_audit_add(at=iso(_now()), direction="out" if direction == "out" else "in", peer=str(peer_id or "")[:64],
                          action=_scrub(action, 40) or "unknown", status=status or ("ok" if ok else "failed"), node_name=_scrub(node_name, 41),
-                         user=_scrub(user, 64), target=_scrub(target, 120), detail=_scrub(detail, AUDIT_DETAIL_MAX))
+                         user=_scrub(user, 64), target=_scrub(target, 120), detail=_scrub(detail, 24000 if action == "settings_set" else AUDIT_DETAIL_MAX))
         t = time.monotonic()
         if _last_prune is None or t - _last_prune > _last_prune_gap:
             _last_prune = t

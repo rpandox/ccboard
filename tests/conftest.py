@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 # The board reads a settings file at start (app/config.py apply_env_file, issue #117); an empty CCBOARD_ENV_FILE switches that off, so the
 # module-level `settings` of a test run never picks up a real <data dir>/env from the machine the suite runs on.
 os.environ.setdefault("CCBOARD_ENV_FILE", "")
+os.environ.setdefault("CCBOARD_PAGE_FILE", "")
 
 
 # ---- the real-home canary (issue #101) --------------------------------------------------------------------------------------------

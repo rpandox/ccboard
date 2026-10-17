@@ -55,7 +55,10 @@
       "set": false,
       "line": "PROJECTS_DIR=/srv/projects",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "/srv/projects",
+      "pending": false,
+      "edit_value": "/srv/projects"
     },
     {
       "key": "CCBOARD_PORT",
@@ -76,7 +79,10 @@
       "set": false,
       "line": "CCBOARD_PORT=8000 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 8000,
+      "pending": false,
+      "edit_value": "8000"
     },
     {
       "key": "TTYD_PORT",
@@ -97,7 +103,10 @@
       "set": false,
       "line": "TTYD_PORT=7681 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 7681,
+      "pending": false,
+      "edit_value": "7681"
     },
     {
       "key": "CODE_SERVER_PORT",
@@ -118,7 +127,10 @@
       "set": false,
       "line": "CODE_SERVER_PORT=8080 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 8080,
+      "pending": false,
+      "edit_value": "8080"
     },
     {
       "key": "CCBOARD_HTTPS_PORT",
@@ -139,7 +151,10 @@
       "set": false,
       "line": "CCBOARD_HTTPS_PORT=443 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 443,
+      "pending": false,
+      "edit_value": "443"
     },
     {
       "key": "CODE_HTTPS_PORT",
@@ -160,7 +175,10 @@
       "set": false,
       "line": "CODE_HTTPS_PORT=8443 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 8443,
+      "pending": false,
+      "edit_value": "8443"
     },
     {
       "key": "CCBOARD_ALLOWED_USERS",
@@ -178,7 +196,10 @@
       "set": false,
       "line": "CCBOARD_ALLOWED_USERS=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": "[]"
     },
     {
       "key": "CCBOARD_DATA_DIR",
@@ -196,7 +217,10 @@
       "set": false,
       "line": "CCBOARD_DATA_DIR=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "/var/lib/ccboard",
+      "pending": false,
+      "edit_value": "/var/lib/ccboard"
     },
     {
       "key": "CODE_SERVER_VERSION",
@@ -214,7 +238,10 @@
       "set": false,
       "line": "CODE_SERVER_VERSION=4.139.1 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "4.139.1",
+      "pending": false,
+      "edit_value": "4.139.1"
     },
     {
       "key": "CCBOARD_PUBLIC_URL",
@@ -232,7 +259,10 @@
       "set": false,
       "line": "CCBOARD_PUBLIC_URL='' ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "NTFY_URL",
@@ -250,7 +280,10 @@
       "set": false,
       "line": "NTFY_URL=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "NTFY_TOPIC",
@@ -268,7 +301,10 @@
       "set": false,
       "line": "NTFY_TOPIC=ccboard",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "ccboard",
+      "pending": false,
+      "edit_value": "ccboard"
     },
     {
       "key": "NTFY_PUBLIC_URL",
@@ -286,7 +322,10 @@
       "set": false,
       "line": "NTFY_PUBLIC_URL='' ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "NTFY_HTTPS_PORT",
@@ -307,7 +346,10 @@
       "set": false,
       "line": "NTFY_HTTPS_PORT=8444 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 8444,
+      "pending": false,
+      "edit_value": "8444"
     },
     {
       "key": "NTFY_PORT",
@@ -328,25 +370,34 @@
       "set": false,
       "line": "NTFY_PORT=2586 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "2586",
+      "pending": false,
+      "edit_value": "2586"
     },
     {
       "key": "CCBOARD_APPROVE_TIMEOUT",
       "group": "safety",
       "label": "Approval timeout",
-      "help": "Seconds a permission prompt waits for a remote answer.",
-      "kind": "float",
+      "help": "Whole seconds (1\u20139999) a permission prompt waits. Set by the installer because the agents' hooks carry this timeout.",
+      "kind": "int",
       "default": "90",
-      "cls": "page",
+      "cls": "installer",
       "applies": "restart",
       "secret": false,
-      "bounds": null,
+      "bounds": [
+        1,
+        9999
+      ],
       "choices": null,
       "value": 90.0,
       "set": false,
-      "line": "CCBOARD_APPROVE_TIMEOUT=90",
+      "line": "CCBOARD_APPROVE_TIMEOUT=90 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 90.0,
+      "pending": false,
+      "edit_value": "90.0"
     },
     {
       "key": "PREVIEW_HTTPS_BASE",
@@ -367,7 +418,10 @@
       "set": false,
       "line": "PREVIEW_HTTPS_BASE=9100 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 9100,
+      "pending": false,
+      "edit_value": "9100"
     },
     {
       "key": "CCBOARD_NODE_NAME",
@@ -385,7 +439,10 @@
       "set": false,
       "line": "CCBOARD_NODE_NAME=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_HUB_TOKEN",
@@ -403,7 +460,10 @@
       "set": true,
       "line": "CCBOARD_HUB_TOKEN=<value>",
       "source": "file",
-      "problem": null
+      "problem": null,
+      "running": null,
+      "pending": false,
+      "edit_value": null
     },
     {
       "key": "CCBOARD_NODES",
@@ -421,7 +481,10 @@
       "set": false,
       "line": "CCBOARD_NODES=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_RESTIC_REPO",
@@ -439,7 +502,10 @@
       "set": false,
       "line": "CCBOARD_RESTIC_REPO=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "/var/lib/ccboard/restic",
+      "pending": false,
+      "edit_value": "/var/lib/ccboard/restic"
     },
     {
       "key": "CCBOARD_RESTIC_PASSWORD_FILE",
@@ -457,7 +523,10 @@
       "set": false,
       "line": "CCBOARD_RESTIC_PASSWORD_FILE=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "/var/lib/ccboard/restic-password",
+      "pending": false,
+      "edit_value": "/var/lib/ccboard/restic-password"
     },
     {
       "key": "CCBOARD_BACKUP_PUSH",
@@ -475,7 +544,10 @@
       "set": false,
       "line": "CCBOARD_BACKUP_PUSH=1",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": true,
+      "pending": false,
+      "edit_value": "True"
     },
     {
       "key": "CCBOARD_BACKUP_ONCALENDAR",
@@ -493,7 +565,10 @@
       "set": false,
       "line": "CCBOARD_BACKUP_ONCALENDAR='*-*-* 02:30:00' ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "*-*-* 02:30:00",
+      "pending": false,
+      "edit_value": "*-*-* 02:30:00"
     },
     {
       "key": "CCBOARD_BACKUP_EXTRA",
@@ -511,7 +586,10 @@
       "set": false,
       "line": "CCBOARD_BACKUP_EXTRA=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": "[]"
     },
     {
       "key": "CCBOARD_RUNTIME",
@@ -535,7 +613,10 @@
       "set": true,
       "line": "CCBOARD_RUNTIME=docker ./install.sh",
       "source": "environment",
-      "problem": null
+      "problem": null,
+      "running": "docker",
+      "pending": false,
+      "edit_value": "docker"
     },
     {
       "key": "CCBOARD_AUTO_CONTINUE",
@@ -553,7 +634,10 @@
       "set": false,
       "line": "CCBOARD_AUTO_CONTINUE=1",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": true,
+      "pending": false,
+      "edit_value": "True"
     },
     {
       "key": "CCBOARD_CLAUDE_MEM",
@@ -571,7 +655,10 @@
       "set": false,
       "line": "CCBOARD_CLAUDE_MEM=1 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": true,
+      "pending": false,
+      "edit_value": "True"
     },
     {
       "key": "CCBOARD_MEM_PORT",
@@ -592,7 +679,10 @@
       "set": false,
       "line": "CCBOARD_MEM_PORT=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": null,
+      "pending": false,
+      "edit_value": "None"
     },
     {
       "key": "CCBOARD_MEM_HTTPS_PORT",
@@ -613,7 +703,10 @@
       "set": false,
       "line": "CCBOARD_MEM_HTTPS_PORT='' ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": null,
+      "pending": false,
+      "edit_value": "None"
     },
     {
       "key": "CCBOARD_MEM_SERVICE",
@@ -631,7 +724,10 @@
       "set": false,
       "line": "CCBOARD_MEM_SERVICE=0 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "0",
+      "pending": false,
+      "edit_value": "0"
     },
     {
       "key": "CCBOARD_CODEX_HOOK_TRUST",
@@ -652,7 +748,10 @@
       "set": false,
       "line": "CCBOARD_CODEX_HOOK_TRUST=review",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "review",
+      "pending": false,
+      "edit_value": "review"
     },
     {
       "key": "CCBOARD_CLONE_ALLOWED_HOSTS",
@@ -670,7 +769,10 @@
       "set": false,
       "line": "CCBOARD_CLONE_ALLOWED_HOSTS=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": "[]"
     },
     {
       "key": "CCBOARD_MCP_REMOTE",
@@ -688,7 +790,10 @@
       "set": false,
       "line": "CCBOARD_MCP_REMOTE=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CODEX_HOME",
@@ -706,7 +811,10 @@
       "set": true,
       "line": "CODEX_HOME=/var/lib/ccboard/codex",
       "source": "environment",
-      "problem": null
+      "problem": null,
+      "running": "/var/lib/ccboard/codex",
+      "pending": false,
+      "edit_value": "/var/lib/ccboard/codex"
     },
     {
       "key": "CCBOARD_AUTOCLOSE_GRACE",
@@ -727,7 +835,10 @@
       "set": false,
       "line": "CCBOARD_AUTOCLOSE_GRACE=45",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 45.0,
+      "pending": false,
+      "edit_value": "45.0"
     },
     {
       "key": "CCBOARD_CODEX_HOOKS_ASYNC",
@@ -745,7 +856,10 @@
       "set": false,
       "line": "CCBOARD_CODEX_HOOKS_ASYNC=1 ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "1",
+      "pending": false,
+      "edit_value": "1"
     },
     {
       "key": "CCBOARD_CLAUDE_ULTRACODE_FLAG",
@@ -767,7 +881,10 @@
       "set": false,
       "line": "CCBOARD_CLAUDE_ULTRACODE_FLAG=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_SUBAGENT_MODEL",
@@ -785,7 +902,10 @@
       "set": false,
       "line": "CCBOARD_SUBAGENT_MODEL=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_HEADLESS_FABLE_CAP",
@@ -806,7 +926,10 @@
       "set": false,
       "line": "CCBOARD_HEADLESS_FABLE_CAP=25",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 25.0,
+      "pending": false,
+      "edit_value": "25.0"
     },
     {
       "key": "CCBOARD_PRICE_TABLE",
@@ -824,7 +947,10 @@
       "set": false,
       "line": "CCBOARD_PRICE_TABLE=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_TAILSCALE_PLACEMENT",
@@ -846,7 +972,10 @@
       "set": false,
       "line": "CCBOARD_TAILSCALE_PLACEMENT='' ./install.sh",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_NODE_LANES",
@@ -863,11 +992,14 @@
         999
       ],
       "choices": null,
-      "value": 4,
+      "value": 5,
       "set": true,
       "line": "CCBOARD_NODE_LANES=4",
-      "source": "file",
-      "problem": null
+      "source": "page",
+      "problem": null,
+      "running": 4,
+      "pending": true,
+      "edit_value": "5"
     },
     {
       "key": "CCBOARD_NODE_PORTS",
@@ -888,7 +1020,13 @@
       "set": false,
       "line": "CCBOARD_NODE_PORTS=443,8443",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [
+        443,
+        8443
+      ],
+      "pending": false,
+      "edit_value": "[443, 8443]"
     },
     {
       "key": "CCBOARD_NODE_TAGS",
@@ -908,13 +1046,18 @@
       "set": false,
       "line": "CCBOARD_NODE_TAGS=tag:ccboard",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [
+        "tag:ccboard"
+      ],
+      "pending": false,
+      "edit_value": "['tag:ccboard']"
     },
     {
       "key": "CCBOARD_NODES_POLL",
       "group": "nodes",
       "label": "Node poll interval",
-      "help": "Seconds between polls of a paired node with a minimum of five.",
+      "help": "Seconds between polls of a paired node, from five seconds to one hour.",
       "kind": "float",
       "default": "20",
       "cls": "page",
@@ -922,14 +1065,17 @@
       "secret": false,
       "bounds": [
         5,
-        null
+        3600
       ],
       "choices": null,
       "value": 20.0,
       "set": false,
       "line": "CCBOARD_NODES_POLL=20",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 20.0,
+      "pending": false,
+      "edit_value": "20.0"
     },
     {
       "key": "CCBOARD_MCP_NODES",
@@ -952,7 +1098,10 @@
       "set": false,
       "line": "CCBOARD_MCP_NODES=0",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_EPIC_AUTHORS",
@@ -970,7 +1119,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_AUTHORS=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": "[]"
     },
     {
       "key": "CCBOARD_EPIC_WRITES",
@@ -988,7 +1140,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_WRITES=0",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": false,
+      "pending": false,
+      "edit_value": "False"
     },
     {
       "key": "CCBOARD_EPIC_ALIAS",
@@ -1006,7 +1161,10 @@
       "set": true,
       "line": "CCBOARD_EPIC_ALIAS=demo",
       "source": "environment",
-      "problem": null
+      "problem": null,
+      "running": "demo",
+      "pending": false,
+      "edit_value": "demo"
     },
     {
       "key": "CCBOARD_EPIC_LEASE_MIN",
@@ -1027,7 +1185,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_LEASE_MIN=30",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 30,
+      "pending": false,
+      "edit_value": "30"
     },
     {
       "key": "CCBOARD_EPIC_MAX_WINDOW_PCT",
@@ -1048,7 +1209,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_MAX_WINDOW_PCT=85",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 85,
+      "pending": false,
+      "edit_value": "85"
     },
     {
       "key": "CCBOARD_EPIC_WORKER",
@@ -1066,7 +1230,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_WORKER=0",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": false,
+      "pending": false,
+      "edit_value": "False"
     },
     {
       "key": "CCBOARD_EPIC_REPOS",
@@ -1084,7 +1251,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_REPOS=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": "[]"
     },
     {
       "key": "CCBOARD_EPIC_WORKER_POLL",
@@ -1105,7 +1275,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_WORKER_POLL=90",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 90,
+      "pending": false,
+      "edit_value": "90"
     },
     {
       "key": "CCBOARD_EPIC_WORKER_MAX_PER_HOUR",
@@ -1126,7 +1299,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_WORKER_MAX_PER_HOUR=6",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 6,
+      "pending": false,
+      "edit_value": "6"
     },
     {
       "key": "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
@@ -1147,7 +1323,10 @@
       "set": false,
       "line": "CCBOARD_EPIC_WORKER_MAX_PER_DAY=30",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": 30,
+      "pending": false,
+      "edit_value": "30"
     },
     {
       "key": "CCBOARD_NODE_AUTH",
@@ -1169,7 +1348,10 @@
       "set": false,
       "line": "CCBOARD_NODE_AUTH=token",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "token",
+      "pending": false,
+      "edit_value": "token"
     },
     {
       "key": "CCBOARD_NODE_CAP",
@@ -1187,7 +1369,10 @@
       "set": false,
       "line": "CCBOARD_NODE_CAP=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     },
     {
       "key": "CCBOARD_RECOVER",
@@ -1205,7 +1390,10 @@
       "set": false,
       "line": "CCBOARD_RECOVER=1",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": true,
+      "pending": false,
+      "edit_value": "True"
     },
     {
       "key": "CCBOARD_TMUX_SOCKET",
@@ -1223,7 +1411,10 @@
       "set": false,
       "line": "CCBOARD_TMUX_SOCKET=ccboard",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "ccboard",
+      "pending": false,
+      "edit_value": "ccboard"
     },
     {
       "key": "CCBOARD_ENV_FILE",
@@ -1241,9 +1432,18 @@
       "set": false,
       "line": "CCBOARD_ENV_FILE=",
       "source": "default",
-      "problem": null
+      "problem": null,
+      "running": "",
+      "pending": false,
+      "edit_value": ""
     }
   ],
   "other_lines": 2,
-  "restart_hint": "sudo systemctl restart ccboard"
+  "restart_hint": "sudo systemctl restart ccboard",
+  "stamp": "demo",
+  "pending": [
+    "CCBOARD_NODE_LANES"
+  ],
+  "audit": [],
+  "refusals": []
 }

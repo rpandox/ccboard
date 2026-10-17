@@ -257,3 +257,12 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 #page .settings-page .set-option > .k { overflow-wrap:anywhere; }
 #page .settings-page .set-option-key { display:block; font-size:11px; margin-top:4px; }
 #page .settings-page .set-option-line { overflow-wrap:anywhere; user-select:all; }
+
+/* Safe options keep a single editor and primary action open. */
+#page .set-option-editor { display:grid; gap:8px; min-width:0; }
+#page .set-option-editor .row { flex-wrap:wrap; }
+#page .set-option-input { max-width:100%; min-width:0; min-height:var(--row-btn); }
+#page .set-option-input[type=checkbox] { width:var(--row-btn); height:var(--row-btn); }
+#page .set-option-editor button, #page .set-option .kv-act button { min-height:var(--row-btn); }
+#page .set-option-error:empty { display:none; }
+#page .set-pending, #page .set-options-audit { overflow-wrap:anywhere; }

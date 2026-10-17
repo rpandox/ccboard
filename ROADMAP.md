@@ -2,6 +2,13 @@
 
 Working rules: one phase at a time; each item is one commit; tick items as they land.
 
+## v0.5.76 - Page-saved options (P2)
+
+- [x] Person-only saves for the page class, startup validation, private atomic overrides and stale-tab conflicts.
+- [x] Save and refusal audit, running versus next-start values, boot identity and pending banners on Options and Home.
+- [x] Inline editors, reset to file, demo controls and the settings-page doctor check.
+- [ ] P3: restart button. P4: typed confirmation and file-only master switch for widening options.
+
 ## v0.5.71 - Settings option registry (P1)
 
 - [x] One registry for all 59 remembered options and the recovery, socket and settings-file extras.

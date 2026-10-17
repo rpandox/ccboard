@@ -320,6 +320,10 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
+  if (path === '/api/settings/options' && typeof demoSettingsOptions === 'function') {
+    if (method === 'PUT') return demoSettingsOptions(body);
+    if (settingsDemoOptions) return settingsDemoOptions;
+  }
   if (path.split('?')[0] === '/api/route/auto' && typeof lxnDemoAuto === 'function') return lxnDemoAuto(path);          // the launcher's Auto (issue #150, launcher-node.js)
   if ((path.split('?')[0] === '/api/epics/new' || (method === 'POST' && /^\/api\/epics(\/preview)?$/.test(path.split('?')[0]))) && typeof demoEpicNew === 'function') return demoEpicNew(method, path, body);   // New epic (issue #158): played in pages/epic-new.js
   if (/^\/api\/(epics(\/|$)|nodes\/[^/]+\/epics\/(claim|work)$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js

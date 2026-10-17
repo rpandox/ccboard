@@ -21,6 +21,7 @@ PREFIXES = ("CCBOARD_", "NTFY_", "CODE_", "CODEX_", "TTYD_", "PREVIEW_", "PROJEC
 
 # README rows that install.sh does not remember in /etc/ccboard/env, each with the reason.
 NOT_REMEMBERED = {
+    "CCBOARD_PAGE_FILE": "page override path or empty to disable; never remembered by the installer",
     "CCBOARD_DEVCONTAINER": "a one-time install step (installs the devcontainer CLI), nothing to remember",
     "CCBOARD_RECOVER": "read at each start of the board; set it in the service environment",
     "CCBOARD_IMAGE_TAG": "docker mode only: kept in the compose .env, not in the env file",
