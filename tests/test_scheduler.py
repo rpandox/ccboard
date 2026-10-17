@@ -556,6 +556,34 @@ def test_run_job_hands_the_subagent_env_to_the_subprocess_only_when_set(client, 
     assert seen[0] is None and seen[1]["CLAUDE_CODE_SUBAGENT_MODEL"] == "haiku" and "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" not in seen[1]
 
 
+def test_a_stored_job_with_a_non_headless_mode_runs_in_auto_and_never_in_bypass(client, projects_dir, fake_tmux, tmp_path, monkeypatch, caplog):
+    """A hand-edited row (bypassPermissions) must not reach the argv: the build path gets `auto` and a warning is logged (#104)."""
+    from app import main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    built = []
+    real = scheduler.build_command
+
+    def spy(prompt, slug, mode, *a, **k):
+        cmd = real(prompt, slug, mode, *a, **k)
+        built.append((mode, cmd))
+        return cmd
+    monkeypatch.setattr(scheduler, "build_command", spy)
+    seen = []
+    real_run = scheduler.subprocess.run
+    monkeypatch.setattr(scheduler.subprocess, "run", lambda cmd, *a, **k: (seen.append(cmd), real_run(cmd, *a, **k))[1])
+    for bad in ("bypassPermissions", "yolo"):
+        jid = main.db.job_add(project="shop", repo="api", name="n" + bad[:2], prompt="x")
+        job = {"id": jid, "name": "n" + bad[:2], "project": "shop", "repo": "api", "agent": "claude", "prompt": "x", "permission_mode": bad}
+        with caplog.at_level("WARNING", logger="ccboard.scheduler"):
+            scheduler.run_job(main.db, job, main.db.run_start(jid))
+        assert built[-1][0] == "auto", bad
+        assert not any("bypass" in a.lower() or "dangerously" in a.lower() for c in [built[-1][1], *seen] for a in c), "no bypass spelling in any argv"
+        assert any("not a headless mode" in r.message and bad in r.message for r in caplog.records)
+    assert scheduler.headless_mode({"permission_mode": "plan"}) == "plan" and scheduler.headless_mode({}) == "acceptEdits"
+    assert scheduler.headless_mode({"agent": "codex", "permission_mode": "bypassPermissions"}) == "auto"
+
+
 # ---- #108
 
 def test_a_fable_job_needs_the_acknowledgement_and_a_cap_on_every_route(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):

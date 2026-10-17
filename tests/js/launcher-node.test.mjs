@@ -193,7 +193,7 @@ test('a remote form has no danger option: no bypass, auto or custom mode, no I u
   await settle();
   const f = remote(w);
   assert.deepEqual(labels(f, 'Permissions'), ['ask (default)', 'accept edits', 'plan'], 'the schema lists bypass and auto, the form offers neither');
-  assert.equal(text(f.querySelector('.lx-nobypass')), 'Bypass is only available on the node itself.');
+  assert.equal(text(f.querySelector('.lx-nobypass')), 'Bypass is only available inside a devcontainer, on the node itself.');
   assert.doesNotMatch(text(f), /I understand|bypass: never|Extra args|Allowed tools|Append to system|Also give access|worktree/i);
   assert.equal(all(f, 'input[type=checkbox]').filter((c) => !hidden(c)).length, 0, 'a session form shows no checkbox at all');
   // Codex: default and read-only only

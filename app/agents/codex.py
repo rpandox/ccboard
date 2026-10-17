@@ -48,7 +48,7 @@ except ImportError:                                  # Python < 3.11: the trust 
 from .. import platform as plat
 from .. import projects
 from ..config import settings
-from .base import Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, TTLCache
+from .base import BYPASS_REFUSAL_CODEX, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, TTLCache
 from .claude import (CONTINUING_END, FRESH_SOURCES, LIMIT_MSG_RE, PATH_MAX, RATE_RE, RESULT_MAX, UUID_RE, WORKTREE_RE, _kind, _str,
                      _truthy)
 
@@ -99,10 +99,8 @@ RESTART_SANDBOXES = ("read-only", "workspace-write")  # danger-full-access is a 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")   # the catalogue adds more per model (`ultra` on gpt-6.1-sol)
 UNSUPPORTED = ("allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "fallback_model", "fork_session", "from_pr",
                "max_turns", "max_budget_usd", "devcontainer", "agent_name", "autocompact", "mcp_config")
-TASK_REFUSAL = ("bypassPermissions, danger-full-access or a flag override is not allowed for tasks; start a session and choose bypass "
-                "there if you really want it")
-DANGER_REFUSAL = ("skips the sandbox, so it needs the same explicit acknowledgement as bypassPermissions (bypass: true); otherwise use "
-                  "read-only or workspace-write")
+TASK_REFUSAL = ("bypassPermissions, danger-full-access or a flag override is not allowed for tasks; "
+                "bypass is only for an interactive Claude session in the repo's devcontainer (#104)")
 
 # What a user's extra args may never carry. Tokens are matched exactly (a long option also as `--x=value`; a short option also with its
 # value attached, `-cfoo=1`). The adapter owns these flags: a repeat makes clap refuse to start, and the config/profile/feature/
@@ -890,11 +888,11 @@ class CodexAgent(Agent):
                      "-c model_reasoning_effort=...; the levels a model accepts come from the catalogue (reasoning_by_model). Sent as `reasoning` "
                      "or `reasoning_effort`.", "basic"),
             OptField("mode", "Mode", "select", list(MODES), "default",
-                     "default: -s workspace-write -a on-request. auto: automatic approval review. read-only: -s read-only. bypass: no "
-                     "approvals and no sandbox (needs the acknowledgement, never for tasks). custom: choose the sandbox and approval below.",
+                     "default: -s workspace-write -a on-request. auto: automatic approval review. read-only: -s read-only. bypass: refused "
+                     "(bypass is allowed only for Claude inside the repo's devcontainer, #104). custom: choose the sandbox and approval below.",
                      "basic"),
             OptField("sandbox", "Sandbox", "select", list(SANDBOXES), None,
-                     "-s. danger-full-access skips the sandbox like bypass: it needs the bypass acknowledgement and is interactive only.",
+                     "-s. danger-full-access skips the sandbox like bypass, so it is refused (bypass is allowed only for Claude inside the repo's devcontainer, #104).",
                      "basic", False, {"mode": ["custom"]}),
             OptField("approval", "Approval policy", "select", list(self._approvals()), None,
                      "-a. on-request or never; untrusted is retired and on-failure deprecated (offered only where this Codex still lists them).", "basic", False, {"mode": ["custom"]}),
@@ -902,11 +900,11 @@ class CodexAgent(Agent):
                      f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, {"launcher": ["new"]}),
             OptField("search", "Live web search", "bool", None, False, "--search.", "advanced"),
             OptField("bypass", "Skip approvals and the sandbox", "bool", None, False,
-                     "--dangerously-bypass-approvals-and-sandbox. Needs an explicit acknowledgement; never offered for tasks, dispatch or "
-                     "scheduled runs, and never stored for resume.", "advanced", True),
+                     "--dangerously-bypass-approvals-and-sandbox. Refused: bypass is allowed only for Claude inside the repo's devcontainer "
+                     "(owner decision, #104), and Codex never runs there.", "advanced", True),
             OptField("permission_mode", "Permission mode (Claude's words)", "select", list(PERMISSION_MODES), None,
                      "The same choice as Mode in Claude's words: default and acceptEdits: -s workspace-write -a on-request. plan: -s read-only. "
-                     "dontAsk: -a never. auto: automatic approval review. bypassPermissions needs the bypass acknowledgement, never for tasks. "
+                     "dontAsk: -a never. auto: automatic approval review. bypassPermissions is refused (bypass is allowed only for Claude inside the devcontainer, #104). "
                      "Mode wins when both are sent.", "advanced"),
             OptField("add_dirs", "Extra directories", "dirs", None, None,
                      "--add-dir: sibling repos (project/repo) the session may write.", "advanced"),
@@ -1025,6 +1023,11 @@ class CodexAgent(Agent):
                 raise projects.BadRequest(f"{bad or 'bypassPermissions'}: {TASK_REFUSAL}")
             pm = pm or "default"                              # never inherit sandbox / approval from the person's config.toml
         else:                                                 # an interactive session
+            # bypass is Claude-in-the-devcontainer only (owner decision, #104) and Codex never runs in the devcontainer: every bypass spelling is refused
+            # with that one answer, ahead of the generic "the launcher sets this flag itself"
+            if (bypass or pm == "bypassPermissions" or sandbox == "danger-full-access"
+                    or any(w in str(a).lower() for a in extra for w in (*FORBIDDEN_ARG_PARTS, "danger-full-access"))):
+                raise projects.BadRequest(BYPASS_REFUSAL_CODEX)
             bad = self.forbidden_extra(extra, interactive=True)
             if bad:
                 raise projects.BadRequest(f"{bad}: the launcher sets this flag itself; use the model / reasoning / permission / sandbox "
@@ -1034,8 +1037,6 @@ class CodexAgent(Agent):
                 raise projects.BadRequest(f"sandbox must be one of {', '.join(SANDBOXES)}")
             if strict and sandbox == "danger-full-access":
                 raise projects.BadRequest(f"sandbox danger-full-access: {TASK_REFUSAL}")
-            if sandbox == "danger-full-access" and not (bypass or pm == "bypassPermissions"):   # (that mode is a bypass already)
-                raise projects.BadRequest(f"sandbox danger-full-access: {DANGER_REFUSAL}")
         full: dict = {}
         model = raw.get("model")
         if model is not None and not isinstance(model, str):

@@ -126,13 +126,16 @@ def test_devcontainer_and_bypass_rules(lite_client, projects_dir, fake_tmux, mon
     st = lite_client.get("/api/state", headers=H).json()
     repos = {r["name"]: r for r in st["projects"][0]["repos"]}
     assert repos["web"]["devcontainer"] is True and repos["api"]["devcontainer"] is False
-    # bypass on the host is an explicit choice (v0.4.13): every spelling is accepted and lands in the command
-    for i, (body, flag) in enumerate((({"launcher": "claude", "bypass": True, "name": "b1"}, "--dangerously-skip-permissions"),
-                                      ({"launcher": "claude", "args": "--dangerously-skip-permissions", "name": "b2"}, "--dangerously-skip-permissions"),
-                                      ({"launcher": "claude", "args": "--permission-mode=bypassPermissions", "name": "b3"}, "--permission-mode=bypassPermissions"),
-                                      ({"launcher": "claude", "permission_mode": "bypassPermissions", "name": "b4"}, "--permission-mode bypassPermissions"))):
+    # bypass on the host is refused in every spelling (owner decision, #104): it is allowed only inside the repo's devcontainer
+    refusal = "bypass is allowed only inside the repo's devcontainer (owner decision, #104); choose auto or turn on Run in the devcontainer"
+    for body in ({"launcher": "claude", "bypass": True, "name": "b1"},
+                 {"launcher": "claude", "args": "--dangerously-skip-permissions", "name": "b2"},
+                 {"launcher": "claude", "args": "--permission-mode=bypassPermissions", "name": "b3"},
+                 {"launcher": "claude", "permission_mode": "bypassPermissions", "name": "b4"},
+                 {"launcher": "claude", "mode": "bypass", "bypass": True, "name": "b5"}):
         r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json=body)
-        assert r.status_code == 201 and flag in r.json()["cmd"], (body, r.text)
+        assert r.status_code == 400 and r.json()["error"] == refusal, (body, r.text)
+    assert not fake_tmux["created"], "nothing was started"
     # settings overrides stay out of extra args everywhere
     assert lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "args": "--settings /tmp/x.json"}).status_code == 400
     assert lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "devcontainer": True}).status_code == 400  # no devcontainer there
@@ -146,5 +149,21 @@ def test_devcontainer_and_bypass_rules(lite_client, projects_dir, fake_tmux, mon
     wf = str(projects_dir / "shop" / "web")
     assert cmd.startswith(f"devcontainer up --workspace-folder {wf} && devcontainer exec --workspace-folder {wf} -- claude --session-id ")
     assert "--dangerously-skip-permissions --model opus" in cmd
+    # the other spellings pass inside the container too (the sheet's mode needs its acknowledgement), one --permission-mode in the line
+    pre = f"devcontainer up --workspace-folder {wf} && devcontainer exec --workspace-folder {wf} -- claude --session-id "
+    r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "mode": "bypass", "bypass": True, "name": "d2"})
+    assert r.status_code == 201 and r.json()["cmd"].startswith(pre) and r.json()["cmd"].endswith("--name d2 --permission-mode bypassPermissions"), r.text
+    r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "mode": "bypass", "name": "d3"})
+    assert r.status_code == 400 and "send bypass: true with the acknowledgement" in r.json()["error"], "the acknowledgement stays"
+    for spelling in ({"permission_mode": "bypassPermissions"}, {"args": "--dangerously-skip-permissions"}):
+        r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "name": "dx", **spelling})
+        assert r.status_code == 400 and "send bypass: true with the acknowledgement" in r.json()["error"], "every spelling needs the acknowledgement, not only mode bypass"
+    r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "permission_mode": "bypassPermissions", "bypass": True, "name": "d4"})
+    assert r.status_code == 201 and r.json()["cmd"].endswith("--name d4 --permission-mode bypassPermissions"), r.text
+    r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "args": "--dangerously-skip-permissions", "bypass": True, "name": "d5"})
+    assert r.status_code == 201 and r.json()["cmd"].endswith("--name d5 --dangerously-skip-permissions"), r.text
+    # the container does not make a Codex session eligible (and a Codex session cannot run in it at all)
+    r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "agent": "codex", "devcontainer": True, "bypass": True})
+    assert r.status_code == 400 and r.json()["error"] == "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
     r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "shell", "devcontainer": True}).json()
     assert r["cmd"].endswith("-- bash -l")

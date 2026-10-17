@@ -341,9 +341,24 @@ def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, s
     return summary
 
 
+FALLBACK_MODE = "auto"     # what a stored job whose mode is no headless mode runs in (the new schedule default from issue #83 lands separately)
+
+
+def headless_mode(job: dict) -> str:
+    """The permission mode this stored job may run in: its own when the agent's HEADLESS_MODES have it, else FALLBACK_MODE with a warning. A hand-edited
+    row (bypassPermissions, a typo) must never reach the argv: the API refuses those modes, the database does not."""
+    mode = job.get("permission_mode") or "acceptEdits"
+    allowed = codex_agent.HEADLESS_MODES if (job.get("agent") or "claude") == "codex" else HEADLESS_MODES
+    if mode in allowed:
+        return mode
+    log.warning("job %s: permission mode %r is not a headless mode; running it in %r instead", job.get("id"), mode, FALLBACK_MODE)
+    return FALLBACK_MODE
+
+
 def run_job(db, job: dict, run_id: int) -> dict:
     """Execute one run synchronously (called in a worker thread). Returns the run summary. Claude: `claude -p --worktree <slug>` (Claude makes
     the worktree); Codex: a managed worktree, then `codex exec --json` in it."""
+    job = {**job, "permission_mode": headless_mode(job)}
     agent = job.get("agent") or "claude"
     rpath = projects.repo_path(job["project"], job["repo"])
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
@@ -399,7 +414,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
         summary.update(status="error", error=held[:300], result="")
         return _finish(db, job, run_id, summary, rpath, slug, stamp, None, agent)
     exe = settings.claude_bin()
-    cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "acceptEdits", int(job.get("max_turns") or 30),
+    cmd = build_command(job["prompt"], slug, job["permission_mode"], int(job.get("max_turns") or 30),
                         job.get("max_budget_usd"), extra, allowed_tools=job_opts(job).get("allowed_tools"))
     if exe:
         cmd[0] = exe

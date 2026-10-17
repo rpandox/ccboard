@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from app import agents, projects
-from app.agents import codex
+from app.agents import base, codex
 from app.agents.base import Agent, Check, HookNorm, LaunchReq
 from app.config import settings
 
@@ -296,14 +296,18 @@ def test_a_missing_flag_is_skipped_not_emitted(ag, monkeypatch):
         plan(ag, opts={"approval": "on-failure"})
 
 
-def test_bypass_flag_spellings_follow_the_capability(ag, monkeypatch):
-    only_yolo = {**codex.BASELINE_CAPS, "bypass_approvals": False, "yolo": True}
-    monkeypatch.setattr(ag, "_probe_caps", lambda: (only_yolo, True))
-    assert plan(ag, bypass=True).argv == ["codex", "--no-alt-screen", "--yolo"]
-    neither = {**codex.BASELINE_CAPS, "bypass_approvals": False, "yolo": False}
-    monkeypatch.setattr(ag, "_probe_caps", lambda: (neither, True))
-    with pytest.raises(projects.BadRequest, match="no bypass flag"):
-        plan(ag, bypass=True)
+HOST_BYPASS = base.BYPASS_REFUSAL_CODEX
+
+
+def test_bypass_is_refused_whatever_flag_this_codex_has(ag, monkeypatch):
+    """Owner decision on #104: bypass is for Claude inside the repo's devcontainer. Codex never runs there, so no capability makes a Codex bypass line."""
+    assert HOST_BYPASS == "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
+    for caps in ({**codex.BASELINE_CAPS, "bypass_approvals": False, "yolo": True}, {**codex.BASELINE_CAPS, "bypass_approvals": False, "yolo": False},
+                 {**codex.BASELINE_CAPS, "bypass_approvals": True}):
+        monkeypatch.setattr(ag, "_probe_caps", lambda caps=caps: (caps, True))
+        with pytest.raises(projects.BadRequest) as e:
+            plan(ag, bypass=True)
+        assert str(e.value) == HOST_BYPASS
 
 
 # ---------- interactive launch_plan ----------
@@ -366,38 +370,41 @@ def test_sandbox_and_approval_overrides_replace_the_modes_parts(ag):
         plan(ag, opts={"approval": "always"})
 
 
-def test_bypass_is_one_flag_interactive_only_and_never_stored(ag):
-    for p in (plan(ag, opts={"permission_mode": "bypassPermissions"}), plan(ag, bypass=True),
-              plan(ag, bypass=True, opts={"permission_mode": "plan", "sandbox": "read-only", "approval": "never"})):
-        assert p.argv == ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"]   # every other permission flag dropped
-        assert p.opts_clean.get("permission_mode") != "bypassPermissions" and "bypass" not in p.opts_clean
-    assert plan(ag, opts={"permission_mode": "bypassPermissions"}).opts_clean == {}
-    # sandbox=danger-full-access is bypass-class (decision of the v0.5.11 review): refused without the acknowledgement, and with it the
-    # one bypass flag is what runs (the explicit sandbox choice collapses into it); never stored either way
-    with pytest.raises(projects.BadRequest, match="danger-full-access: skips the sandbox"):
-        plan(ag, opts={"sandbox": "danger-full-access"})
-    with pytest.raises(projects.BadRequest, match="bypass: true"):
-        plan(ag, opts={"sandbox": "danger-full-access", "approval": "never"})
-    danger = plan(ag, opts={"sandbox": "danger-full-access", "model": "gpt-5.5"}, bypass=True)
-    assert danger.argv == ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.5"]
-    assert danger.opts_clean == {"model": "gpt-5.5"}
-    both = plan(ag, opts={"permission_mode": "bypassPermissions", "sandbox": "danger-full-access"})      # that mode is the acknowledgement
-    assert both.argv == ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"] and both.opts_clean == {}
+def test_every_interactive_bypass_spelling_is_refused_with_the_owners_words(ag):
+    spellings = ({"opts": {"permission_mode": "bypassPermissions"}}, {"bypass": True}, {"opts": {"mode": "bypass"}},
+                 {"bypass": True, "opts": {"permission_mode": "plan", "sandbox": "read-only", "approval": "never"}},
+                 {"opts": {"sandbox": "danger-full-access"}}, {"opts": {"sandbox": "danger-full-access", "approval": "never"}},
+                 {"opts": {"sandbox": "danger-full-access", "model": "gpt-5.5"}, "bypass": True},
+                 {"opts": {"mode": "custom", "sandbox": "danger-full-access"}},
+                 {"opts": {"permission_mode": "bypassPermissions", "sandbox": "danger-full-access"}},
+                 {"opts": {"extra": ["--dangerously-bypass-approvals-and-sandbox"]}}, {"opts": {"extra": ["--yolo"]}},
+                 {"opts": {"extra": ["--DANGEROUSLY-bypass-approvals-and-sandbox"]}}, {"opts": {"extra": ["-s", "danger-full-access"]}},
+                 {"opts": {"extra": ["--sandbox=danger-full-access"]}})
+    for kind, more in (("new", {}), ("new", {"prompt": "go"}), ("resume", {"resume_id": SID}), ("continue", {}), ("fork", {"resume_id": SID})):
+        for kw in spellings:
+            with pytest.raises(projects.BadRequest) as e:
+                plan(ag, kind=kind, **more, **kw)
+            assert str(e.value) == HOST_BYPASS, (kind, kw)
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        ag.validate_opts({"sandbox": "danger-full-access"}, interactive=True, tasks_or_headless=False, bypass=True)
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        ag.validate_opts({"permission_mode": "bypassPermissions"}, interactive=True, tasks_or_headless=False)
     # approval=never with an explicit sandbox is Claude's dontAsk, not a bypass: it stays an ordinary interactive choice
     assert plan(ag, opts={"sandbox": "workspace-write", "approval": "never"}).argv[-4:] == ["-s", "workspace-write", "-a", "never"]
-    assert ag.validate_opts({"sandbox": "danger-full-access"}, interactive=True, tasks_or_headless=False, bypass=True) == {}
-    with pytest.raises(projects.BadRequest):
-        ag.validate_opts({"sandbox": "danger-full-access"}, interactive=True, tasks_or_headless=False)
+    assert plan(ag, opts={"permission_mode": "dontAsk"}).opts_clean == {"permission_mode": "dontAsk"}
 
 
 def test_resume_and_continue_never_re_pass_a_bypass(ag):
     stored = {"permission_mode": "bypassPermissions", "sandbox": "danger-full-access", "model": "gpt-5.5"}
-    for argv in (ag.resume_argv(SID, opts=stored), ag.continue_argv("/p", opts=stored),
-                 plan(ag, kind="resume", resume_id=SID, opts=stored).argv, plan(ag, kind="continue", opts=stored).argv):
+    for argv in (ag.resume_argv(SID, opts=stored), ag.continue_argv("/p", opts=stored)):
         assert "--dangerously-bypass-approvals-and-sandbox" not in argv and "danger-full-access" not in argv
         assert argv[argv.index("-m") + 1] == "gpt-5.5"
-    # an explicit acknowledgement on the resume itself is the only way back
-    assert "--dangerously-bypass-approvals-and-sandbox" in plan(ag, kind="resume", resume_id=SID, bypass=True).argv
+    # there is no way back: a fresh request for it on a resume is refused like any other launch (owner decision, #104)
+    for kw in ({"opts": stored}, {"bypass": True}):
+        with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+            plan(ag, kind="resume", resume_id=SID, **kw)
+        with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+            plan(ag, kind="continue", **kw)
 
 
 def test_hook_trust_flag_only_in_bypass_mode(ag):
@@ -502,7 +509,8 @@ def test_option_validation_messages(ag):
     # Claude's `effort` is an alias for reasoning_effort
     assert ag.validate_opts({"effort": "medium"}, interactive=True, tasks_or_headless=False) == {"reasoning_effort": "medium"}
     assert ag.validate_opts(None, interactive=True, tasks_or_headless=False) == {}
-    assert ag.validate_opts({"permission_mode": "bypassPermissions"}, interactive=True, tasks_or_headless=False) == {}
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        ag.validate_opts({"permission_mode": "bypassPermissions"}, interactive=True, tasks_or_headless=False)
     with pytest.raises(projects.BadRequest, match="never bypasses"):
         ag.validate_opts({"permission_mode": "bypassPermissions"}, interactive=False, tasks_or_headless=True)
     with pytest.raises(projects.BadRequest, match="not allowed for tasks"):
@@ -1225,11 +1233,16 @@ def test_no_argv_for_the_real_0145_carries_a_flag_it_lacks(ag, fake):
                                                              ([], ["/p/shop/web"])):
         settings.codex_hook_trust = trust
         o = {**opts, "permission_mode": mode}
-        builds = [(plan(ag, opts=o, bypass=bypass, add_dirs=dirs, prompt="go").argv, top),
-                  (plan(ag, kind="resume", resume_id=SID, opts=o, bypass=bypass, add_dirs=dirs).argv, res),
-                  (plan(ag, kind="resume", opts=o, bypass=bypass, add_dirs=dirs).argv, res),
-                  (plan(ag, kind="continue", opts=o, bypass=bypass, add_dirs=dirs).argv, res),
-                  (ag.resume_argv(SID, opts=o, add_dirs=dirs), res), (ag.resume_argv(None, name="my chat", opts=o), res),
+        builds = []
+        if bypass or mode == "bypassPermissions":                 # a launch asking for it is refused (#104); a stored one is dropped from resume and continue below
+            with pytest.raises(projects.BadRequest):
+                plan(ag, opts=o, bypass=bypass, add_dirs=dirs, prompt="go")
+        else:
+            builds += [(plan(ag, opts=o, add_dirs=dirs, prompt="go").argv, top),
+                       (plan(ag, kind="resume", resume_id=SID, opts=o, add_dirs=dirs).argv, res),
+                       (plan(ag, kind="resume", opts=o, add_dirs=dirs).argv, res),
+                       (plan(ag, kind="continue", opts=o, add_dirs=dirs).argv, res)]
+        builds += [(ag.resume_argv(SID, opts=o, add_dirs=dirs), res), (ag.resume_argv(None, name="my chat", opts=o), res),
                   (ag.continue_argv("/p", o, dirs), res),
                   (plan(ag, task=True, worktree="w", opts={**o, "permission_mode": mode if mode != "bypassPermissions" else "default"},
                         add_dirs=[], prompt="go").argv, top)]
@@ -1241,7 +1254,7 @@ def test_no_argv_for_the_real_0145_carries_a_flag_it_lacks(ag, fake):
                 if tok.startswith("-"):
                     assert tok in allowed, (tok, argv)
             assert "on-failure" not in argv
-    assert seen == 6 * 4 * 2 * 2 * 2 * 8                      # every combination was built (6 modes, 4 option sets, 2 trust, 2 bypass, 2 dirs)
+    assert seen == 80 * 4 + 192 * 4                            # every combination was built (6 modes, 4 option sets, 2 trust, 2 bypass, 2 dirs; 80 of the 192 may launch)
     settings.codex_hook_trust = "review"
 
 
@@ -1308,10 +1321,11 @@ def test_stored_options_come_back_without_a_bypass_and_without_an_error(ag):
     for argv in (ag.resume_argv(SID, opts=stored), ag.resume_argv(None, name="n", opts=stored), ag.continue_argv("/p", opts=stored)):
         assert "danger-full-access" not in argv and "--dangerously-bypass-approvals-and-sandbox" not in argv
         assert argv[argv.index("-m") + 1] == "gpt-5.5"
-    # a fresh request that asks for it on a resume still needs the acknowledgement
-    with pytest.raises(projects.BadRequest, match="danger-full-access"):
+    # a fresh request that asks for it on a resume is refused, acknowledged or not
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
         plan(ag, kind="resume", resume_id=SID, opts=stored)
-    assert "--dangerously-bypass-approvals-and-sandbox" in plan(ag, kind="resume", resume_id=SID, opts=stored, bypass=True).argv
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        plan(ag, kind="resume", resume_id=SID, opts=stored, bypass=True)
 
 
 # ---------- the sub-thread rule at rest (review fixes: J) ----------
@@ -1416,7 +1430,6 @@ def test_the_fork_command_is_a_capability_of_the_commands_list():
     ("read-only", ["-s", "read-only", "-a", "on-request"]),
     ("acceptEdits", ["-s", "workspace-write", "-a", "on-request"]),               # a Claude permission mode by its own name still works
     ("dontAsk", ["-s", "workspace-write", "-a", "never"]),
-    ("bypass", ["--dangerously-bypass-approvals-and-sandbox"]),
 ])
 def test_the_mode_picker_maps_onto_the_permission_flags(ag, mode, flags):
     assert plan(ag, opts={"mode": mode}).argv == ["codex", "--no-alt-screen", *flags]
@@ -1438,15 +1451,16 @@ def test_mode_custom_is_the_sandbox_and_approval_picked(ag):
     with pytest.raises(projects.BadRequest, match="^mode must be one of default, auto, read-only, bypass, custom$"):
         plan(ag, opts={"mode": "yolo"})
     # the mode word is stored as the permission mode it stands for, and a bypass is never stored
-    assert ag.validate_opts({"mode": "read-only"}) == {"permission_mode": "plan"} and ag.validate_opts({"mode": "bypass"}) == {}
+    assert ag.validate_opts({"mode": "read-only"}) == {"permission_mode": "plan"}
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        ag.validate_opts({"mode": "bypass"})
     assert ag.validate_opts({"mode": "auto", "permission_mode": "plan"}) == {"permission_mode": "auto"}, "mode wins"
 
 
-def test_danger_full_access_still_needs_the_acknowledgement_under_mode_custom(ag):
-    with pytest.raises(projects.BadRequest, match="danger-full-access"):
-        plan(ag, opts={"mode": "custom", "sandbox": "danger-full-access"})
-    assert plan(ag, opts={"mode": "custom", "sandbox": "danger-full-access"}, bypass=True).argv == \
-        ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"], "the acknowledgement turns it into the one danger flag"
+def test_danger_full_access_is_refused_under_mode_custom_acknowledged_or_not(ag):
+    for kw in ({}, {"bypass": True}):
+        with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+            plan(ag, opts={"mode": "custom", "sandbox": "danger-full-access"}, **kw)
     # tasks, dispatch and headless runs get no bypass under any spelling of it
     for raw in ({"mode": "bypass"}, {"permission_mode": "bypassPermissions"}, {"mode": "custom", "sandbox": "danger-full-access"}):
         with pytest.raises(projects.BadRequest):
@@ -1522,8 +1536,9 @@ def test_fork_is_resume_by_another_name(ag):
         plan(ag, kind="fork", worktree="w")
     with pytest.raises(projects.BadRequest, match="^resume id must be a UUID or a session name"):
         plan(ag, kind="fork", resume_id="-x")
-    # a fork never re-passes a stored bypass either
-    assert "--dangerously-bypass-approvals-and-sandbox" not in plan(ag, kind="fork", resume_id=SID, opts={"permission_mode": "bypassPermissions"}).argv
+    # a fork is refused a bypass like every launch
+    with pytest.raises(projects.BadRequest, match="^Codex sessions never run with bypass"):
+        plan(ag, kind="fork", resume_id=SID, opts={"permission_mode": "bypassPermissions"})
 
 
 def test_claude_only_fields_are_refused_by_name(ag):

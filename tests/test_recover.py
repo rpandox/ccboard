@@ -360,36 +360,40 @@ def test_the_agent_field_and_the_codex_resume_and_continue_launchers(cx):
         assert len(cx.tmux["created"]) == before
 
 
-def test_codex_danger_full_access_is_bypass_class_for_sessions(cx):
-    """Decision of the v0.5.11 review: an interactive sandbox=danger-full-access needs the same acknowledgement as bypassPermissions
-    (bypass: true), and with it the one bypass flag is what runs. approval=never with an explicit sandbox stays an ordinary choice."""
+def test_codex_danger_full_access_is_refused_for_sessions(cx):
+    """Owner decision on #104: an interactive sandbox=danger-full-access is bypass-class, and bypass is Claude-in-the-devcontainer only: refused
+    whether or not it carries the acknowledgement. approval=never with an explicit sandbox stays an ordinary choice."""
+    msg = "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
     for opts in ({"sandbox": "danger-full-access"}, {"sandbox": "danger-full-access", "approval": "never"},
                  {"sandbox": "danger-full-access", "permission_mode": "plan"}):
-        r = cx.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex", "name": "d1", "opts": opts})
-        assert r.status_code == 400 and "danger-full-access" in r.json()["error"] and "bypass" in r.json()["error"], r.text
-        assert cx.tmux["created"] == [] and cx.db().open_rows() == {}
+        for extra in ({}, {"bypass": True}):
+            r = cx.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex", "name": "d1", "opts": opts, **extra})
+            assert r.status_code == 400 and r.json()["error"] == msg, r.text
+            assert cx.tmux["created"] == [] and cx.db().open_rows() == {}
     r = cx.client.post("/api/projects/shop/repos/api/sessions", headers=H,
                        json={"launcher": "codex-resume", "resume_id": CX1, "name": "d2", "opts": {"sandbox": "danger-full-access"}})
-    assert r.status_code == 400 and cx.tmux["created"] == []
-    ok = new_cx(cx, name="d3", bypass=True, model="gpt-5.5", opts={"sandbox": "danger-full-access", "approval": "never"})
-    argv = argv_of(ok)
-    assert BYPASS in argv and "-s" not in argv and "-a" not in argv and "danger-full-access" not in argv, "the acknowledged bypass stands alone"
-    assert row(cx, ok["tmux"])["opts"] == {"model": "gpt-5.5", "approval": "never"}, "the sandbox choice is never stored"
+    assert r.status_code == 400 and r.json()["error"] == msg and cx.tmux["created"] == []
     fine = new_cx(cx, name="d4", opts={"sandbox": "read-only", "approval": "never"})
     assert argv_of(fine)[argv_of(fine).index("-s") + 1] == "read-only" and BYPASS not in argv_of(fine)
 
 
-def test_codex_bypass_is_an_interactive_choice_and_is_never_stored(cx):
-    r = new_cx(cx, name="by", bypass=True, model="gpt-5.5")
-    argv = argv_of(r)
-    assert BYPASS in argv and "-s" not in argv and "-a" not in argv, "the bypass flag stands alone"
-    assert row(cx, r["tmux"])["opts"] == {"model": "gpt-5.5"}
-    r2 = new_cx(cx, name="by2", permission_mode="bypassPermissions")
-    assert BYPASS in argv_of(r2) and "permission_mode" not in row(cx, r2["tmux"])["opts"]
-    # reboot: the relaunch has no bypass either (two unbound rows share the directory, so each is a fresh codex, never `resume --last`)
+def test_codex_bypass_is_refused_and_a_stored_one_is_not_relaunched(cx):
+    msg = "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
+    for body in ({"bypass": True, "model": "gpt-5.5"}, {"permission_mode": "bypassPermissions"}, {"mode": "bypass", "bypass": True}):
+        r = cx.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex", "name": "by", **body})
+        assert r.status_code == 400 and r.json()["error"] == msg, r.text
+        assert cx.tmux["created"] == [] and cx.db().open_rows() == {}
+    # reboot: a row whose stored options were hand-edited to carry a bypass is relaunched without it (two unbound rows share the directory,
+    # so each is a fresh codex, never `resume --last`)
+    r = new_cx(cx, name="by", model="gpt-5.5")
+    r2 = new_cx(cx, name="by2")
+    for tm in (r["tmux"], r2["tmux"]):
+        with cx.db().lock:
+            cx.db().conn.execute("UPDATE sessions SET opts=? WHERE tmux_name=?", (json.dumps({"permission_mode": "bypassPermissions", "sandbox": "danger-full-access"}), tm))
+            cx.db().conn.commit()
     cx.tmux["sessions"].clear()
     todo = {t["name"]: t["cmd"] for t in recover.plan(cx.db().open_rows(), set())}
-    assert todo[r["tmux"]][0] == "codex" and "resume" not in todo[r["tmux"]] and all(BYPASS not in c for c in todo.values())
+    assert todo[r["tmux"]][0] == "codex" and "resume" not in todo[r["tmux"]] and all(BYPASS not in c and "danger-full-access" not in c for c in todo.values())
 
 
 @pytest.mark.parametrize("body,needle", [
@@ -397,8 +401,8 @@ def test_codex_bypass_is_an_interactive_choice_and_is_never_stored(cx):
     ({"append_system_prompt": "be brief"}, "append_system_prompt: not supported by codex"),
     ({"args": "-c model=x"}, "-c"),
     ({"args": "--profile work"}, "--profile"),
-    ({"args": "--yolo"}, "--yolo"),
-    ({"args": BYPASS}, BYPASS),
+    ({"args": "--yolo"}, "Codex sessions never run with bypass or danger-full-access"),
+    ({"args": BYPASS}, "Codex sessions never run with bypass or danger-full-access"),
     ({"devcontainer": True}, "devcontainer"),
     ({"effort": "extreme"}, "reasoning_effort must be one of"),
     ({"permission_mode": "everything"}, "permission_mode must be one of"),

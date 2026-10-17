@@ -5,7 +5,7 @@ const LAUNCH_KEY = (p, r) => `ccboard:launch:${p.name}/${r.name}`;
 const MODELS = [['', 'default (settings)'], ['fable', 'fable'], ['opus', 'opus'], ['sonnet', 'sonnet'], ['haiku', 'haiku'], ['custom', 'custom id…']];
 const EFFORTS = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
 const PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', 'auto'], ['dontAsk', "don't ask: deny prompts"]];
-const PERMS_HOST = [...PERMS, ['bypassPermissions', 'bypass: never ask (dangerous)']];
+const PERMS_HOST = PERMS;                                                  // no bypass here: it is allowed only inside the repo's devcontainer (owner decision, #104), and the launcher sheet offers it there
 const BYPASS_WARNING = 'Claude runs every command and edit without asking, as your user, on this box. Claude Code asks you to confirm once in the terminal.';
 
 /* Model / effort / permission controls shared by the session and task forms. Returns the grid plus a reader. */
@@ -717,7 +717,7 @@ function taskForm(p, r, opts) {
     const titleText = title.value.trim() || taskTitleFrom(prompt);
     if (/bypassPermissions|dangerously-skip-permissions/i.test(args.value)) {                // the server refuses it as well: say so before the round trip
       options.setAttribute('open', '');                                                       // the field sits under Options: show it before pointing at it
-      fieldError(argsField, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it.', true);
+      fieldError(argsField, 'bypassPermissions is not allowed for tasks or schedules; bypass is only for an interactive Claude session in the repo\'s devcontainer (#104).', true);
       return;
     }
     const steps = when === 'schedule' ? [] : chain.read();
@@ -1276,9 +1276,9 @@ const LX_MODEL_LABEL = { opusplan: 'opusplan: Opus to plan, Sonnet to build', be
 const LX_BEST_NOTE = 'best resolves to Fable where it is available, and Fable bills usage credits. A scheduled or batch run needs an explicit acknowledgement for it.';
 const LX_1M_HINT = 'A full id. Add [1m] only for a model without a 1M window by default (Opus 4.6, Sonnet 4.6; Claude Code docs read 2026-10-07).';
 const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*, the same four as the terminal's tuning strip
-const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['bypass', 'bypass'], ['custom', 'custom']];
+const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['custom', 'custom']];      // no bypass for Codex: it never runs in the devcontainer (owner decision, #104)
 const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
-const LX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+const LX_SANDBOXES = ['read-only', 'workspace-write'];
 const LX_PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;              // codex.py PROFILE_RE
 const LX_APPROVALS = ['on-request', 'never'];                                 // codex 0.160's -a; untrusted is retired, on-failure deprecated (the box's own list comes from GET /api/agents)
 /* The Codex models before GET /api/agents answers: codex.py FALLBACK_MODELS (the current family, in the order the TUI's /model picker lists them), the same
@@ -1287,6 +1287,12 @@ const LX_CODEX_MODELS = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'
 const LX_CONFIG_RE = /^[A-Za-z0-9_.]+=.+$/;                                  // one -c line; the server's blocklist still wins
 const LX_PERM_LABEL = { manual: 'ask (default)', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', dontAsk: "don't ask: deny prompts", bypassPermissions: 'bypass: never ask (dangerous)' };
 const BYPASS_WARNING_CODEX = 'Codex runs every command and edit without asking and without its sandbox, as your user, on this box.';
+/* Bypass is allowed only for Claude inside the repo's devcontainer (owner decision on #104): the choice is offered while "Run in the devcontainer" is on and disabled, with its reason, while it is off. */
+const LX_BYPASS_OFF = 'bypass: only inside the devcontainer';
+const LX_BYPASS_HINT = 'Bypass is allowed only inside the devcontainer: turn on "Run in the devcontainer" under Advanced.';
+const LX_BYPASS_HINT_NONE = 'Bypass is allowed only inside a devcontainer, and this repo has none.';
+const lxBypassDropped = (fallback) => `Bypass is allowed only inside the devcontainer, so the mode is now ${fallback}.`;     // fallback: the mode the sheet really fell back to ('auto', or 'ask' where this Claude has no auto)
+const LX_BYPASS_DROPPED_CODEX = 'Bypass is allowed only for Claude inside the devcontainer, so the mode is now auto.';
 const LX_BYPASS_ACK = 'I understand';
 
 function lxOpt(key, label, kind, choices, def, help, group, danger, when) {
@@ -1496,8 +1502,7 @@ function launcherDefaults(agent) {
 function lxIsDangerous(v) {
   if (!v) return false;
   if (v.agent === 'claude') return v.permission_mode === 'bypassPermissions';
-  if (v.agent === 'codex') return v.cx_mode === 'bypass' || (v.cx_mode === 'custom' && v.sandbox === 'danger-full-access');
-  return false;
+  return false;                                           // Codex has no bypass choice; a task or a shell has none either
 }
 
 /* The danger gate: does this set of values need the red callout (and, until the repo has acknowledged it, the 'I understand' box)? Never in task or dispatch mode: there the bypass
@@ -1641,10 +1646,8 @@ function commandPreview(v, ctx) {
     if (caps.no_daemon) flags.push('--no-daemon', '-c', 'check_for_update_on_startup=false');   // the adapter's first flags (the second skips 0.161's update dialog) when this codex has it (0.157+; the box's 0.161): the preview must say it too (box check #92)
     if (caps.hook_trust_bypass) flags.push('--dangerously-bypass-hook-trust');            // only with CCBOARD_CODEX_HOOK_TRUST=bypass on the box (the adapter's second flag)
     if (caps.no_alt_screen && !v.no_scrollback) flags.push('--no-alt-screen');            // on by default: only the opt-out (Keep scrollback unchecked) drops it
-    const md = v.cx_mode || 'default';
-    const danger = md === 'bypass' || (md === 'custom' && v.sandbox === 'danger-full-access');         // the sheet sends bypass: true for both, and the adapter then builds the one bypass flag
-    if (danger && !lane) flags.push(caps.bypass_approvals || !caps.yolo ? '--dangerously-bypass-approvals-and-sandbox' : '--yolo');
-    else if (md === 'custom') { if (v.sandbox) flags.push('-s', v.sandbox === 'danger-full-access' ? 'workspace-write' : v.sandbox); if (v.approval) flags.push('-a', v.approval); }   // a lane never takes the danger sandbox
+    const cx = lxCx(v), md = cx.mode;                                                                   // a bypass is never a Codex line (#104): it reads as the default
+    if (md === 'custom') { if (cx.sandbox) flags.push('-s', cx.sandbox); if (v.approval) flags.push('-a', v.approval); }
     else if (md === 'read-only') flags.push('-s', 'read-only', '-a', 'on-request');
     else if (md === 'auto') { if (caps.approve_for_me) flags.push('--approve-for-me', '-s', 'workspace-write'); else flags.push('-s', 'workspace-write', '-a', 'on-request'); }
     else flags.push('-s', 'workspace-write', '-a', 'on-request');
@@ -1725,13 +1728,17 @@ const LX_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 /* The permission part of a Codex form in the adapter's terms: {permission_mode?, bypass?, opts: {sandbox?, approval?}}. */
 function lxCodexPerm(v) {
   const out = { opts: {} };
-  if (v.cx_mode === 'bypass') { out.permission_mode = 'bypassPermissions'; out.bypass = true; }
-  else if (v.cx_mode === 'custom') {
-    if (v.sandbox) out.opts.sandbox = v.sandbox;
+  const cx = lxCx(v);
+  if (cx.mode === 'custom') {
+    if (cx.sandbox) out.opts.sandbox = cx.sandbox;
     if (v.approval) out.opts.approval = v.approval;
-    if (v.sandbox === 'danger-full-access') out.bypass = true;                  // the adapter refuses that sandbox without the acknowledgement
-  } else out.permission_mode = LX_CX_MODE_PERM[v.cx_mode] || 'default';
+  } else out.permission_mode = LX_CX_MODE_PERM[cx.mode] || 'default';
   return out;
+}
+
+/* The Codex mode and sandbox of a form with a bypass-class value read as the safe ones: the server refuses a Codex bypass (owner decision, #104), so neither the preview nor the body ever says one. */
+function lxCx(v) {
+  return { mode: v.cx_mode === 'bypass' ? 'default' : (v.cx_mode || 'default'), sandbox: v.sandbox === 'danger-full-access' ? 'workspace-write' : v.sandbox };
 }
 
 /* The body of POST /api/projects/{p}/repos/{r}/sessions for a form (brief v0.5.13; app/main.py SessionIn): the launcher's words (agent, launcher: claude | resume | continue | fork, mode (Codex's
@@ -1776,7 +1783,7 @@ function launcherPayload(v, ctx) {
   } else {
     put('reasoning', v.reasoning); put('reasoning_effort', v.reasoning);
     const perm = lxCodexPerm(v);
-    body.mode = v.cx_mode || 'default';                                          // the one picker (C's `mode`) and, beside it, the same choice in the adapter's older words
+    body.mode = lxCx(v).mode;                                                    // the one picker (C's `mode`) and, beside it, the same choice in the adapter's older words
     put('permission_mode', perm.permission_mode); put('bypass', perm.bypass);
     if (v.cx_mode === 'custom') { put('sandbox', perm.opts.sandbox); put('approval', perm.opts.approval); }
     if (v.search && has('search')) body.search = true;
@@ -1901,6 +1908,20 @@ function launcherForm(o) {
 
   /* ---- the values ---- */
   const known = (agent, m) => agent === 'claude' ? (LX_CLAUDE_CHIPS.includes(m) || LX_CLAUDE_MORE.includes(m) || launcherSchema('claude').models.includes(m)) : launcherSchema('codex').models.includes(m);
+  /* A saved default, a preset or a remembered form that holds a bypass never launches one on the host (the server refuses it, owner decision on #104): it falls back to auto, and the
+     sheet says so (drops[agent] -> the note under the mode). Claude keeps its bypass only while the same values turn the repo's devcontainer on. */
+  const drops = { claude: false, codex: false };
+  const lxAuto = () => (launcherSchema('claude').permission_modes.includes('auto') ? 'auto' : '');
+  const lxFallbackName = () => lxAuto() || 'ask';       // '' is Claude's own default, which asks
+  const safeBypass = (agent, v) => {
+    if (agent === 'claude') {
+      if (v.permission_mode === 'bypassPermissions' && !(session && v.devcontainer && r.devcontainer)) { v.permission_mode = session ? lxAuto() : ''; drops.claude = session && lxFallbackName(); }
+    } else if (agent === 'codex') {
+      if (v.cx_mode === 'bypass' || (v.cx_mode === 'custom' && v.sandbox === 'danger-full-access')) { v.cx_mode = session ? 'auto' : 'default'; v.sandbox = 'workspace-write'; drops.codex = session; }
+      else if (v.sandbox === 'danger-full-access') v.sandbox = 'workspace-write';
+    }
+    return v;
+  };
   const fromPrefs = (agent) => {
     const saved = session ? launcherPrefs(p.name, r.name, agent) : (lxJson(lxGet(LX_TASK_KEY(p.name, r.name, agent))) || {});
     const v = { ...launcherDefaults(agent), ...saved };
@@ -1910,11 +1931,8 @@ function launcherForm(o) {
       const sc = (lxHas('claude', 'subagent_model') ? (launcherSchema('claude').options.find((x) => x.key === 'subagent_model').choices || []) : ['inherit', 'haiku', 'sonnet', 'opus']);
       if (typeof v.subagent_model === 'string' && v.subagent_model && v.subagent_model !== 'custom' && !sc.includes(v.subagent_model)) { v.subagent_custom = v.subagent_model; v.subagent_model = 'custom'; }
       if (v.permission_mode === 'manual') v.permission_mode = '';
-      if (!session && v.permission_mode === 'bypassPermissions') v.permission_mode = '';
-    } else if (agent === 'codex' && !session) {
-      if (v.cx_mode === 'bypass') v.cx_mode = 'default';
-      if (v.sandbox === 'danger-full-access') v.sandbox = 'workspace-write';
     }
+    safeBypass(agent, v);
     if (agent === 'codex' && !LX_CX_MODES.some(([k]) => k === v.cx_mode)) v.cx_mode = 'default';
     return { worktree: false, worktree_name: '', fork_session: false, args: '', ...v };
   };
@@ -1931,6 +1949,7 @@ function launcherForm(o) {
 
   /* ---- small builders: a control reads its value from V and writes it back; paint() puts V into the controls (a preset, an agent switch, a model change) ---- */
   let update = () => {};
+  let syncBypass = () => {};
   const edit = () => { truth = ''; visible(); update(); };
   const text = (get, set, attrs) => {
     const n = el('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', ...(attrs || {}) });
@@ -1998,11 +2017,7 @@ function launcherForm(o) {
     const c = V[V.agent];
     for (const [k, x] of Object.entries(pr.v || {})) if (k in c) c[k] = x;
     if (typeof c.model === 'string' && c.model && c.model !== 'custom' && !known(V.agent, c.model)) { c.model_custom = c.model; c.model = 'custom'; }
-    if (!session) {
-      if (c.permission_mode === 'bypassPermissions') c.permission_mode = '';
-      if (c.cx_mode === 'bypass') c.cx_mode = 'default';
-      if (c.sandbox === 'danger-full-access') c.sandbox = 'workspace-write';
-    }
+    safeBypass(V.agent, c);                  // a preset that holds a bypass (a hand-edited one: the saved ones never do) falls back to auto outside the devcontainer, with a note
     reasoningFix();
     paint();
   };
@@ -2123,10 +2138,23 @@ function launcherForm(o) {
     permSel.textContent = '';
     const modes = launcherSchema('claude').permission_modes.filter((m) => m !== 'manual' && m !== 'default' && (session || m !== 'bypassPermissions'));
     for (const [v, t] of [['', 'ask (default)'], ...modes.map((m) => [m, LX_PERM_LABEL[m] || m])]) permSel.append(el('option', { value: v, text: t }));
+    syncBypass();
     permSel.value = C.permission_mode;
   };
-  permSel.addEventListener('change', () => { C.permission_mode = permSel.value; edit(); });
-  painters.push(() => { permSel.value = C.permission_mode; });
+  permSel.addEventListener('change', () => { C.permission_mode = permSel.value; drops.claude = false; edit(); });
+  painters.push(() => { syncBypass(); permSel.value = C.permission_mode; });
+  /* Bypass is Claude-in-the-devcontainer only (owner decision, #104): the option is enabled while "Run in the devcontainer" is on (the repo has one), and is disabled with its reason while it is off.
+     Turning the devcontainer off under a chosen bypass switches the mode to auto and says so. */
+  const permNote = el('p', { class: 'dim lx-hint lx-bypass-note' });
+  const bypassOk = () => session && !!r.devcontainer && !!C.devcontainer;
+  syncBypass = () => {
+    const ok = bypassOk();
+    for (const o of permSel.children) if (o.getAttribute('value') === 'bypassPermissions') { lxDisable(o, !ok); o.textContent = ok ? (LX_PERM_LABEL.bypassPermissions) : LX_BYPASS_OFF; }
+    if (!ok && C.permission_mode === 'bypassPermissions') { C.permission_mode = session ? lxAuto() : ''; drops.claude = session && lxFallbackName(); permSel.value = C.permission_mode; }
+    const hasOpt = session && Array.from(permSel.children).some((o) => o.getAttribute('value') === 'bypassPermissions');
+    permNote.textContent = drops.claude && C.permission_mode !== 'bypassPermissions' ? lxBypassDropped(drops.claude) : (hasOpt && !ok ? (r.devcontainer ? LX_BYPASS_HINT : LX_BYPASS_HINT_NONE) : '');
+    hide(permNote, !permNote.textContent);
+  };
   const permField = field('Permissions', permSel);
 
   /* ---- Codex: model, reasoning per model, ONE mode picker ---- */
@@ -2167,7 +2195,7 @@ function launcherForm(o) {
     const caps = launcherSchema('codex').capabilities || {};
     const tips = { default: 'sandboxed to the repo, asks before anything else', auto: caps.approve_for_me ? 'auto-review: Codex approves what it judges safe' : 'auto-review: this Codex has no --approve-for-me, so it asks on request',
       'read-only': 'read-only sandbox, asks before anything else', bypass: 'no approvals and no sandbox', custom: 'choose the sandbox and the approval policy yourself' };
-    const seg = lxSeg(LX_CX_MODES.filter(([k]) => session || k !== 'bypass').map(([k, label]) => [k, label, { title: tips[k] }]), (k) => { X.cx_mode = k; seg.set(k); edit(); }, 'Codex mode', 'lx-modes');
+    const seg = lxSeg(LX_CX_MODES.filter(([k]) => k !== 'bypass').map(([k, label]) => [k, label, { title: tips[k] }]), (k) => { X.cx_mode = k; drops.codex = false; seg.set(k); edit(); }, 'Codex mode', 'lx-modes');
     seg.set(X.cx_mode);
     modeHost.textContent = '';
     modeHost.append(seg.node);
@@ -2175,7 +2203,7 @@ function launcherForm(o) {
     const sbx = launcherSchema('codex').options.find((x) => x.key === 'sandbox');
     const apv = launcherSchema('codex').options.find((x) => x.key === 'approval');
     sandboxSel.textContent = ''; approvalSel.textContent = '';
-    for (const s of ((sbx && sbx.choices) || LX_SANDBOXES).filter((s) => session || s !== 'danger-full-access')) sandboxSel.append(el('option', { value: s, text: s }));
+    for (const s of ((sbx && sbx.choices) || LX_SANDBOXES).filter((s) => s !== 'danger-full-access')) sandboxSel.append(el('option', { value: s, text: s }));
     for (const a of ((apv && apv.choices) || LX_APPROVALS)) approvalSel.append(el('option', { value: a, text: a }));
     sandboxSel.value = X.sandbox; approvalSel.value = X.approval;
   };
@@ -2184,6 +2212,7 @@ function launcherForm(o) {
   approvalSel.addEventListener('change', () => { X.approval = approvalSel.value; edit(); });
   const customRow = el('div', { class: 'grid lx-custom' }, field('Sandbox', sandboxSel), field('Approval policy', approvalSel));
   const modeField = field('Mode', modeHost, 'default asks on request inside a sandbox; auto asks Codex to review its own approvals.');
+  const cxNote = el('p', { class: 'dim lx-hint lx-bypass-note hidden' });
 
   /* ---- the first prompt ---- */
   const promptEl = el('textarea', { class: 'task-prompt lx-prompt', rows: '3', autocomplete: 'off', spellcheck: 'true', 'aria-label': session ? 'First prompt' : 'Prompt',
@@ -2293,8 +2322,8 @@ function launcherForm(o) {
   const shellBox = el('div', { class: 'lx-agentbox', 'data-agent': 'shell' }, el('p', { class: 'dim lx-lede', text: `A plain shell in ${r.root ? 'the project folder' : r.name}: no agent, just a terminal.` }), r.devcontainer ? checksRow(shellDev) : null);
 
   /* ---- the panels ---- */
-  const claudeBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'claude' }, modelField, bestNote, effortField, switchRow, permField);
-  const codexBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'codex' }, cxModelField, reasoningField, modeField, customRow);
+  const claudeBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'claude' }, modelField, bestNote, effortField, switchRow, permField, permNote);
+  const codexBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'codex' }, cxModelField, reasoningField, modeField, cxNote, customRow);
 
   /* ---- the danger gate ---- */
   const dangerText = el('span', { class: 'lx-danger-t' });
@@ -2438,6 +2467,9 @@ function launcherForm(o) {
 
   /* ---- what shows ---- */
   function visible() {
+    syncBypass();
+    cxNote.textContent = drops.codex ? LX_BYPASS_DROPPED_CODEX : '';
+    hide(cxNote, !drops.codex);
     const a = V.agent;
     const sch = when() === 'schedule';
     const launch = V.common.launch;
@@ -2707,7 +2739,7 @@ function launcherForm(o) {
       const title = T.title.trim() || taskTitleFrom(prompt);
       const steps = w === 'schedule' ? [] : chain.read();
       if (w !== 'schedule' && chain.problem()) { chain.node.setAttribute('open', ''); return; }
-      if (w !== 'schedule' && /bypassPermissions|dangerously-skip-permissions/i.test(String(v.args || ''))) return errs(v.agent === 'claude' ? argsC : argsX, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it.');
+      if (w !== 'schedule' && /bypassPermissions|dangerously-skip-permissions/i.test(String(v.args || ''))) return errs(v.agent === 'claude' ? argsC : argsX, 'bypassPermissions is not allowed for tasks or schedules; bypass is only for an interactive Claude session in the repo\'s devcontainer (#104).');
       setBusy(true);
       try {
         if (w === 'schedule') await submitJobNow(v, prompt, title);
