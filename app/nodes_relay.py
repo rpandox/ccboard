@@ -1063,6 +1063,13 @@ class EpicClaimRequest(EpicClaimBody):
     """The hub adds a correlation token; it is never a GitHub claim fencing token."""
     claim_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
+    @field_validator("claim_id")
+    @classmethod
+    def _claim_id(cls, v):
+        if v is not None and not re.fullmatch(r"[a-f0-9]{32}", v):
+            raise ValueError("claim_id is 32 lowercase hex characters")
+        return v
+
 
 class EpicClaimQuery(_Strict):
     repo: str = Field(max_length=140)
@@ -1072,6 +1079,13 @@ class EpicClaimQuery(_Strict):
     @classmethod
     def _repo(cls, v):
         return check_field("repo_slug", v)
+
+    @field_validator("issue")
+    @classmethod
+    def _issue(cls, v):
+        if not re.fullmatch(r"[1-9][0-9]{0,8}", v):
+            raise ValueError("issue is an issue number")
+        return v
 
 
 class EpicWorkBody(EpicClaimBody):
