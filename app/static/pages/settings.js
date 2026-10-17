@@ -180,6 +180,8 @@ function settingsNotify(p) {
 
   Nodes.use(() => Nodes.slot('notify', pushRow, {}));      // paired nodes (issue #151): a row for each, saying this page only knows this device here (nodes-hub.js)
   p.append(settingsNotifyBlock());
+  // issue #80: Claude's own apps may notify about the same moments; a static note, no notification logic
+  p.append(el('p', { class: 'dim set-note set-notify-claude', text: "Claude's own apps can also notify you about the same moments, such as a permission or a finished turn. If you get two notices, turn one of them off: either the board's notices here, or notifications in the Claude app's settings." }));
   settingsNotifyLoad();
 
   // #84: the board-wide state, read-only; the per-session switch is in each session's menu and Tune panel

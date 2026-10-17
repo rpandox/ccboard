@@ -186,3 +186,23 @@ test('the row of the roster keeps its permission note as it was (no mono class o
   w.run('globalThis.__row = sessionCard(__s, { perm: true })');
   assert.equal(w.get('__row').querySelector('.perm-note').classList.contains('mono'), false);
 });
+
+test('the panel says Claude\'s own apps may notify about the same moments, and how to stop the double notice (issue #80)', async () => {
+  const w = notifyWorld();
+  await tick();
+  const note = panel(w).querySelector('.set-notify-claude');
+  assert.ok(note, 'a note in the Notifications section');
+  assert.ok(note.classList.contains('dim') && note.classList.contains('set-note'), 'styled like the other notes');
+  const t = text(note);
+  assert.match(t, /Claude's own apps can also notify you about the same moments/);
+  assert.match(t, /a permission or a finished turn/);
+  assert.match(t, /turn one of them off: either the board's notices here, or notifications in the Claude app's settings/);
+  assert.ok(!/—/.test(t), 'no em-dash');
+  assert.equal(note.querySelectorAll('a').length, 0, 'no link');
+});
+
+test('the Claude-apps note also shows in demo mode', async () => {
+  const w = notifyWorld({ demo: true });
+  await tick();
+  assert.match(text(panel(w).querySelector('.set-notify-claude')), /Claude's own apps can also notify you/);
+});

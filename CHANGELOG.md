@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.64 - 2026-10-17
+
+### Added
+- Settings > Notifications now says that Claude's own apps (the Claude mobile app, Remote Control, Claude's push) can notify you about the same moments, and that if you get two notices you can turn off either the board's notices there or notifications in the Claude app's settings (issue #80). A note only; no notification logic changed.
+
+Upgrade: nothing to do.
+
 ## v0.5.63 - 2026-10-17
 
 ### Added
