@@ -100,15 +100,58 @@ test('conflict reloads, reset sends null, Cancel closes and only one editor is o
   assert.equal(calls(w).filter(c => c.method === 'GET' && c.path === '/api/settings/options').length, 2);
 });
 
-test('read-only classes have no editor; banners name keys and pending rows compare values', async () => {
+test('read-only classes have no editor and pending rows compare values', async () => {
   const w = await world();
   for (const key of ['CCBOARD_HUB_TOKEN', 'CCBOARD_PORT', 'CCBOARD_AUTO_CONTINUE']) assert.equal(button(row(w, key), 'Edit'), undefined);
-  assert.match(text(page(w).querySelector('.set-pending')), /Saved\. Applies after the board restarts: CCBOARD_NODE_LANES/);
   assert.match(text(row(w)), /saved, needs restart/);
   assert.match(text(row(w)), /running .*next start 5/);
-  w.run('state.settings_pending = {count:1, keys:["CCBOARD_NODE_LANES"], restart_hint:"restart board"}');
-  w.location.hash = '#/'; await settle();
-  assert.match(text(page(w).querySelector('.home-settings-pending')), /CCBOARD_NODE_LANES/);
+});
+
+test('Home pending callout names registry labels, limits the list, and separates the copyable restart command', async () => {
+  const st = fakeState();
+  st.settings_pending = { count: 1, keys: ['CCBOARD_NODE_LANES'], labels: ['Task lanes'], restart_hint: FX.restart_hint };
+  const { w } = homeWorld({ state: st });
+  w.location.hash = '#/';
+  await settle();
+  const banner = () => page(w).querySelector('.home-settings-pending');
+  assert.ok(banner().classList.contains('bp5-callout'));
+  assert.ok(banner().classList.contains('bp5-intent-warning'));
+  assert.equal(text(banner().querySelector('p')), 'A saved setting waits for a restart: Task lanes.');
+  assert.doesNotMatch(text(banner()), /Saved\.|CCBOARD_/);
+  assert.equal(text(banner().querySelector('.doc-cmdline code')), FX.restart_hint);
+  assert.ok(banner().querySelector('.doc-cmdline .copy-btn'));
+  assert.equal(banner().querySelector('a').getAttribute('href'), '#/settings?sec=options');
+  assert.equal(text(banner().querySelector('a')), 'Open Settings > Options');
+  w.run('state.settings_pending = {count:5, labels:["Task lanes", "Node name", "Task model", "Fourth", "Fifth"], restart_hint:"new restart"}; updateCurrentPage(state)');
+  assert.equal(text(banner().querySelector('p')), 'Saved settings wait for a restart: Task lanes, Node name, Task model and 2 more.');
+  assert.doesNotMatch(text(banner()), /Fourth|Fifth/);
+  assert.equal(text(banner().querySelector('code')), 'new restart');
+  w.run('state.settings_pending = {count:0}; updateCurrentPage(state)');
+  assert.equal(banner(), null);
+});
+
+test('Options pending callout uses labels and one separate command; without pending the single guidance line owns it', async () => {
+  const w = await world();
+  const p = page(w).querySelector('.settings-panel[data-sec=options]');
+  const banner = p.querySelector('.set-pending');
+  assert.equal(p.firstChild, banner);
+  assert.ok(banner.classList.contains('bp5-callout'));
+  assert.ok(banner.classList.contains('bp5-intent-warning'));
+  assert.match(text(banner.querySelector('p')), /restart: Task lanes\./);
+  assert.doesNotMatch(text(banner), /CCBOARD_/);
+  assert.equal(text(banner.querySelector('.doc-cmdline code')), FX.restart_hint);
+  assert.ok(banner.querySelector('.copy-btn'));
+  const checkGuidance = () => {
+    assert.equal(text(p).split(FX.restart_hint).length - 1, 1);
+    assert.match(text(p.querySelector('.set-options-guidance')), /Page options save here; others are set by the installer or settings file\./);
+    assert.doesNotMatch(text(p), /Saved changes apply after|After changing startup options:/);
+  };
+  checkGuidance();
+  w.ctx.__optionsNoPending = { ...structuredClone(FX), pending: [] };
+  w.run('settingsOptionsPaint(settingsPage.refs.panels.options, __optionsNoPending)');
+  assert.equal(p.querySelector('.set-pending'), null);
+  assert.equal(text(p.querySelector('.set-options-guidance .doc-cmdline code')), FX.restart_hint);
+  checkGuidance();
 });
 
 

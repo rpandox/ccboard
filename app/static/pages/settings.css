@@ -266,3 +266,7 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 #page .set-option-editor button, #page .set-option .kv-act button { min-height:var(--row-btn); }
 #page .set-option-error:empty { display:none; }
 #page .set-pending, #page .set-options-audit { overflow-wrap:anywhere; }
+#page .settings-restart { min-width:0; margin:12px 0; overflow-wrap:anywhere; }
+#page .settings-restart > p, #page .set-options-guidance > p { margin:0 0 8px; }
+#page .settings-restart > a { display:inline-block; margin-top:8px; }
+#page .settings-restart .doc-cmd, #page .set-options-guidance .doc-cmd { white-space:pre-wrap; max-width:100%; box-sizing:border-box; }

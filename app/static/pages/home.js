@@ -960,13 +960,9 @@ function homeRender(st) {
   Pages.dropSkeleton();
   if (r.usageHost) r.usageHost.classList.remove('hidden');
   const pending = s.settings_pending || {};
-  if (pending.count && !r.settingsPending) {
-    r.settingsPending = el('p', { class: 'home-settings-pending warn', role: 'status' });
-    r.summary.parentNode.insertBefore(r.settingsPending, r.summary);
-  }
-  if (r.settingsPending) {
-    if (pending.count) setTextIfChanged(r.settingsPending, 'Saved. Applies after the board restarts: ' + (pending.keys || []).join(', ') + '. ' + (pending.restart_hint || ''));
-    else { r.settingsPending.remove(); r.settingsPending = null; }
+  if (pending.count || r.settingsPending) {
+    const paint = () => { if (homePage.refs === r) settingsHomePending(r, state.settings_pending || {}); };
+    if (typeof settingsHomePending === 'function') paint(); else if (typeof lazyRun === 'function') lazyRun('settings', paint);
   }
   homeAwayTouch(s);
   homeAwayFetchLim();

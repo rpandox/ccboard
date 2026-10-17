@@ -241,7 +241,9 @@ def pending_state(settings):
     cached = getattr(settings, "_pending_cache", None)
     if cached is None or cached[0] != stamp:
         keys = pending(settings)
-        cached = (stamp, {"count": len(keys), "keys": keys, "restart_hint": plat.hint("restart", "ccboard")})
+        labels = {o.key: o.label for o in registry()}
+        cached = (stamp, {"count": len(keys), "keys": keys, "labels": [labels[key] for key in keys],
+                          "restart_hint": plat.hint("restart", "ccboard")})
         settings._pending_cache = cached
     return cached[1]
 

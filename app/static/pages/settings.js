@@ -47,6 +47,33 @@ function settingsOptionsLink(group) {
   return el('a', { href: buildHash('settings', {}, { sec: 'options', group }), text: 'see Options' });
 }
 
+function settingsRestartCommand(command) {
+  return command ? el('div', { class: 'doc-cmdline' }, el('code', { class: 'doc-cmd', text: command }), copyButton(command, 'the restart command')) : null;
+}
+
+function settingsRestartBanner(pending, home = false) {
+  const labels = pending.labels || [];
+  const names = labels.slice(0, 3).join(', ') + (pending.count > 3 ? ' and ' + (pending.count - 3) + ' more' : '');
+  return el('div', { class: 'callout warn settings-restart ' + (home ? 'home-settings-pending' : 'set-pending'), role: 'status' },
+    el('p', { text: (pending.count === 1 ? 'A saved setting waits' : 'Saved settings wait') + ' for a restart' + (names ? ': ' + names : '') + '.' }),
+    settingsRestartCommand(pending.restart_hint),
+    home ? el('a', { href: '#/settings?sec=options', text: 'Open Settings > Options' }) : null);
+}
+
+function settingsHomePending(r, pending) {
+  const sig = JSON.stringify(pending);
+  if (r.settingsPendingSig === sig) return;
+  r.settingsPendingSig = sig;
+  if (r.settingsPending) r.settingsPending.remove();
+  r.settingsPending = pending.count ? settingsRestartBanner(pending, true) : null;
+  if (r.settingsPending) r.summary.parentNode.insertBefore(r.settingsPending, r.summary);
+}
+
+function settingsPendingSummary(data) {
+  const keys = data.pending || [];
+  return { count: keys.length, keys, labels: keys.map(key => data.options.find(o => o.key === key)?.label).filter(Boolean), restart_hint: data.restart_hint };
+}
+
 function settingsOptionText(value, option) {
   if (value === null || value === undefined || value === '') {
     if (option.kind === 'bool') return 'off';
@@ -105,7 +132,7 @@ function settingsOptionEdit(p, data, option, row) {
     try {
       const result = await api('PUT', '/api/settings/options', { changes: { [option.key]: value }, stamp: data.stamp });
       settingsOptionsPaint(p, result);
-      if (state) state.settings_pending = { count: result.pending.length, keys: result.pending, restart_hint: result.restart_hint };
+      if (state) state.settings_pending = settingsPendingSummary(result);
     } catch (e) {
       if (e.status === 409) { settingsOptions(p); return; }
       error.textContent = (e.body && e.body.reason) || e.message;
@@ -148,9 +175,11 @@ function settingsOptionsPaint(p, data) {
   p.textContent = '';
   p.ccOptionCancel = null;
   const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
-  if ((data.pending || []).length) p.append(el('p', { class: 'set-pending warn', role: 'status', text: 'Saved. Applies after the board restarts: ' + data.pending.join(', ') + '. ' + data.restart_hint }));
-  p.append(el('p', { class: 'dim set-note', text: 'Save page options here. Saved changes apply after the board restarts.' }), filter);
-  if (data.restart_hint) p.append(el('p', { class: 'dim set-note', text: 'After changing startup options: ' + data.restart_hint }));
+  const pending = settingsPendingSummary(data);
+  if (pending.count) p.append(settingsRestartBanner(pending));
+  p.append(el('div', { class: 'dim set-note set-options-guidance' },
+    el('p', { text: 'Page options save here; others are set by the installer or settings file.' }),
+    pending.count ? null : settingsRestartCommand(data.restart_hint)), filter);
   const sections = [];
   const glyphs = { default: '○', file: '▤', environment: '◇', page: '▣' };
   for (const group of data.groups) {

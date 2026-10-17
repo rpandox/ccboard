@@ -2398,6 +2398,7 @@
   },
   "settings_pending": {
     "count": 1,
+    "labels": ["Task lanes"],
     "keys": [
       "CCBOARD_NODE_LANES"
     ],

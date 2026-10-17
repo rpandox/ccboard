@@ -388,6 +388,7 @@ def test_state_reports_pending_and_simulated_boot(board, monkeypatch):
     assert put(board, {KEY: '5'}).status_code == 200
     after = board[0].get('/api/state', headers=PERSON).json()
     assert after['settings_pending']['count'] == 1 and after['boot'] == before['boot']
+    assert after['settings_pending']['labels'] == ['Task lanes']
     monkeypatch.setattr(main, 'settings', config.Settings(board[2]))
     monkeypatch.setattr(main, 'BOOT', {'id': 'simulated-next-boot', 'at': before['boot']['at']})
     restarted = board[0].get('/api/state', headers=PERSON).json()
