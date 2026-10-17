@@ -43,3 +43,7 @@
   #page .ew-dec-r { margin-left:0; }
   #page .ew-acts > .ew-btn { flex:1 1 140px; }
 }
+
+.ew-setup { display:inline-flex; align-items:center; margin:0 0 8px; min-height:28px; max-width:100%; overflow-wrap:anywhere; }
+@media (pointer:coarse) { .ew-setup { min-height:44px; } }
+html.force-coarse .ew-setup { min-height:44px; }

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.90 - 2026-10-17
+
+### Added
+- Worker setup in Settings > Options > Epics & worker: mode, repositories, allowed authors, epic writes, poll interval and hourly/daily limits in one save.
+- The owner's safety copy and Phase 4 typed confirmation show the trusted lists and limits before widening.
+- Shared prerequisite checks refuse invalid worker setup without calling GitHub; saved values show the next-start outcome and restart badges.
+- Live Stop and Start stay available when a running worker is saved off; demo states cover off, read-only, ready and refusing forms.
+
+Upgrade: no installer rerun required. To enable worker setup from the page, set `CCBOARD_PAGE_WIDEN=1` in the trusted settings file and restart once; saved worker changes also need a board restart.
+
 ## v0.5.89 - 2026-10-17
 
 ### Changed

@@ -5438,6 +5438,7 @@ def api_settings_options(request: Request):
     saved = rec.get("value") if isinstance(rec, dict) else None
     page_values = {"CCBOARD_MCP_REMOTE": saved["enabled"]} if isinstance(saved, dict) and isinstance(saved.get("enabled"), bool) else {}
     result = listing(settings, page_values, db)
+    result["worker_live"] = json.loads(api_epic_worker().body)
     result["restart"] = restart.info()
     if request.query_params.get("readiness") == "1":
         result["restart"]["blockers"] = restart.readiness(db)
@@ -5539,6 +5540,7 @@ async def api_settings_options_save(request: Request):
             or ("stamp" in body and not isinstance(body["stamp"], str))):
         return _settings_refused(None, "Use 1 to 20 changes and an optional file stamp.", user=user)
     registry = {o.key: o for o in options.registry()}
+    worker_widen = options.next_settings(settings, page=False).page_widen if options.WORKER_KEYS.intersection(changes) else None
     for key, value in changes.items():
         option = registry.get(key)
         if option is None:
@@ -5546,11 +5548,13 @@ async def api_settings_options_save(request: Request):
         if option.cls not in ("page", "confirm") or option.secret:
             reason = {"file": "file_only", "installer": "installer"}.get(option.cls, "file_only")
             return _settings_refused(key, reason, 403, user)
-        reason = options.validate_value(option, value, settings.raw) if value is not None else None
+        if key in options.WORKER_KEYS and not worker_widen:
+            return _settings_refused(key, "widen_off", 403, user, line="CCBOARD_PAGE_WIDEN=1")
+        reason = options.validate_value(option, value, settings.raw, submission=True) if value is not None else None
         if reason:
             return _settings_refused(key, reason, user=user)
     try:
-        wider, detail = options.save(settings, changes, body.get("stamp"), confirm=body.get("confirm"))
+        wider, detail = options.save(settings, changes, body.get("stamp"), confirm=body.get("confirm"), db=db)
     except options.ChangeRefused as e:
         if e.reason == "needs_confirm":
             return JSONResponse({"key": None, "reason": e.reason, **e.detail}, status_code=e.status, headers={"Cache-Control": "no-store"})

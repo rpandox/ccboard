@@ -255,7 +255,7 @@ html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap
 #page .settings-page .set-options-group > summary { cursor:pointer; min-height:var(--tap, 44px); padding:12px 0; }
 #page .settings-page .set-options-group .set-h { display:inline; margin:0; }
 #page .settings-page .set-option > .k { overflow-wrap:anywhere; }
-#page .settings-page .set-option-key { display:block; font-size:11px; margin-top:4px; }
+#page .settings-page .set-option-key { display:block; font-size:11px; margin-top:4px; overflow-wrap:normal; word-break:normal; }
 #page .settings-page .set-option-line { overflow-wrap:anywhere; user-select:all; }
 
 /* Safe options keep a single editor and primary action open. */
@@ -303,3 +303,24 @@ dialog.set-widen input, dialog.set-widen button { min-height:28px; }
 dialog.set-widen .qr-actions { flex-wrap:wrap; }
 html.force-coarse dialog.set-widen input, html.force-coarse dialog.set-widen button { min-height:44px; font-size:16px; }
 @media (pointer:coarse) { dialog.set-widen input, dialog.set-widen button { min-height:44px; font-size:16px; } }
+
+/* Worker uses the same fields, kv rows, chips and restart badges as Options. */
+#page .settings-page .set-worker { min-width:0; overflow-wrap:anywhere; }
+#page .settings-page .set-worker h3 { font-size:14px; margin:16px 0 8px; }
+#page .settings-page .set-worker .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+#page .settings-page .set-worker textarea, #page .settings-page .set-worker input:not([type=checkbox]) { width:100%; box-sizing:border-box; }
+#page .settings-page .set-worker textarea { resize:vertical; }
+#page .settings-page .set-worker .badge { max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+#page .settings-page .set-worker input, #page .settings-page .set-worker textarea, #page .settings-page .set-worker button { min-height:28px; }
+#page .settings-page .set-worker-safety { font-weight:500; }
+#page .settings-page .set-worker-error:empty { display:none; }
+@media (max-width:599px) {
+  #page .settings-page .set-worker .kv { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+  #page .settings-page .set-worker .kv > .k { width:auto; }
+}
+@media (pointer:coarse) {
+  #page .settings-page .set-worker input, #page .settings-page .set-worker textarea, #page .settings-page .set-worker button { min-height:44px; font-size:16px; }
+  #page .settings-page .set-worker input[type=checkbox] { width:44px; height:44px; }
+}
+html.force-coarse #page .settings-page .set-worker input, html.force-coarse #page .settings-page .set-worker textarea, html.force-coarse #page .settings-page .set-worker button { min-height:44px; font-size:16px; }
+html.force-coarse #page .settings-page .set-worker input[type=checkbox] { width:44px; height:44px; }

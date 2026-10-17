@@ -2,6 +2,13 @@
 
 Working rules: one phase at a time; each item is one commit; tick items as they land.
 
+## v0.5.90 - Worker setup in Settings (P5, #243)
+
+- [x] One Worker form for on/off, repositories, authors, writes, poll interval and limits, with Phase 4 typed confirmation and exact owner safety copy.
+- [x] Pure shared refusal checks for saved settings, atomic prerequisite validation, restart badges and live Stop/Start independent of the saved switch.
+- [x] Demo states for off, widening off, ready and refusing; responsive form and dialog coverage, person-only save tests and off-mode regression checks.
+- [ ] Human box check on a scratch repository: confirm setup, restart and observe the first worker cycle.
+
 ## v0.5.83 - Settings widening (P4)
 
 - [x] File-only master switch, exact typed phrases, atomic comparison, worker prerequisites and redacted audit.
