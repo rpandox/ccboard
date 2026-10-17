@@ -14,10 +14,11 @@
 #   CCBOARD_MEM_SERVICE=1          also run dev.ccboard.mem (the claude-mem worker from a clean environment)
 #   CCBOARD_BACKUP=0               no nightly backup job (otherwise dev.ccboard.backup runs at CCBOARD_BACKUP_ONCALENDAR)
 #   CCBOARD_MACOS_OPTIONAL=...     optional Homebrew tools, default code-server,restic,bun; none = skip them
-#   CCBOARD_MACOS_INSTALL_TOOLS=1  install missing Homebrew tools without asking (0 = never; unset = ask, and refuse without a terminal)
-#   CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1   also let Homebrew BUILD a missing tool from source without asking (ttyd on an Intel Mac takes many
-#                                  minutes and may upgrade packages you have); without it a build from source is asked about on a
-#                                  terminal and refused otherwise. With no Command Line Tools such a build is refused before anything installs.
+#   CCBOARD_MACOS_INSTALL_TOOLS=1  install missing Homebrew tools, including source builds, without asking (0 = never; unset = ask,
+#                                  and refuse without a terminal). Builds warn first: several minutes and possible package upgrades.
+#   CCBOARD_MACOS_ALLOW_SOURCE_BUILD=0   never build from source; unset or 1 allows builds with the tools consent above. ttyd on an Intel
+#                                  Mac takes many minutes and may upgrade packages you have. With no Command Line Tools such a build
+#                                  is refused before anything installs.
 #   CCBOARD_CLAUDE_MEM=0           skip the claude-mem plugin step (otherwise: claude plugin marketplace add / install, warn and go on if it fails)
 #   CCBOARD_MACOS_PLUGIN_SECONDS=N time limit for each of the two plugin commands (default 300; gtimeout, or a python wrapper without it)
 #   CCBOARD_TMUX_TMPDIR, CCBOARD_TMUX_SOCKET   where tmux puts its socket (default /tmp and ccboard); the same in every job
@@ -172,6 +173,8 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 [ "$CCBOARD_MEM_HTTPS_PORT" != off ] || CCBOARD_MEM_HTTPS_PORT=
 : "${CCBOARD_MEM_SERVICE:=0}"
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"
+: "${CCBOARD_LOCAL_SIGNIN:=0}"
+: "${CCBOARD_LOCAL_SIGNIN_HOURS:=12}"
 : "${CCBOARD_MCP_REMOTE:=0}"
 : "${CCBOARD_MCP_NODES:=0}"             # 0 = agents stay on this board; read (or 1) = they may list nodes and read their projects and tasks; tasks = they may also start tasks there (issue #152)
 : "${CCBOARD_EPIC_AUTHORS:=}"             # GitHub logins whose claim comments count on an epic, if they can write to the repository (empty = the gh login only; issue #147)
@@ -328,7 +331,7 @@ else
   if [ -n "$SOURCE_LIST" ] && [ "${CCBOARD_MACOS_INSTALL_TOOLS:-}" != 0 ] && ! xcode-select -p >/dev/null 2>&1; then
     die "the Xcode Command Line Tools are not installed, and these would be built from source: $SOURCE_LIST. Nothing was installed. Install the tools with: xcode-select --install   (a window opens; when it has finished, rerun this installer)"
   fi
-  # A yes to the tools question is not a yes to a build that takes minutes and may upgrade packages you have: that needs its own answer.
+  # Tools consent includes source builds, unless explicitly forbidden; the preflight and warning still explain their cost.
   consent=''
   case "${CCBOARD_MACOS_INSTALL_TOOLS:-}" in
     1) consent=yes;;
@@ -336,7 +339,7 @@ else
     '') consent=ask;;
     *) die "CCBOARD_MACOS_INSTALL_TOOLS must be 1 or 0 (got '$CCBOARD_MACOS_INSTALL_TOOLS')";;
   esac
-  if [ -n "$SOURCE_LIST" ] && [ "$consent" = yes ] && [ "${CCBOARD_MACOS_ALLOW_SOURCE_BUILD:-}" != 1 ]; then consent=ask; fi
+  if [ -n "$SOURCE_LIST" ] && [ "${CCBOARD_MACOS_ALLOW_SOURCE_BUILD:-}" = 0 ] && [ "$consent" != no ]; then consent=blocked; fi
   go=0
   if [ "$consent" = yes ]; then
     go=1
@@ -351,7 +354,11 @@ else
   fi
   if [ "$go" != 1 ]; then
     if [ -n "$SOURCE_LIST" ] && [ "$consent" != no ]; then
-      [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Homebrew would build from source: $SOURCE_LIST (several minutes, and it may upgrade packages you have). Nothing was installed. Build them by running this installer in a terminal and answering y, or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1 CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1, or install them yourself: brew bundle --file=$APP_DIR/scripts/macos/Brewfile"
+      source_help="Build them by running this installer in a terminal and answering y, or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1"
+      if [ "$consent" = blocked ]; then
+        source_help="Source builds are disabled by CCBOARD_MACOS_ALLOW_SOURCE_BUILD=0. To allow them, rerun with CCBOARD_MACOS_INSTALL_TOOLS=1 CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1"
+      fi
+      [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Homebrew would build from source: $SOURCE_LIST (several minutes, and it may upgrade packages you have). Nothing was installed. $source_help, or install them yourself: brew bundle --file=$APP_DIR/scripts/macos/Brewfile"
       warn "optional tools are missing ($NEED_OPT) and Homebrew would build from source: $SOURCE_LIST; continuing without them. Install later with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile.optional"
     else
       [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Install them with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile   (or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1)"

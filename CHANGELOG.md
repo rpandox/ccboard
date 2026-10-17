@@ -13,6 +13,23 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.75 - 2026-10-17
+
+### Added
+- Optional local browser sign-in with a single-use link from bin/ccboard-open, off by default.
+- Local session expiry, a sign-out-all button in Settings > App, and a Doctor warning while enabled.
+- Signing in again replaces this browser's old session; Settings identifies this browser and explains how to sign in, including when no browser is signed in locally.
+
+Upgrade: nothing to do.
+
+## v0.5.74 - 2026-10-17
+
+### Changed
+- The macOS installer now builds missing tools from source with CCBOARD_MACOS_INSTALL_TOOLS=1 alone, after warning which formulas need building, how long it may take and that existing packages may be upgraded.
+- CCBOARD_MACOS_ALLOW_SOURCE_BUILD=0 forbids source builds, including after a terminal yes. The Command Line Tools stop and measured Intel ttyd finding are unchanged.
+
+Upgrade: CCBOARD_MACOS_INSTALL_TOOLS=1 now includes source builds; leave CCBOARD_MACOS_ALLOW_SOURCE_BUILD unset or set it to 1 to allow them, or set it to 0 to forbid them. No installer rerun is needed for existing tools.
+
 ## v0.5.73 - 2026-10-17
 
 ### Added

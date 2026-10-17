@@ -13,6 +13,25 @@ PERSON = {'Tailscale-User-Login': 'alice', 'X-CCBoard': '1'}
 KEY = 'CCBOARD_NODE_LANES'
 
 
+def test_a_local_sign_in_person_can_save(board, monkeypatch):
+    """The settings write check counts a local sign-in (issue #127) as the person, like the rest of the board."""
+    from app import hooks, local_signin as local
+    c, settings, _ = board
+    for target in {id(settings): settings, id(local.settings): local.settings}.values():     # the board's object and the one local_signin reads
+        for name, value in (("local_signin", True), ("local_signin_user", "alice"), ("local_signin_hours", 12), ("allowed_users", {"alice"})):
+            monkeypatch.setattr(target, name, value)
+    monkeypatch.setattr(c._transport, "client", ("127.0.0.1", 50000))
+    c.base_url = f"http://127.0.0.1:{settings.port}"
+    local.clear()
+    try:
+        token = c.post('/auth/local/token', headers={"X-CCBoard-Token": hooks.ensure_token()}).headers[local.TOKEN_HEADER]
+        assert c.post('/auth/local/redeem', content=token, headers={"X-CCBoard": "1"}).status_code == 204
+        answer = c.put(URL, headers={"X-CCBoard": "1"}, json={'changes': {KEY: '5'}})
+        assert answer.status_code == 200, answer.text
+    finally:
+        local.clear()
+
+
 @pytest.fixture
 def board(lite_client, monkeypatch, tmp_path):
     from app import main

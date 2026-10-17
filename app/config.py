@@ -491,6 +491,13 @@ class Settings:
         self.ccboard_https_port = int(env.get("CCBOARD_HTTPS_PORT", "443"))
         self.code_https_port = int(env.get("CODE_HTTPS_PORT", "8443"))
         self.allowed_users = parse_allowlist(env.get("CCBOARD_ALLOWED_USERS", ""))
+        self.local_signin = env.get("CCBOARD_LOCAL_SIGNIN", "0") == "1"
+        self.local_signin_hours = int(env.get("CCBOARD_LOCAL_SIGNIN_HOURS", "12"))
+        if not 1 <= self.local_signin_hours <= 168:
+            raise ValueError("CCBOARD_LOCAL_SIGNIN_HOURS must be between 1 and 168")
+        first = next((u.strip() for u in env.get("CCBOARD_ALLOWED_USERS", "").split(",") if u.strip()), "")
+        self.local_signin_user = first.lower() if first.isascii() else first
+
         self.clone_allowed_hosts = parse_clone_hosts(env.get("CCBOARD_CLONE_ALLOWED_HOSTS", ""))     # hosts a clone may name although they look local or private (app/projects.py check_clone_url)
         data_dir = env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())
         self.data_dir = Path(data_dir)
@@ -768,6 +775,10 @@ settings = Settings()
 def _main(argv: list[str]) -> int:
     """For installers: `python -m app.config keys` prints the settings-file keys, one per line; `python -m app.config check <file>` prints why
     the board would refuse that file and exits 1, or exits 0 when it is absent or acceptable."""
+    if argv == ["open"]:
+        import subprocess
+        env = dict(os.environ, CCBOARD_PORT=str(settings.port), CCBOARD_DATA_DIR=str(settings.data_dir))
+        return subprocess.call([str(Path(__file__).resolve().parent.parent / "bin" / "ccboard-open")], env=env)
     if argv[:1] == ["keys"]:
         print("\n".join(ENV_FILE_KEYS))
         return 0
@@ -777,7 +788,7 @@ def _main(argv: list[str]) -> int:
             print(f"{argv[1]} {problem}")
             return 1
         return 0
-    print("usage: python -m app.config keys | check <settings file>")
+    print("usage: python -m app.config keys | check <settings file> | open")
     return 2
 
 
