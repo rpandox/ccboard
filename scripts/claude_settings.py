@@ -61,11 +61,24 @@ def load(p: Path) -> dict:
     return data
 
 
+STAMP_NAME = ".ccboard-hook-sync"
+
+
+def touch_stamp(p: Path) -> None:
+    """Right after a successful write of `p`, touch an empty `.ccboard-hook-sync` beside it. tests/conftest.py's home guard reads its mtime to
+    tell "the ccboard install on this machine synced its hooks" from "a test wrote the real home" (issue #235). Best effort: never fails."""
+    try:
+        (p.parent / STAMP_NAME).touch()
+    except OSError:
+        pass
+
+
 def save(p: Path, data: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, p)
+    touch_stamp(p)
 
 
 def is_ours(hook: dict, mark: str = MARK) -> bool:

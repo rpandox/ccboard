@@ -425,11 +425,14 @@ function settingsNdRemoveSheet(opener, rec) {
   shell = modalShell('qr-editor readout nd-sheet', `Remove ${p.name}`, () => settingsNdSheetGone(shell));
   s.shell = shell;
   const checks = [];
+  let others = [];
+  const pairName = (o) => NodeView.str(o && o.name, 80) || 'unnamed node';
+  const automatic = el('p', { class: 'qr-hint dim' });
   const list = el('div', { class: 'nd-rm-list' });
   const info = el('p', { class: 'qr-hint dim', text: 'Checking which other nodes can still call this board…' });
   const err = el('p', { class: 'qr-err bad', role: 'alert' });
   const go = el('button', { class: 'danger confirm', type: 'button', text: 'Remove', disabled: true, onclick: () => submit() });
-  const f = el('form', { class: 'nd-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, info, list, err,
+  const f = el('form', { class: 'nd-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, automatic, info, list, err,
     el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Cancel' }), go));
   shell.dlg.append(el('div', { class: 'qr-box' }, el('h2', { class: 'qr-title', text: `Remove ${p.name}` }),
     el('p', { class: 'qr-hint dim', text: 'This board stops calling the node and tells it to unpair. That works even when the node is offline.' }), f));
@@ -442,11 +445,13 @@ function settingsNdRemoveSheet(opener, rec) {
       return;
     }
     if (shell !== s.shell) return;
-    const others = NodeView.list(pv, 'others');
+    const auto = NodeView.list(pv, 'auto');
+    automatic.textContent = auto.length ? `The other direction goes too: ${auto.map(pairName).join(', ')} will no longer be able to call this board.` : '';
+    others = NodeView.list(pv, 'others');
     if (others.length) {
       info.textContent = 'These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it. None is ticked: a node id is not proof of who a board is. Tick any you want revoked too.';
       settingsNdPut(list, ...others.map((o) => settingsNdRemoveRow(o, checks)));
-    } else info.textContent = 'No other pair uses this node\'s id.';
+    } else info.textContent = auto.length ? 'No additional pair uses this node\'s id.' : 'No other pair uses this node\'s id.';
     go.disabled = false;
   }
   async function submit() {
@@ -468,10 +473,12 @@ function settingsNdRemoveSheet(opener, rec) {
       return;
     }
     const told = r && typeof r === 'object' ? (r.peer_notified !== undefined ? r.peer_notified : r.notified) : undefined;
-    const cut = r && Array.isArray(r.also_revoked) ? r.also_revoked.length : 0;
+    const auto = NodeView.list(r, 'auto_revoked');
+    const cut = r && Array.isArray(r.also_revoked) ? r.also_revoked : [];
     const left = r && Array.isArray(r.other_pairs) ? r.other_pairs.length : 0;
     const said = [told === false ? `${p.name} removed. It was not told (offline or no answer), so remove this board there too.` : `${p.name} removed.`,
-      cut ? `${cut} other ${cut === 1 ? 'pair' : 'pairs'} revoked.` : '',
+      auto.length ? `Incoming ${auto.length === 1 ? 'pair' : 'pairs'} revoked automatically: ${auto.map(pairName).join(', ')}.` : '',
+      cut.length ? `Other ${cut.length === 1 ? 'pair' : 'pairs'} revoked: ${cut.map((id) => pairName(others.find((o) => o.peer_id === id))).join(', ')}.` : '',
       left ? `${left} other ${left === 1 ? 'pair' : 'pairs'} with its node id can still call this board.` : ''].filter(Boolean).join(' ');
     shell.close();
     settingsNdToast(said, told === false || left ? 'warn' : 'ok');

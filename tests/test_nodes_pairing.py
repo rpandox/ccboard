@@ -1238,8 +1238,9 @@ def test_rotating_an_unknown_or_an_incoming_pair_from_here_is_a_lookup_error(pai
 def test_removing_a_node_tells_the_other_board_which_drops_its_pair_both_ways(pair2):
     view, _ = pair(pair2, both_ways=True)
     with pair2.a.enter():
+        auto = [{"peer_id": p["peer_id"], "name": p["name"]} for p in nodes.removal_preview(view["handle"])["auto"]]
         res = nodes.remove_node(view["handle"])
-        assert res == {"removed": True, "peer_told": True, "also_revoked": [], "other_pairs": []}
+        assert res == {"removed": True, "peer_told": True, "auto_revoked": auto, "also_revoked": [], "other_pairs": []}
         assert nodes.peers() == [] and not nodes.has_outgoing(view["peer_id"])                      # the row, the token and the reverse pair
     with pair2.b.enter():
         assert nodes.peers() == []                                                                 # B dropped the pair A held and its own token for A
@@ -1251,8 +1252,9 @@ def test_removing_a_node_while_the_other_board_is_off_still_removes_everything_h
     pair2.offline.add("node-b")
     with pair2.a.enter():
         old = nodes._load_outgoing(view["peer_id"])
+        auto = [{"peer_id": p["peer_id"], "name": p["name"]} for p in nodes.removal_preview(view["peer_id"])["auto"]]
         res = nodes.remove_node(view["peer_id"])
-        assert res == {"removed": True, "peer_told": False, "also_revoked": [], "other_pairs": []}
+        assert res == {"removed": True, "peer_told": False, "auto_revoked": auto, "also_revoked": [], "other_pairs": []}
         assert nodes.peers() == [] and not nodes.has_outgoing(view["peer_id"]) and not nodes.tokens_path().exists()
         assert nodes.remove_peer(view["peer_id"]) is False
         rows = [r for r in nodes.audit_list(20) if r["action"] == "unpair"]
@@ -1268,7 +1270,7 @@ def test_removing_a_node_while_the_other_board_is_off_still_removes_everything_h
 def test_a_legacy_row_is_removed_without_calling_anyone(pair2):
     with pair2.a.enter():
         (legacy,) = nodes.import_legacy([{"name": "ubu", "url": "https://ubu.tailnet.ts.net"}])
-        assert nodes.remove_node("ubu") == {"removed": True, "peer_told": False, "also_revoked": [], "other_pairs": []}
+        assert nodes.remove_node("ubu") == {"removed": True, "peer_told": False, "auto_revoked": [], "also_revoked": [], "other_pairs": []}
     assert pair2.log == []
 
 
@@ -1923,6 +1925,7 @@ def test_remove_node_answers_with_the_pairs_it_left_and_also_revoke_cuts_exactly
     moved, moved_tok = nodes.add_incoming({"id": C_ID, "name": "node-c-new", "url": NEW_URL}, db=db)
     claim, claim_tok = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
     res = nodes.remove_node(out["peer_id"], db=db, also_revoke=[moved["peer_id"]])
+    assert res["auto_revoked"] == [{"peer_id": auto["peer_id"], "name": "node-c"}]
     assert told == [C_URL] and res["removed"] is True and res["also_revoked"] == [moved["peer_id"]]
     assert nodes.verify_token(auto_tok, db=db) is None, "the confirmed pair at the same address still goes by itself"
     assert nodes.verify_token(moved_tok, db=db) is None, "the ticked one goes"

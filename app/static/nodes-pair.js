@@ -482,7 +482,7 @@ function demoNodesWrite(method, path, body, data) {
     demoNodesMade.gone.add(id);
     for (const x of [...rm.auto, ...cut]) demoNodesMade.gone.add(x.peer_id);
     demoNodesNote('unpair', id, true, '');
-    return { removed: true, peer_notified: id !== 'p-old-laptop', also_revoked: cut.map((x) => x.peer_id), other_pairs: rm.others.filter((x) => !asked.includes(x.peer_id)) };
+    return { removed: true, peer_notified: id !== 'p-old-laptop', auto_revoked: rm.auto.map(({ peer_id, name }) => ({ peer_id, name })), also_revoked: cut.map((x) => x.peer_id), other_pairs: rm.others.filter((x) => !asked.includes(x.peer_id)) };
   }
   return null;
 }
