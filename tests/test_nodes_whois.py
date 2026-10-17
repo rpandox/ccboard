@@ -181,7 +181,11 @@ def pair(c, db, frm: str | None, **headers):
     h = {"X-CCBoard": "1", **headers}
     if frm:
         h["X-Forwarded-For"] = frm
-    return c.post("/api/nodes/pair", json={"code": made["code"], "node": dict(CALLER)}, headers=h)
+    reply = c.post("/api/nodes/pair", json={"code": made["code"], "node": dict(CALLER)}, headers=h)
+    if reply.status_code == 200:
+        ack = c.post("/api/node/pair/ack", json={}, headers={**h, "Authorization": "Bearer " + reply.json()["token"]})
+        assert ack.status_code == 200, ack.text
+    return reply
 
 
 # ---------------------------------------------------------------- settings
@@ -1023,3 +1027,16 @@ def test_the_demo_pairs_use_the_board_s_short_device_form():
         else:
             assert not p.get("device_id") and not p.get("device_tags")
     assert nodes._device_short(None) is None and nodes._device_short("") is None and nodes._device_short("short") == "short"
+
+
+def test_pending_ack_checks_bound_device(serve, monkeypatch):
+    c, db, fake = serve
+    set_mode(monkeypatch, "whois")
+    code = nodes.create_code(db=db)["code"]
+    reply = c.post("/api/nodes/pair", json={"code": code, "node": dict(CALLER)},
+                   headers={"X-CCBoard": "1", "X-CCBoard-Pair-Ack": "1", "X-Forwarded-For": DEV_A})
+    token = reply.json()["token"]
+    assert c.post("/api/node/pair/ack", json={}, headers=bearer(token, DEV_B)).status_code == 403
+    assert db.node_pairs()[0]["pending_until"] and nodes.peers(db) == []
+    assert c.post("/api/node/pair/ack", json={}, headers=bearer(token, DEV_A)).status_code == 200
+    assert db.node_pairs()[0]["pending_until"] is None

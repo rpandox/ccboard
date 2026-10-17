@@ -1877,3 +1877,29 @@ test('pair key states use glyphs and words, and upgrade pins offer Pair again', 
   assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ peer signing key changed; remove its pair here first');
   assert.match(view.keyState({ last_error: 'own_key_changed' }), /this board.*signing key changed/);
 });
+
+
+test('pending incoming pair uses plain words, an expiry and Remove', async () => {
+  const { w, server } = pairWorld({ inn: [caller({ pending_until: iso(-600), last_seen: null })] });
+  await settle();
+  const row = incomingRows(w)[0];
+  assert.match(text(row), /Pairing with desk-pc not finished, expires in 10 min/);
+  assert.doesNotMatch(text(row), /unkeyed, pair again|The pair works/);
+  assert.ok(btn(row, 'Remove'));
+  assert.equal(btn(row, 'Revoke'), undefined);
+  assert.equal(btn(row, 'Pair again'), undefined);
+  btn(row, 'Remove').click();
+  await settle();
+  btn(incomingRows(w)[0], 'Confirm Remove').click();
+  await settle();
+  assert.equal(server.inn.length, 0);
+});
+
+
+test('pending outgoing refusal shows the explanation without a re-pair warning', async () => {
+  const message = 'the other board has not confirmed this pairing yet; pair again if it does not finish';
+  const { w } = pairWorld({ out: [peer({ last_error: message, needs_repair: false })] });
+  await settle();
+  assert.match(text(pairedRows(w)[0]), new RegExp(message));
+  assert.doesNotMatch(text(pairedRows(w)[0]), /re-pair needed|saved token stopped working/i);
+});

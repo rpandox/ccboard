@@ -54,7 +54,7 @@ Pairing (issue #135, phase P3). The contract the routes (app/main.py) and the Se
     address, send `Authorization: Bearer <token>`, `X-CCBoard: 1` and `X-CCBoard-Node: <this node id>`, never follow a redirect, read at most RESP_MAX.
     PairError(reason) (reasons none, wrong, expired, burned, rate_limited, bad_request, bad_url, callback_mismatch) carries .status and .payload();
     PeerError(reason) is a failed outgoing call.
-  The handshake in one call each side: handle_pair(body, caller) on the accepting board (the route answers its dict), add_node(url, code, handle,
+  The handshake, followed by a caller acknowledgement: handle_pair(body, caller) on the accepting board (the route answers its dict), add_node(url, code, handle,
     both_ways) on the calling board, rotate_outgoing(peer) / remove_node(peer) on the calling board, rotate_token(peer_id) and unpair_incoming(peer_id)
     for the two token-authenticated routes. audit(direction, peer_id, action, ok, detail) writes a row with nothing secret in it.
 """
@@ -786,6 +786,7 @@ NODE_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/node"): "read",
     ("GET", "/api/node/summary"): "read",
     ("GET", "/api/node/state"): "read",
+    ("POST", "/api/node/pair/ack"): SCOPE_ANY,
     ("POST", "/api/node/rotate"): SCOPE_ANY,
     ("POST", "/api/node/unpair"): SCOPE_ANY,
 }
@@ -801,6 +802,9 @@ CODE_TRIES = 5                                                # wrong tries that
 CODE_MINUTES = (1, 30)
 CODE_DEFAULT_MINUTES = 10
 PAIR_RATE = 20                                                # pair attempts per minute and source address
+PAIR_PENDING_CAP = 3                                          # unfinished pairs count at most this much toward the incoming limit
+PAIR_PENDING_MESSAGE = "the other board has not confirmed this pairing yet; pair again if it does not finish"
+PAIR_PENDING_TTL = 600                                        # seconds to acknowledge a pairing before its provisional row is deleted
 ROTATE_GRACE = 60                                             # seconds the old token stays valid after a rotation
 ROTATE_LOST = "the rotation answer was lost"                  # the last_error of a lost rotation; the row's `rotate_lost` flag is what keeps needs_repair until the node is paired again (issue #153)
 AUDIT_DAYS = 90
@@ -1129,7 +1133,7 @@ def _out_view(r: dict) -> dict:
 def _in_view(r: dict) -> dict:
     return {"peer_id": r["peer_id"], "node_id": r["peer_node_id"] or None, "name": r["peer_name"] or None, "url": r["peer_url"],
             "scopes": _scopes_of(r["scopes"]), "created_at": r["created_at"], "last_seen": r["last_used_at"], "direction": "in",
-            "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"],
+            "pending_until": r["pending_until"], "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"],
             "pubkey": r.get("peer_pubkey"), "key_source": r.get("peer_key_source"), "key_at": r.get("peer_key_at"),
             "key_id": node_keys.key_id(r["peer_pubkey"]) if node_keys.valid_public(r.get("peer_pubkey")) else None,
             "superseded_by": r.get("superseded_by") or None, "superseded_by_url": None,
@@ -1151,10 +1155,11 @@ def _device_tags(raw) -> list[str]:
     return [x for x in v if isinstance(x, str)][:16] if isinstance(v, list) else []
 
 
-def peers(db=None) -> list[dict]:
-    """Every pair this board has, both directions, oldest first; no token and no digest. [] on a board nobody paired with."""
+def peers(db=None, *, include_pending: bool = False) -> list[dict]:
+    """Active pairs, both directions, oldest first; no secrets. Settings can also include unfinished incoming pairs."""
     d = _db(db)
-    inc = [_in_view(r) for r in d.node_pairs()]
+    expire_pending(d)
+    inc = [_in_view(r) for r in d.node_pairs() if include_pending or not r["pending_until"]]
     if any(v["superseded_by"] for v in inc):                                  # the address of the newer pair, even if that pair was revoked since
         urls = {r["peer_id"]: r["peer_url"] for r in d.node_pairs(include_revoked=True)}
         for v in inc:
@@ -1171,7 +1176,7 @@ def any_paired(db) -> bool:
     try:
         if any(not r.get("legacy") for r in _out_rows(db)):
             return True
-        return bool(db.node_pairs())
+        return any(not r["pending_until"] for r in db.node_pairs())
     except Exception:
         return False
 
@@ -1199,7 +1204,7 @@ def peer(ident, db=None) -> dict | None:
     """One pair by peer_id, or by registry handle. None when there is none."""
     if not isinstance(ident, str) or not ident:
         return None
-    for r in peers(db):
+    for r in peers(db, include_pending=True):
         if r["peer_id"] == ident or (r["direction"] == "out" and r.get("handle") == ident):
             return r
     return None
@@ -1305,8 +1310,10 @@ def registry_full(db=None, *, url: str | None = None) -> bool:
 def incoming_full(db=None, node=None) -> bool:
     """Does this board already let MAX_PEERS other boards call it (active incoming pairs)? Not when `node` (the caller's claimed card) names an active pair
     that pairing again replaces: the same node id at the same address (revoke_older_pairs retires it once the id is confirmed), so the count does not grow."""
+    expire_pending(db)
     rows = [r for r in _db(db).node_pairs() if not r["revoked_at"]]
-    if len(rows) < MAX_PEERS:
+    active = [r for r in rows if not r["pending_until"]]
+    if len(active) + min(len(rows) - len(active), PAIR_PENDING_CAP) < MAX_PEERS:
         return False
     c = _clean_claim(node)
     return not (c["node_id"] and any(r["peer_node_id"] == c["node_id"] and _same_address(r["peer_url"], c["url"]) for r in rows))
@@ -1417,7 +1424,7 @@ def _clean_claim(node) -> dict:
             "url": url if isinstance(url, str) and 0 < len(url) <= 300 else None}
 
 
-def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, binding: dict | None = None, db=None) -> tuple[dict, str]:
+def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, binding: dict | None = None, pending: bool = False, db=None) -> tuple[dict, str]:
     """A new incoming pair: the row (digest only) and the token's plaintext, which this call returns and nothing keeps. It never touches another
     pair: the node id in `node` is only a claim until the caller's address has confirmed it (handle_pair), and only then does
     revoke_older_pairs retire the older pairs of that node."""
@@ -1426,7 +1433,7 @@ def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool 
     token = _new_token()
     pid = _new_peer_id()
     d.node_pair_add(peer_id=pid, peer_node_id=c["node_id"], peer_name=c["name"], peer_url=c["url"], token_sha256=_digest(token),
-                    scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), callback_unverified=1 if callback_unverified else 0,
+                    scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), pending_until=iso(_now() + PAIR_PENDING_TTL) if pending else None, callback_unverified=1 if callback_unverified else 0,
                     **({"peer_ts_id": binding["peer_ts_id"], "peer_tags": binding["peer_tags"]} if binding else {}))      # issue #136: the device it was paired from
     return _in_view(d.node_pair_get(pid)), token
 
@@ -1471,23 +1478,28 @@ def mint_token(peer_id: str, db=None) -> str:
     return token
 
 
-def verify_token(plaintext, *, ip: str | None = None, db=None) -> dict | None:
+def verify_token(plaintext, *, ip: str | None = None, allow_pending: bool = False, db=None) -> dict | None:
     """The incoming pair a presented token belongs to (the view plus `via_previous`), or None for anything else: not a token, unknown, revoked,
-    expired, or an old token past its 60 s. Every active pair is compared with hmac.compare_digest and the loop never stops early. The pair's
+    pending (except on the ack route), expired, or an old token past its 60 s. Every active pair is compared with hmac.compare_digest and the loop never stops early. The pair's
     last_used_at (and an address hint) is written at most every 30 s."""
     if not isinstance(plaintext, str) or not TOKEN_RE.fullmatch(plaintext):
         return None
     d = _db(db)
+    expire_pending(d)
     given = _digest(plaintext)
     now_iso = iso(_now())
     found, via_prev = None, False
     for r in d.node_pairs():
         cur = hmac.compare_digest(given, r["token_sha256"] or "-")
         prev = bool(r["prev_sha256"] and r["prev_until"] and now_iso < r["prev_until"]) and hmac.compare_digest(given, r["prev_sha256"] or "-")
+        if r["pending_until"] and not allow_pending:
+            continue
         if (cur or prev) and found is None and not (r["expires_at"] and now_iso >= r["expires_at"]):
             found, via_prev = r, not cur
     if found is None:
         return None
+    if found["pending_until"]:
+        return {**_in_view(found), "via_previous": False}
     upd: dict = {}
     if not found["last_used_at"] or iso(_now() - USED_EVERY) > found["last_used_at"]:
         upd["last_used_at"] = now_iso
@@ -1598,7 +1610,7 @@ def _audit_refused(db, detail: str) -> None:
         audit("in", "", "pair_refused", False, detail, status="refused", db=db)
 
 
-def redeem_code(code, caller: str, *, node=None, bind=None, db=None) -> dict:
+def redeem_code(code, caller: str, *, node=None, bind=None, pending: bool = False, db=None) -> dict:
     """Spend the pairing code. Returns {peer_id, token, scopes, expires_at} with the token's plaintext, once. `caller` is the source address (the
     20 attempts a minute are counted before the code is looked at). Raises PairError: rate_limited, none (no active code), expired, wrong, burned
     (the 5th wrong try deletes the code). `node` is the caller's claimed card; its id, name and address fill the pair row. `bind` (issue #136, the whois
@@ -1642,7 +1654,7 @@ def redeem_code(code, caller: str, *, node=None, bind=None, db=None) -> dict:
             raise PairError("registry_full")
         d.kv_del(KV_CODE)                                          # spent: a second use of the same code finds none
     scopes = _scopes_of(v.get("scopes")) or list(DEFAULT_SCOPES)
-    row, token = add_incoming(node, scopes, callback_unverified=True, binding=binding, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
+    row, token = add_incoming(node, scopes, callback_unverified=True, binding=binding, pending=pending, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
     audit("in", row["peer_id"], "code_used", True, f"scopes {','.join(scopes)}", node_name=row["name"], db=d)
     return {"peer_id": row["peer_id"], "token": token, "scopes": scopes, "expires_at": row["expires_at"]}
 
@@ -1798,7 +1810,9 @@ class PeerClient:
         reason = reply.json.get("reason") if isinstance(reply.json, dict) else None
         known = ("clock", "replay", "stale", "key_changed", "signature_required", "key_required", "bad_signature")
         error = "own_key_changed" if reason == "key_changed" else reason if reason in known else f"the peer answered {reply.status}"
-        repair = True if reply.status == 401 and reason not in ("stale", "replay", "clock") else None
+        if reason == "pairing_not_acknowledged":
+            error = PAIR_PENDING_MESSAGE
+        repair = True if reply.status == 401 and reason not in ("stale", "replay", "clock", "pairing_not_acknowledged") else None
         _note(db, self.peer_id, ok=False, error=error, repair=repair)
 
     def _sign(self, method, path, body, token, who, db):
@@ -2097,7 +2111,7 @@ def _check_pair_body(body) -> tuple[str, dict, dict | None, str | None]:
     return body["code"], node, rev, confirm
 
 
-def handle_pair(body, caller: str, db=None, bind=None) -> dict:
+def handle_pair(body, caller: str, db=None, bind=None, *, will_ack: bool = False) -> dict:
     """The accepting side of the handshake: everything POST /api/nodes/pair does after the route has checked its headers. Nothing happens before the
     code is right (only the shape of the request is read). Then: the code is spent and the pair row (digest only) is written as
     `callback_unverified`. B then proves that the board at the caller's address is the one redeeming this code right now: it POSTs
@@ -2105,7 +2119,8 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
     is verified only when that route answers with the claimed node id and, for keyed pairs, a valid signature. A mismatch revokes the pair. An
     address that is down, an older board without the route, a board with no add_node in flight (a stranger who holds the code and claims another
     node's id and address) and a request with no `confirm` leave an old unkeyed pair `callback_unverified`; keyed pairs refuse. A `reverse` token is kept as an outgoing pair
-    for the caller only when verified. Returns {token, scopes, node, expires_at, callback_unverified, reverse}. Raises PairError."""
+    for the caller after acknowledgement when `will_ack` is announced. Otherwise activate immediately for older callers.
+    Announced pairs and their keys stay provisional for ten minutes; their tokens only open the ack route. Returns {token, scopes, node, expires_at, callback_unverified, reverse}. Raises PairError."""
     d = _db(db)
     code, node, rev, confirm = _check_pair_body(body)
     norm = normalize_code(code)
@@ -2115,7 +2130,7 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
     keyed = bool(node.get("pubkey") and node_keys.available())
     if node_keys.mode() == "require" and not keyed:
         raise PairError("key_required")
-    r = redeem_code(code, caller, node=node, bind=bind, db=d)
+    r = redeem_code(code, caller, node=node, bind=bind, pending=True, db=d)
     pid = r["peer_id"]
     unverified = True
     callback_unreachable = False
@@ -2150,15 +2165,69 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
         if callback_unreachable:
             raise PairError(reason, message=f"{node['url']} did not answer the check in time; nothing was paired. Make a new code and try again.")
         raise PairError(reason)
-    reverse_reason = None
     if unverified:
         audit("in", pid, "callback_unverified", False, "the caller's address did not confirm this pairing", node_name=node["name"], db=d)
     else:
         d.node_pair_update(pid, callback_unverified=0,
-                           **({"peer_pubkey": node["pubkey"], "peer_key_source": "pairing", "peer_key_at": iso(_now())} if keyed else {}))                # only now does the claimed node id count
-        revoke_older_pairs(node["id"], pid, db=d)                     # the node id is confirmed: pairing again replaces
-    audit("in", pid, "key_pinned" if keyed and not unverified else "paired", True,
-          node_keys.key_id(node["pubkey"]) + " pairing" if keyed and not unverified else "unkeyed", db=d)
+                           **({"peer_pubkey": node["pubkey"]} if keyed else {}))       # provisional until the caller acknowledges
+    reverse_saved = None if rev is None else not unverified and not registry_full(d, url=node["url"])
+    reverse_reason = "callback_unverified" if unverified else "registry_full" if reverse_saved is False else None
+    out = {"token": r["token"], "scopes": r["scopes"], "node": own_claim(), "expires_at": r["expires_at"], "callback_unverified": unverified,
+           "reverse": reverse_saved, "pending": True}
+    if not keyed or unverified:
+        out["node"].pop("pubkey", None)
+    if keyed and not unverified:
+        out["sig"] = node_keys.sign_pair_answer(proof, r["token"], node["id"], out["node"]["id"])
+    if reverse_reason:
+        out["reverse_reason"] = reverse_reason
+    if not will_ack:
+        active = acknowledge_pair(pid, {"reverse": rev} if rev else {}, db=d)
+        out.update({k: v for k, v in active.items() if k != "active"})
+        out.pop("pending")
+    return out
+
+
+def expire_pending(db=None) -> int:
+    """Delete abandoned handshakes, including provisional pins, on a tick or the next pairing/read."""
+    d = _db(db)
+    n = 0
+    with node_keys._lock:
+        for row in d.node_pairs(include_revoked=True):
+            if not row["revoked_at"] and row["pending_until"] and row["pending_until"] <= iso(_now()):
+                if d.node_pair_delete(row["peer_id"]):
+                    audit("in", row["peer_id"], "pair_expired", False, "pairing was not acknowledged", node_name=row["peer_name"], db=d)
+                    n += 1
+    return n
+
+
+def acknowledge_pair(peer_id: str, body, db=None) -> dict:
+    """Finish a token-authenticated handshake after the signature and device checks. Repeated acks are harmless."""
+    d = _db(db)
+    with node_keys._lock:
+        expire_pending(d)
+        row = d.node_pair_get(peer_id)
+        if row is None or row["revoked_at"]:
+            raise PairError("expired")
+        node = {"id": row["peer_node_id"], "name": row["peer_name"], "url": row["peer_url"]}
+        if not isinstance(body, dict) or not set(body) <= {"reverse"}:
+            raise PairError("bad_request")
+        _, _, rev, _ = _check_pair_body({"code": "", "node": node, **body})
+        if not row["pending_until"]:
+            return {"active": True}
+        pub = row["peer_pubkey"]
+        if node_keys.conflict(node["id"], pub, d):
+            raise PairError("key_changed", pinned_on="acceptor")
+        d.node_pair_update(peer_id, pending_until=None, peer_key_source="pairing" if pub else None, peer_key_at=iso(_now()) if pub else None)
+        if not row["callback_unverified"]:
+            revoke_older_pairs(node["id"], peer_id, db=d)
+        audit("in", peer_id, "key_pinned" if pub else "paired", True, node_keys.key_id(pub) + " pairing" if pub else "unkeyed", db=d)
+        if pub:
+            node["pubkey"] = pub
+        return {"active": True, **_pair_reverse(node, rev, peer_id, bool(pub), bool(row["callback_unverified"]), d)}
+
+
+def _pair_reverse(node, rev, pid, keyed, unverified, d):
+    reverse_reason = None
     reverse_saved = None
     if rev is not None and unverified:
         reverse_saved = False                                         # the claim was never confirmed: no outgoing row, no token written
@@ -2183,15 +2252,7 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
                     drop_outgoing(rid)
         except (OSError, ValueError) as e:
             log.info("could not keep the reverse pair: %s", e.__class__.__name__)
-    out = {"token": r["token"], "scopes": r["scopes"], "node": own_claim(), "expires_at": r["expires_at"], "callback_unverified": unverified,
-           "reverse": reverse_saved}
-    if not keyed or unverified:
-        out["node"].pop("pubkey", None)
-    if keyed and not unverified:
-        out["sig"] = node_keys.sign_pair_answer(proof, r["token"], node["id"], out["node"]["id"])
-    if reverse_reason:
-        out["reverse_reason"] = reverse_reason
-    return out
+    return {"reverse": reverse_saved, **({"reverse_reason": reverse_reason} if reverse_reason else {})}
 
 
 def unpair_incoming(peer_id: str, db=None) -> bool:
@@ -2249,24 +2310,27 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
     nonce = secrets.token_urlsafe(16)
     body: dict = {"code": format_code(norm), "node": me, "confirm": nonce}
     back = None
+    reverse = None
+    ack_unknown = False
     if both_ways:
-        back, back_token = add_incoming(None, DEFAULT_SCOPES, callback_unverified=True, db=d)       # unverified until the other board has answered
-        body["reverse"] = {"token": back_token, "scopes": list(DEFAULT_SCOPES)}
+        back, back_token = add_incoming(None, DEFAULT_SCOPES, callback_unverified=True, pending=True, db=d)       # unusable until the other board has answered
+        reverse = {"token": back_token, "scopes": list(DEFAULT_SCOPES)}
+        body["reverse"] = reverse
     pending = begin_confirm(norm, nonce, target.url, me.get("pubkey"))       # while this call runs, POST /api/nodes/pair/confirm tells the board at `target` that it is us
     legacy_pending = begin_confirm(norm, nonce, target.url) if me.get("pubkey") else None
     try:
         try:
-            reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
+            reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, headers={"X-CCBoard-Pair-Ack": "1"}, timeout=8.0)
             if reply.status == 400 and isinstance(reply.json, dict) and reply.json.get("reason") == "bad_request" and "pubkey" in me:
                 if node_keys.mode() == "require":
                     raise PairError("key_required")
                 end_confirm(pending)
                 me.pop("pubkey")
                 pending = begin_confirm(norm, nonce, target.url)
-                reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
+                reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, headers={"X-CCBoard-Pair-Ack": "1"}, timeout=8.0)
         except PeerError as e:
             raise PairError("unreachable", message=str(e) if e.reason in ("url", "unreachable", "redirect") else None) from None
-        body = None                                                   # the reverse token's plaintext is not kept past the call
+        body = None                                                   # only the reverse token is kept until acknowledgement
         if not reply.ok:
             j = reply.json if isinstance(reply.json, dict) else {}
             reason = j.get("reason") if j.get("reason") in PairError.STATUS else ("rate_limited" if reply.status == 429 else "refused")
@@ -2299,6 +2363,31 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         # An existing row is replaced only when it is at the address the person typed. The node id in the answer is the other board's own claim, so
         # it must not pick a row (and so its token and handle) of a node at another address; that makes a new row with a free handle.
         same = next((r for r in _out_rows(d) if str(r.get("url")).rstrip("/") == target.url.rstrip("/")), None)
+        # A re-pair must not replace working credentials until the new pair is active.
+        if same and j.get("pending") is True:
+            staged = _new_peer_id()
+            try:
+                save_outgoing(staged, token)
+                candidate = {"peer_id": staged, "url": target.url, "node_id": theirs["id"]}
+                ack_body = {"reverse": reverse} if back is not None and j.get("reverse") is True else {}
+                try:
+                    ack = PeerClient(candidate, db=d).post("/api/node/pair/ack", ack_body)
+                except PeerError:
+                    if back is not None and j.get("reverse") is True:
+                        # B may have activated and saved this reverse token. Bind it just as on first pairing,
+                        # while preserving our old outgoing credentials until activation is confirmed.
+                        d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0, pending_until=None,
+                                           peer_pubkey=pub, peer_key_source="pairing" if pub else None, peer_key_at=iso(_now()) if pub else None,
+                                           **(confirm_binding(pending) or confirm_binding(legacy_pending) or {}))
+                        ack_unknown = True
+                    raise PairError("unreachable", message="The pairing acknowledgement was not answered, so the outcome is unknown. Pair again with a new code if calls fail.") from None
+                if not ack.ok or not isinstance(ack.json, dict) or ack.json.get("active") is not True:
+                    raise PairError("refused")
+                j = {**j, **ack.json, "pending": False}
+            except OSError:
+                raise PairError("store") from None
+            finally:
+                drop_outgoing(staged)
         pid = same["peer_id"] if same else _new_peer_id()
         try:
             save_outgoing(pid, token)
@@ -2323,11 +2412,24 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
             # gates in unpair_incoming and remove_node also ask for the same address).
             # Issue #136: in a whois mode, the device the other board called the confirm route from is the one the reverse token is bound to; no
             # confirm (or a device check that could not answer) leaves the pair unbound, and its calls are refused as not_bound.
-            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0,
+            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0, pending_until=None,
                                peer_pubkey=pub, peer_key_source="pairing" if pub else None, peer_key_at=iso(_now()) if pub else None,
                                **(confirm_binding(pending) or confirm_binding(legacy_pending) or {}))
+        if j.get("pending") is True:
+            ack_body = {"reverse": reverse} if back is not None else {}
+            try:
+                ack = PeerClient(view, db=d).post("/api/node/pair/ack", ack_body)
+            except PeerError:
+                ack_unknown = True                              # B may already be active; keep the saved pairs usable
+                raise PairError("unreachable", message="The pairing acknowledgement was not answered, so the outcome is unknown. Pair again with a new code if calls fail.") from None
+            if not ack.ok or not isinstance(ack.json, dict) or ack.json.get("active") is not True:
+                remove_peer(pid, d)
+                raise PairError("refused")
+            if back is not None and ack.json.get("reverse") is False:
+                revoke(back["peer_id"], db=d, why="the other node did not keep the reverse token")
+                back = None
     except BaseException:
-        if back is not None:
+        if back is not None and not ack_unknown:
             revoke(back["peer_id"], db=d, why="pairing did not finish")
         audit("out", "", "pair_failed", False, None, db=d)
         raise

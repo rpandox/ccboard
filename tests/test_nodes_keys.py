@@ -747,3 +747,200 @@ def test_key_change_wording_distinguishes_our_key_from_peer_key(keyed, monkeypat
         assert "this board's signing key" in problem
         problem = _health_rows([row], [{"peer_id": row["peer_id"], "error_kind": "key_changed"}])[0][2]
         assert row["name"] + " has a different signing key" in problem
+
+
+@pytest.mark.parametrize("failure", ["answer_unverified", "key_required", "key_changed", "crash"])
+@pytest.mark.parametrize("both_ways", [False, True])
+def test_refused_answer_leaves_only_provisional_pair_and_allows_new_key(two_nodes, clock, monkeypatch, failure, both_ways):
+    inner, answers = nodes.peer_transport, []
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+        bid = nodes.node_id()
+    with two_nodes.a.enter():
+        if failure == "key_changed":
+            nodes.put_peer({"url": two_nodes.b.url, "node_id": bid, "name": "old", "pubkey": keys.public()})
+    if failure == "key_required":
+        monkeypatch.setattr(settings, "node_keys", "require")
+
+    def refuse(target, method, path, h, body, timeout):
+        status, rh, data = inner(target, method, path, h, body, timeout)
+        if path == "/api/nodes/pair":
+            answer = json.loads(data)
+            answers.append(answer)
+            if failure == "crash":
+                raise SystemExit()
+            if failure == "answer_unverified":
+                answer["sig"] = "A" * 86
+            elif failure == "key_required":
+                answer["node"].pop("pubkey")
+            data = json.dumps(answer).encode()
+        return status, rh, data
+
+    monkeypatch.setattr(nodes, "peer_transport", refuse)
+    with two_nodes.a.enter(), pytest.raises(SystemExit if failure == "crash" else nodes.PairError) as err:
+        nodes.add_node(two_nodes.b.url, code, both_ways=both_ways)
+    if failure != "crash":
+        assert err.value.reason == failure
+    with two_nodes.b.enter():
+        assert nodes.verify_token(answers[0]["token"]) is None
+        (pending,) = two_nodes.b.db.node_pairs()
+        assert pending["pending_until"] and pending["peer_key_source"] is None
+        assert pending["last_used_at"] is None
+        assert not keys.conflict(pending["peer_node_id"], "another key", two_nodes.b.db)
+        assert nodes.peers() == [] and nodes._read_tokens() == {}
+        assert "key_pinned" not in {r["action"] for r in nodes.audit_list()}
+        code = nodes.create_code()["code"]
+    with two_nodes.a.enter():
+        keys.rotate()
+        if failure == "key_changed":
+            nodes.remove_peer(nodes.peers()[0]["peer_id"])
+        monkeypatch.setattr(nodes, "peer_transport", inner)
+        row = nodes.add_node(two_nodes.b.url, code, both_ways=both_ways)
+        assert nodes.PeerClient(row).get("/api/node").ok
+    with two_nodes.b.enter():
+        incoming = [r for r in nodes.peers() if r["direction"] == "in"]
+        assert len(incoming) == 1 and incoming[0]["key_source"] == "pairing"
+        assert incoming[0]["pubkey"] != pending["peer_pubkey"]
+
+
+def pending_answer(two, monkeypatch):
+    inner, answers = nodes.peer_transport, []
+    with two.b.enter():
+        code = nodes.create_code()["code"]
+    def stop(target, method, path, h, body, timeout):
+        status, rh, data = inner(target, method, path, h, body, timeout)
+        if path == "/api/nodes/pair":
+            answers.append(json.loads(data))
+            raise SystemExit()
+        return status, rh, data
+    with monkeypatch.context() as patch:
+        patch.setattr(nodes, "peer_transport", stop)
+        with two.a.enter(), pytest.raises(SystemExit):
+            nodes.add_node(two.b.url, code)
+    return answers[0]
+
+
+def pending_headers(two, answer, method="POST", path="/api/node/pair/ack", body=None):
+    with two.a.enter():
+        token = answer["token"]
+        return {"Authorization": "Bearer " + token, "X-CCBoard": "1", "X-CCBoard-Node": nodes.node_id(),
+                **keys.sign_headers(method, path, body, recipient_id=answer["node"]["id"], token=token)}
+
+
+def test_pending_token_only_allows_signed_ack_and_ack_is_idempotent(two_nodes, clock, monkeypatch):
+    answer = pending_answer(two_nodes, monkeypatch)
+    for method, path in (("GET", "/api/node"), ("POST", "/api/node/rotate"), ("POST", "/api/node/unpair")):
+        h = pending_headers(two_nodes, answer, method, path)
+        assert two_nodes.b.call(method, path, owner=False, headers=h).status_code == 401
+    h = pending_headers(two_nodes, answer, body={})
+    unsigned = {k: v for k, v in h.items() if k != "X-CCBoard-Signature"}
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=unsigned, json={}).status_code == 401
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={"changed": True}).status_code == 401
+    bad = {"unexpected": True}
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=pending_headers(two_nodes, answer, body=bad), json=bad).status_code == 400
+    assert two_nodes.b.db.node_pairs()[0]["pending_until"]
+    r = two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={})
+    assert r.status_code == 200 and r.json()["active"]
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={}).json()["reason"] == "replay"
+    h = pending_headers(two_nodes, answer, body={})
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={}).status_code == 200
+    with two_nodes.b.enter():
+        (row,) = two_nodes.b.db.node_pairs()
+        assert row["pending_until"] is None and row["peer_key_source"] == "pairing"
+        assert len([r for r in nodes.audit_list() if r["action"] == "key_pinned"]) == 1
+    h = pending_headers(two_nodes, answer, "GET", "/api/node")
+    assert two_nodes.b.get("/api/node", owner=False, headers=h).status_code == 200
+
+
+def test_pending_pair_expires_after_restart_on_idle_tick(two_nodes, clock, monkeypatch):
+    from app.db import DB
+    from app.scheduler import Worker
+    answer = pending_answer(two_nodes, monkeypatch)
+    with two_nodes.b.enter():
+        (row,) = two_nodes.b.db.node_pairs()
+        pid = row["peer_id"]
+        old, token = nodes.add_incoming({"id": "n_" + "c" * 16, "name": "existing"})
+    two_nodes.b.db.close()
+    two_nodes.b.db = DB(two_nodes.b.db_path)
+    with two_nodes.b.enter():
+        clock.t += nodes.PAIR_PENDING_TTL - 1
+        assert nodes.expire_pending() == 0
+        assert two_nodes.b.db.node_pair_get(pid)
+        clock.t += 1
+        assert Worker(two_nodes.b.db).tick() == []
+        assert two_nodes.b.db.node_pair_get(pid) is None
+        assert nodes.verify_token(answer["token"], allow_pending=True) is None
+        assert nodes.verify_token(token)["peer_id"] == old["peer_id"]
+        expired = [r for r in nodes.audit_list() if r["action"] == "pair_expired"]
+        assert len(expired) == 1 and expired[0]["peer"] == pid
+        assert nodes.expire_pending() == 0
+    h = pending_headers(two_nodes, answer, body={})
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={}).status_code == 401
+
+
+def test_pending_repair_keeps_old_token_until_ack(two_nodes, clock, monkeypatch):
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+    with two_nodes.a.enter():
+        old = nodes.add_node(two_nodes.b.url, code)
+        token = nodes._load_outgoing(old["peer_id"])
+    answer = pending_answer(two_nodes, monkeypatch)
+    with two_nodes.b.enter():
+        assert nodes.verify_token(token)
+        assert nodes.verify_token(answer["token"]) is None
+    h = pending_headers(two_nodes, answer, body={})
+    assert two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={}).status_code == 200
+    with two_nodes.b.enter():
+        assert nodes.verify_token(token) is None
+        assert nodes.verify_token(answer["token"])
+
+
+def test_ack_rechecks_pin_conflict_before_activation(two_nodes, clock, monkeypatch):
+    answer = pending_answer(two_nodes, monkeypatch)
+    with two_nodes.b.enter():
+        (row,) = two_nodes.b.db.node_pairs()
+        nodes.put_peer({"url": two_nodes.a.url, "node_id": row["peer_node_id"], "pubkey": keys.public()})
+    h = pending_headers(two_nodes, answer, body={})
+    r = two_nodes.b.post("/api/node/pair/ack", owner=False, headers=h, json={})
+    assert r.status_code == 409 and r.json()["reason"] == "key_changed"
+    assert two_nodes.b.db.node_pair_get(row["peer_id"])["pending_until"]
+
+
+def test_lost_ack_answer_keeps_saved_pairs_usable(two_nodes, clock, monkeypatch):
+    inner = nodes.peer_transport
+    def lost(target, method, path, h, body, timeout):
+        result = inner(target, method, path, h, body, timeout)
+        if path == "/api/node/pair/ack":
+            raise TimeoutError()
+        return result
+    monkeypatch.setattr(nodes, "peer_transport", lost)
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+    with two_nodes.a.enter(), pytest.raises(nodes.PairError) as err:
+        nodes.add_node(two_nodes.b.url, code, both_ways=True)
+    assert "acknowledgement" in str(err.value)
+    for board in (two_nodes.a, two_nodes.b):
+        with board.enter():
+            (out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+            assert len(nodes.peers()) == 2
+            assert nodes.PeerClient(out).get("/api/node").ok
+
+
+def test_pending_reason_and_owner_can_see_and_remove_pair(two_nodes, monkeypatch):
+    answer = pending_answer(two_nodes, monkeypatch)
+    b = two_nodes.b
+    h = pending_headers(two_nodes, answer, 'GET', '/api/node')
+    denied = b.get('/api/node', owner=False, headers=h)
+    assert denied.status_code == 401
+    assert denied.json()['reason'] == 'pairing_not_acknowledged'
+    for path in ('/api/nodes', '/api/nodes/pairs'):
+        rows = b.get(path).json()['pairs']
+        assert len(rows) == 1 and rows[0]['pending_until']
+        assert rows[0]['name'] == 'node-a'
+        assert 'token' not in rows[0] and 'token_sha256' not in rows[0]
+    pid = rows[0]['peer_id']
+    assert b.delete('/api/nodes/' + pid, owner=False).status_code in (401, 403)
+    assert b.delete('/api/nodes/' + pid, owner=False, headers=h).status_code in (401, 403)
+    assert b.db.node_pair_get(pid)['revoked_at'] is None
+    assert b.delete('/api/nodes/' + pid).status_code == 200
+    assert b.db.node_pair_get(pid)['revoked_at']

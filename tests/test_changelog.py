@@ -59,7 +59,8 @@ def test_every_entry_has_one_upgrade_line_and_few_bullets():
     for e in _entries():
         upgrades = [l for l in e["lines"] if l.startswith("Upgrade: ")]
         assert len(upgrades) == 1, f"{e['heading']!r} needs exactly one Upgrade: line"
-        assert upgrades[0] in ("Upgrade: nothing to do.", "Upgrade: rerun ./install.sh."), upgrades[0]
+        assert any(upgrades[0] == base or upgrades[0].startswith(base + " ")
+                   for base in ("Upgrade: nothing to do.", "Upgrade: rerun ./install.sh.")), upgrades[0]
         bullets = 0
         for l in e["lines"]:
             if l.startswith(BULLET_HEADINGS):
@@ -67,3 +68,9 @@ def test_every_entry_has_one_upgrade_line_and_few_bullets():
             elif l.startswith("- "):
                 bullets += 1
                 assert bullets <= 5, f"{e['heading']!r} has more than five bullets in one section"
+
+
+def test_pending_pairing_upgrade_explains_mixed_version_support():
+    entry = next(e for e in _entries() if e["heading"].startswith("## v0.5.77 "))
+    upgrade = next(line for line in entry["lines"] if line.startswith("Upgrade: "))
+    assert "a new pairing between an updated and an older board still works" in upgrade.lower()

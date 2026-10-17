@@ -556,7 +556,7 @@ def test_tasks_origin_is_a_nullable_text_column_for_work_asked_by_another_board(
 
 
 # ---- nodes epic P3 (issue #135): node_pairs and node_audit ---------------------------------------------------------------------------
-NODE_PAIR_COLS = {"peer_pubkey", "peer_key_source", "peer_key_at", "id", "peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
+NODE_PAIR_COLS = {"pending_until", "peer_pubkey", "peer_key_source", "peer_key_at", "id", "peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
                   "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by",
                   "peer_ts_id", "peer_tags"}                                         # issue #136: the bound device (NULL on every older row)
 NODE_AUDIT_COLS = {"id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail"}
@@ -643,6 +643,6 @@ def test_node_key_columns_are_additive_and_idempotent(tmp_path):
     for _ in range(2):
         db = DB(path)
         row = db.node_pairs()[0]
-        assert all(row[k] is None for k in ("peer_pubkey", "peer_key_source", "peer_key_at"))
+        assert all(row[k] is None for k in ("peer_pubkey", "peer_key_source", "peer_key_at", "pending_until"))
         assert row["token_sha256"] == "a" * 64
         db.close()

@@ -40,6 +40,7 @@ EXPECTED_NODE_ROUTES = {
     ("GET", "/api/node"): "read",
     ("GET", "/api/node/summary"): "read",
     ("GET", "/api/node/state"): "read",
+    ("POST", "/api/node/pair/ack"): nodes.SCOPE_ANY,
     ("POST", "/api/node/rotate"): nodes.SCOPE_ANY,
     ("POST", "/api/node/unpair"): nodes.SCOPE_ANY,
     ("GET", "/api/node/tasks/{tid}"): "read",                    # the relay rows (issue #140, app/nodes_relay.py RELAY): each has its refusal tests in tests/test_nodes_relay.py
