@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.78 - 2026-10-17
+## v0.5.81 - 2026-10-17
 
 ### Added
 - Restart board controls in Settings, pending banners and the command palette, with confirmation and warnings about work in progress.
