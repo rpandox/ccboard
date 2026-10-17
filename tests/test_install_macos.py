@@ -546,7 +546,9 @@ def no_ttyd(mac, source=("ttyd",), clt=True):
 
 def test_a_source_build_without_the_command_line_tools_stops_before_anything_is_installed(mac):
     no_ttyd(mac, clt=False)
-    for env in ({}, {"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, {"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"}):
+    for env in ({}, {"CCBOARD_MACOS_INSTALL_TOOLS": "1"},
+                {"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"},
+                {"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "0"}):
         r = mac.run(env=env)
         assert r.returncode == 1, env
         assert "xcode-select --install" in r.stderr and "ttyd" in r.stderr and "Nothing was installed" in r.stderr, r.stderr
@@ -565,16 +567,35 @@ def test_the_command_line_tools_are_only_asked_for_when_something_builds_from_so
     assert not any(c.startswith("xcode-select") for c in mac.since(mark))
 
 
-def test_a_source_build_needs_an_answer_of_its_own_and_says_what_it_costs(mac):
+def test_install_tools_alone_allows_a_source_build_and_says_what_it_costs(mac):
     no_ttyd(mac)
-    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"})                # a yes for bottles is not a yes for a long build
-    assert r.returncode == 1 and mutating(mac.calls(), "brew") == [] and mac.plists() == []
-    assert "build from source: ttyd" in r.stderr and "CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1" in r.stderr and "Nothing was installed" in r.stderr
-    # the preflight text names what was measured and what --no-upgrade does not stop
-    assert "ttyd: builds from source" in r.stdout and "more than 10 minutes" in r.stdout and "python@3.14" in r.stdout
-    assert "--no-upgrade" in r.stdout and "Tier 3" in r.stdout
-    mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"}, check=0)
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, check=0)
     assert any(" --no-upgrade " in b and b.endswith("scripts/macos/Brewfile") for b in mutating(mac.calls(), "brew"))
+    assert "building from source with Homebrew: ttyd" in r.stderr
+    assert "several minutes" in r.stderr and "may upgrade packages you already have" in r.stderr
+    # The preflight text still names what was measured and what --no-upgrade does not stop.
+    assert "ttyd: builds from source" in r.stdout and "more than 10 minutes" in r.stdout and "python@3.14" in r.stdout
+    assert "--no-upgrade" in r.stdout and "Tier 3" in r.stdout and "September 2027" in r.stdout
+
+
+def test_source_build_opt_out_stops_required_tools_even_with_a_terminal_yes(mac):
+    import pty
+    no_ttyd(mac)
+    env = {"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "0"}
+    r = mac.run(env=env)
+    assert r.returncode == 1 and "tools are missing: ttyd" in r.stderr and "Nothing was installed" in r.stderr
+    assert "build from source: ttyd" in r.stderr and mutating(mac.calls(), "brew") == []
+    master, slave = pty.openpty()
+    try:
+        os.write(master, b"y\n")
+        r = mac.run(env=env, stdin=slave)
+        assert r.returncode == 1 and mutating(mac.calls(), "brew") == []
+        env.pop("CCBOARD_MACOS_INSTALL_TOOLS")
+        r = mac.run(env=env, stdin=slave)
+        assert r.returncode == 1 and mutating(mac.calls(), "brew") == []
+    finally:
+        os.close(master)
+        os.close(slave)
 
 
 def test_a_source_build_that_goes_ahead_warns_first(mac):
@@ -604,12 +625,16 @@ def test_a_formula_brew_cannot_describe_counts_as_a_source_build_when_it_is_requ
     assert "bottle available" not in r.stdout and mutating(mac.calls(), "brew") == []
 
 
-def test_an_optional_tool_that_builds_from_source_is_left_out_not_built(mac):
+def test_an_optional_source_build_is_skipped_only_when_disallowed(mac):
     (mac.state / "brew-installed").write_text("git\ntmux\npython@3.12\nnode\ngh\nttyd\ncode-server\n")        # restic is missing
     (mac.state / "brew-source-build").write_text("restic\n")
-    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, check=0)
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "0"}, check=0)
     assert "optional tools are missing" in r.stderr and "build from source: restic" in r.stderr
     assert not any("Brewfile.optional" in b for b in mutating(mac.calls(), "brew"))
+
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, check=0)
+    assert "building from source with Homebrew: restic" in r.stderr
+    assert any("Brewfile.optional" in b for b in mutating(mac.calls(), "brew"))
 
 
 @pytest.mark.parametrize("answer,builds", [("n\n", False), ("\n", False), ("y\n", True)])
@@ -624,6 +649,7 @@ def test_on_a_terminal_the_question_names_the_source_build(mac, answer, builds):
         os.close(master)
         os.close(slave)
     assert "Homebrew will BUILD from source: ttyd" in r.stdout and "several minutes" in r.stdout
+    assert r.stdout.count("[y/N]") == 1
     assert bool(mutating(mac.calls(), "brew")) is builds
     assert (r.returncode == 0) is builds
 
