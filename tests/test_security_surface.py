@@ -187,6 +187,7 @@ EXPECTED = {
     ("POST", "/api/epics/{owner}/{repo}/{n}/run"): "identity+csrf",       # Run (issue #150): a signed-in person only (403 for the hook token, a node token and a device token); refused with writes off or no node paired
     ("POST", "/api/epics/{owner}/{repo}/{n}/pause"): "identity+csrf",     # Pause: no new assignment from that moment; a signed-in person only
     ("POST", "/api/epics/{owner}/{repo}/{n}/resume"): "identity+csrf",    # Resume; a signed-in person only
+    ("POST", "/api/epics/{owner}/{repo}/{n}/issues/{issue}/work"): "identity+csrf",     # Work on <node> for one issue: the same routing filters as Run, then the epic_work relay row; a signed-in person only (issue #150)
     ("POST", "/api/epics/{owner}/{repo}/{n}/issues/{issue}/run"): "identity+csrf",      # one issue on a named node or on `auto`; the routing filters apply; a signed-in person only
     ("GET", "/api/epics/{owner}/{repo}/{n}/route"): "identity",           # the run as the page shows it, and with ?issue=N what auto routing would do; sends nothing
     ("GET", "/api/epic-worker"): "identity",                  # the worker's state (issue #157): reads the database only; {on: false} while CCBOARD_EPIC_WORKER is off
@@ -221,6 +222,7 @@ EXPECTED = {
     ("POST", "/api/node/sessions/{name}/keys"): "node-token",      # one key of a closed list; C-c with confirm
     ("POST", "/api/node/sessions/{name}/ack"): "node-token",
     ("DELETE", "/api/node/sessions/{name}"): "node-token",         # ends the session on this board only
+    ("GET", "/api/node/audit"): "node-token",                       # scope read (issue #153): the newest audit rows about the calling pair only, at most 50, each cleaned; another pair's rows never
     ("GET", "/api/node/permissions"): "node-token",                # scope permissions: the pending requests (tool, a 300-character redacted summary)
     ("POST", "/api/node/epics/work"): "node-token",                # scope tasks (issue #149): run one issue of an epic on this board (the author check, the claim, a task, the comments). Refused with CCBOARD_EPIC_WRITES off; an acting user is required; the body is repo, issue, epic and the epic's three settings
     ("POST", "/api/node/epics/claim"): "node-token",               # scope tasks (issue #148): claim one issue of an epic on this board. A write to GitHub, refused with CCBOARD_EPIC_WRITES off; an acting user is required; the body is repo, issue, epic and nothing else
@@ -231,6 +233,7 @@ EXPECTED = {
     ("GET", "/api/nodes/{handle}/tasks/{tid}"): "relay",
     ("GET", "/api/nodes/{handle}/sessions/{name}/pane"): "relay",
     ("GET", "/api/nodes/{handle}/agents"): "relay",
+    ("GET", "/api/nodes/{handle}/audit"): "relay",             # a paired node's audit rows about this pair (issue #153): a signed-in person only, read scope, at most 50 rows, rebuilt field by field
     ("POST", "/api/nodes/{handle}/tasks"): "relay",
     ("POST", "/api/nodes/{handle}/tasks/{tid}/dispatch"): "relay",
     ("POST", "/api/nodes/{handle}/sessions"): "relay",

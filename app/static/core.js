@@ -351,7 +351,7 @@ async function demoApi(method, path, body) {
   if (bare === '/api/state') name = 'state';
   else if (bare === '/api/settings/options') name = 'options';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
-  else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || bare === '/api/mcp/tokens' || /^\/api\/nodes\/[^/]+\/(agents|permissions|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
+  else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || bare === '/api/mcp/tokens' || /^\/api\/nodes\/[^/]+\/(agents|audit|permissions|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
   else if (bare === '/api/nodes/auth') name = 'nodes-auth';   // Settings > Nodes > Device check (issue #136): one fixture, a state per ?authstate=
   else if (bare === '/api/nodes/discover') name = 'nodes-discover';   // Settings > Nodes > Found on your tailnet (issue #134): a found node, a refusing one, an offline one and one with nothing listening
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)

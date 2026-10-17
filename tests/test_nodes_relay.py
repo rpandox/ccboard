@@ -188,7 +188,7 @@ def test_node_routes_are_the_base_routes_and_the_rows_and_nothing_else():
 def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_not_read():
     assert {r.name: (r.peer_method, r.peer_path, r.scope) for r in ROWS} == {
         "card": ("GET", "/api/node", "read"), "state": ("GET", "/api/node/state", "read"), "task": ("GET", "/api/node/tasks/{tid}", "read"),
-        "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read"),
+        "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read"), "audit": ("GET", "/api/node/audit", "read"),
         "task_create": ("POST", "/api/node/tasks", "tasks"), "task_dispatch": ("POST", "/api/node/tasks/{tid}/dispatch", "tasks"),
         "session_open": ("POST", "/api/node/sessions", "sessions"),
         "prompt": ("POST", "/api/node/sessions/{name}/prompt", "sessions"), "keys": ("POST", "/api/node/sessions/{name}/keys", "sessions"),

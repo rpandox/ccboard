@@ -470,7 +470,7 @@ const defer = () => { let resolve; const p = new Promise((r) => { resolve = r; }
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
 const refuse = (status, message, reason) => { const e = new Error(message); e.status = status; if (reason) e.body = { error: message, reason }; return e; };
 
-function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold = {}, answer = ANSWER, serverFilters = false } = {}) {
+function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold = {}, answer = ANSWER, serverFilters = false, remote = {} } = {}) {
   const w = nodesWorld({ hash: '', over, answer });
   const server = { out: out.map((x) => ({ ...x })), inn: inn.map((x) => ({ ...x })), audit: audit.map((x) => ({ ...x })), codeBody: null, cancelled: 0, added: null, peerNotified: undefined, others: [] };
   w.ctx.__copied = [];
@@ -480,6 +480,12 @@ function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold 
     const bare = p.split('?')[0];
     if (method === 'GET' && bare === '/api/nodes') { if (fail.list) throw refuse(500, fail.list); return { nodes: server.out.map((x) => ({ ...x })), pairs: server.inn.map((x) => ({ ...x })), at: iso(0) }; }
     if (method === 'GET' && bare === '/api/nodes/pairs') return { pairs: server.inn.map((x) => ({ ...x })), at: iso(0) };
+    const ra = /^\/api\/nodes\/([^/]+)\/audit$/.exec(bare);
+    if (method === 'GET' && ra) {                                          // the rows a paired node keeps about this board (issue #153), read through the relay row `audit`
+      const v = remote[decodeURIComponent(ra[1])];
+      if (v instanceof Error) throw v;
+      return { node: decodeURIComponent(ra[1]), age: 0, data: { rows: (v || []).map((x) => ({ ...x })), cap: 50 } };
+    }
     if (method === 'GET' && bare === '/api/nodes/audit') {
       if (fail.audit) throw refuse(500, fail.audit);
       const q = new URLSearchParams(p.split('?')[1] || '');
@@ -731,13 +737,115 @@ test('Activity: the board\'s audit rows (its own action and status words) in pla
 test('opening the tab reads the three lists once; a poll repaint does not read them again, and Reload does', async () => {
   const { w } = pairWorld({ out: [peer()] });
   await settle();
-  assert.deepEqual(nodeCalls(w).map((c) => c.path), ['/api/nodes', '/api/nodes/pairs', '/api/nodes/audit?limit=50']);
+  assert.deepEqual(nodeCalls(w).map((c) => c.path), ['/api/nodes', '/api/nodes/pairs', '/api/nodes/audit?limit=50', '/api/nodes/build-box/audit?limit=25'], 'and each paired node\'s own rows, once');
   for (let i = 0; i < 3; i++) w.run('updateCurrentPage(state)');
   await settle();
-  assert.equal(nodeCalls(w).length, 3, 'no poll, no timer');
+  assert.equal(nodeCalls(w).length, 4, 'no poll, no timer');
   btn(panel(w), 'Reload').click();
   await settle();
-  assert.equal(nodeCalls(w).length, 6);
+  assert.equal(nodeCalls(w).length, 8);
+});
+
+// ---------------------------------------------------------------- the rows a paired node keeps about this board (issue #153)
+
+const theirs = (id, secsAgo, over) => ({ id, at: iso(secsAgo), received_at: iso(1), direction: 'in', action: 'read_state', status: 'ok', target: 'state', user: null, detail: null, ...over });
+const auditRows = (w) => panel(w).querySelectorAll('.nd-audit');
+
+test('the Activity shows the rows a paired node keeps about this board next to this board\'s own, with the node\'s chip, the receipt time and the direction turned round', async () => {
+  const own = [{ id: 7, at: iso(30), direction: 'out', peer: 'p1', node_name: 'build-box', action: 'read_task', status: 'ok', target: 'task 3' }];
+  const { w } = pairWorld({ out: [peer()], audit: own, remote: { 'build-box': [theirs(9, 20, { action: 'read_task', target: 'task 3' }), theirs(8, 400, { direction: 'out', action: 'paired', target: null, detail: 'both ways' })] } });
+  await settle();
+  const rows = auditRows(w);
+  assert.equal(rows.length, 3, 'one of this board, two of the node');
+  assert.deepEqual(rows.map((r) => r.getAttribute('data-remote')), ['build-box', null, 'build-box'], 'newest first: the node\'s task read (20 s ago), this board\'s (30 s), the node\'s older one');
+  const remoteRow = rows[0];
+  assert.equal(text(remoteRow.querySelector('.badge')), 'on build-box');
+  assert.match(text(remoteRow), /Task read/);
+  assert.match(text(remoteRow), /it received/);
+  assert.match(text(remoteRow), /row time .*received /, 'the hub\'s receipt time sits next to the row\'s own');
+  assert.match(text(rows[2]), /it sent/);
+  assert.equal(rows[1].getAttribute('data-remote'), null);
+  assert.equal(rows[1].querySelector('.badge'), null, 'this board\'s own row carries no node chip');
+  assert.match(text(rows[1]), /to build-box/);
+});
+
+test('a node that dates its rows in the future sorts by the board\'s receipt time, shows its own value as the row time, and cannot push this board\'s rows out of the 40 shown', async () => {
+  const own = Array.from({ length: 30 }, (_, i) => ({ id: 100 + i, at: iso(600 + i), direction: 'out', peer: 'p1', node_name: 'build-box', action: 'read_task', status: 'ok', target: `own ${i}` }));
+  const hostile = Array.from({ length: 45 }, (_, i) => theirs(500 + i, 10, { at: '9999-12-31T00:00:00Z', target: `theirs ${i}` }));
+  const { w } = pairWorld({ out: [peer()], audit: own, remote: { 'build-box': hostile } });
+  await settle();
+  const rows = auditRows(w);
+  assert.equal(rows.length, 40, 'the slice is still 40');
+  const mine = rows.filter((r) => r.getAttribute('data-remote') === null).length;
+  assert.ok(mine >= 20, `this board's own rows keep at least half of the slots (${mine})`);
+  assert.equal(rows.filter((r) => r.getAttribute('data-remote') !== null).length, 40 - mine);
+  assert.match(text(rows[0]), /row time .*9999|row time .*received /, 'the row time is still shown');
+  const merged = plain(w.run(`NodeView.mergeAudit([{ id: 'o', at: '2026-10-17T10:00:00Z' }], [NodeView.remoteAudit('h', 'n', { id: 1, at: '9999-12-31T00:00:00Z', received_at: '2026-10-17T10:05:00Z', direction: 'in' }), NodeView.remoteAudit('h', 'n', { id: 2, at: '2026-10-17T09:00:00Z', received_at: '2026-10-17T10:05:00Z', direction: 'in' })]).map((r) => [r.id, r.at])`));
+  assert.deepEqual(merged, [['h:1', '2026-10-17T10:05:00Z'], ['o', '2026-10-17T10:00:00Z'], ['h:2', '2026-10-17T09:00:00Z']], 'the future row sorts at its receipt time, not first of all');
+  const capped = plain(w.run(`NodeView.capAudit([...Array.from({ length: 10 }, (_, i) => ({ id: 'r' + i, remote: true })), { id: 'a' }, { id: 'b' }, { id: 'c' }], 6).map((r) => r.id)`));
+  assert.deepEqual(capped, ['r0', 'r1', 'r2', 'a', 'b', 'c'], 'half the slots are held for this board\'s rows, the rest in order, order kept');
+  assert.deepEqual(plain(w.run(`NodeView.capAudit([{ id: 'x', remote: true }, { id: 'y', remote: true }, { id: 'a' }], 6).map((r) => r.id)`)), ['x', 'y', 'a'], 'with few own rows the node\'s fill the rest');
+});
+
+test('the Activity filters apply to the node\'s rows too: Sent keeps what this board asked of the node, Failed keeps the failed ones', async () => {
+  const { w } = pairWorld({ out: [peer()], remote: { 'build-box': [theirs(1, 10, { direction: 'in' }), theirs(2, 20, { direction: 'out', action: 'paired' }), theirs(3, 30, { status: 'failed', action: 'read_task' })] } });
+  await settle();
+  assert.equal(auditRows(w).length, 3);
+  const seg = (label) => panel(w).querySelectorAll('.seg-btn').find((b) => text(b) === label);
+  seg('Sent').click();
+  await settle();
+  assert.deepEqual(auditRows(w).map((r) => text(r).includes('it received')), [true, true], 'what the node received is what this board sent');
+  seg('All').click();
+  seg('Failed').click();
+  await settle();
+  assert.equal(auditRows(w).length, 1);
+  assert.match(text(auditRows(w)[0]), /Task read failed/);
+});
+
+test('the node\'s rows are read when the Activity opens and when Reload is pressed, never from a poll, a filter or another action', async () => {
+  const { w } = pairWorld({ out: [peer()], remote: { 'build-box': [theirs(1, 10)] } });
+  await settle();
+  const remoteAsks = () => nodeCalls(w).filter((c) => /\/build-box\/audit/.test(c.path)).length;
+  assert.equal(remoteAsks(), 1);
+  for (let i = 0; i < 5; i++) w.run('updateCurrentPage(state)');
+  w.run('settingsNdFilter({ failures: true })');
+  w.run('settingsNdFilter(null)');
+  await settle();
+  assert.equal(remoteAsks(), 1, 'a poll and a filter do not read them again');
+  btn(panel(w), 'Reload').click();
+  await settle();
+  assert.equal(remoteAsks(), 2);
+});
+
+test('only a node this board calls, with the read scope, and not a CCBOARD_NODES row, is asked; at most 12', async () => {
+  const many = Array.from({ length: 15 }, (_, i) => peer({ peer_id: `p${i}`, handle: `n${i}`, name: `n${i}` }));
+  const { w } = pairWorld({ out: [...many, peer({ peer_id: 'pt', handle: 'tasks-only', name: 'tasks-only', scopes: ['tasks'] }), peer({ peer_id: 'pl', handle: 'old', name: 'old', legacy: true })], inn: [caller()] });
+  await settle();
+  const asked = nodeCalls(w).filter((c) => /\/audit\?limit=25$/.test(c.path)).map((c) => c.path);
+  assert.equal(asked.length, 12);
+  assert.ok(!asked.some((p) => /tasks-only|\/old\//.test(p)) && !asked.some((p) => /desk-pc/.test(p)));
+});
+
+test('a node that cannot be read keeps its last rows, the page says so under the list, and the other nodes still show', async () => {
+  const remote = { 'build-box': [theirs(1, 10)], 'mac-mini': [theirs(5, 15, { action: 'read_task' })] };
+  const { w } = pairWorld({ out: [peer(), peer({ peer_id: 'p2', handle: 'mac-mini', name: 'mac-mini' })], remote });
+  await settle();
+  assert.equal(auditRows(w).length, 2);
+  remote['build-box'] = refuse(503, 'build-box is offline (last answered 4 min ago); nothing was sent', 'offline');
+  btn(panel(w), 'Reload').click();
+  await settle();
+  assert.equal(auditRows(w).length, 2, 'the last rows of the node stay');
+  const note = panel(w).querySelector('.nd-anote');
+  assert.ok(!note.classList.contains('hidden'));
+  assert.match(text(note), /^Could not read the activity recorded on build-box \(build-box is offline .*\)\. The last rows read are kept\.$/);
+});
+
+test('a hostile row from a node is text: a name, action, target and detail never make an element', async () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const { w } = pairWorld({ out: [peer({ name: evil })], remote: { 'build-box': [theirs(1, 10, { action: 'read_task', target: evil, detail: evil, user: evil })] } });
+  await settle();
+  assert.equal(panel(w).querySelectorAll('img').length, 0);
+  assert.equal(auditRows(w).length, 1);
 });
 
 test('a Settings page on another tab reads none of the pairing lists', async () => {
@@ -1250,6 +1358,23 @@ test('the shipped demo fixture lists paired nodes (reached, never reached, needi
   assert.ok(incomingRows(w).some((r) => /callback not verified/.test(text(r))));
   const words = panel(w).querySelectorAll('.nd-audit-word').map(text);
   assert.ok(words.includes('Pairing failed') && words.includes('Token rotation failed') && words.includes('Token rotated') && words.includes('Pairing code created') && words.includes('Paired'));
+});
+
+test('demo mode: each paired node\'s own rows are played from demo/nodes.json (issue #153), stamped with the receipt time; an offline node refuses as the relay does', async () => {
+  const w = makeWorld({ fetch: async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => JSON.parse(JSON.stringify(demoFile)) }) });
+  w.location.search = '?demo=1';
+  w.load('core.js');
+  w.load('nodes.js');
+  w.load('nodes-hub.js');
+  const a = await w.run('api("GET", "/api/nodes/build-box/audit?limit=25")').then(plain);
+  assert.equal(a.node, 'build-box');
+  assert.deepEqual(a.data.rows.map((r) => [r.id, r.action, r.direction]), [[31, 'read_task', 'in'], [30, 'scope_refused', 'in']]);
+  assert.ok(a.data.rows.every((r) => Math.abs(Date.parse(r.received_at) - Date.now()) < 60000), 'the board stamps its own time of reading');
+  const stale = await w.run('api("GET", "/api/nodes/alice-mac/audit?limit=25")').then(plain);
+  assert.equal(stale.data.rows.length, 1);
+  const off = await w.run('api("GET", "/api/nodes/old-laptop/audit?limit=25")').then(() => null, (e) => ({ status: e.status, reason: e.body && e.body.reason }));
+  assert.deepEqual(off, { status: 503, reason: 'offline' });
+  assert.equal(JSON.stringify(demoFile.remote_audit).includes('ccbnode_'), false, 'no token in the demo rows');
 });
 
 test('demo mode: the three lists come from demo/nodes.json with times that follow the clock; a code, a pair, a rotation and a removal are played in the page, and nothing is a credential', async () => {

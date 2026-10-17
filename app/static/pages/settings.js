@@ -657,7 +657,8 @@ function settingsNotify(p) {
    empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
    countdown of an open sheet; it is cleared when the sheet closes, the code runs out, or the page goes away. */
 const settingsNdPeers = { nodes: null, pairs: null, audit: null, err: '', at: 0, now: null, busy: false, seq: 0, act: {}, rotated: {},
-  filter: NodeView.auditFilter(), auditSeq: 0, seen: { nodes: new Set(), actions: new Set() } };
+  filter: NodeView.auditFilter(), auditSeq: 0, seen: { nodes: new Set(), actions: new Set() },
+  remote: {}, remoteAt: 0, remoteBusy: false, remoteSeq: 0 };          // issue #153: the audit rows the paired nodes keep about this board, read on demand (never on a poll)
 const settingsNdSheet = { shell: null, timer: null, tick: null, deadline: 0, code: '', opener: null, scopes: null, minutes: NodeView.CODE_DEFAULT_MINUTES };
 
 /* This board's clock for ages in the pair lists: the answer's own `now` or `at` plus what has passed here since, else the browser's. */
@@ -745,8 +746,50 @@ async function settingsNdLoadAudit() {
 function settingsNdOpenPeers() {
   const P = settingsNdPeers;
   if (P.busy) return;
-  if (P.nodes !== null && Date.now() - P.at < NodeView.STALE_S * 1000) return;
-  settingsNdLoadPeers();
+  if (P.nodes !== null && Date.now() - P.at < NodeView.STALE_S * 1000) {
+    if (!P.remoteAt && !P.remoteBusy) settingsNdLoadRemote(false);
+    return;
+  }
+  settingsNdLoadPeers().then((ok) => { if (ok) settingsNdLoadRemote(false); });
+}
+
+/* The nodes whose own audit rows are worth reading: this board calls them (a pair it holds a token for), the pair holds `read`, and they are not a CCBOARD_NODES row. */
+function settingsNdRemoteTargets() {
+  return settingsNdPairedOut().filter((r) => typeof r.handle === 'string' && r.handle && Array.isArray(r.scopes) && r.scopes.includes('read') && !r.legacy).slice(0, 12);
+}
+
+/* Read each paired node's recent audit rows about this pair (GET /api/nodes/<handle>/audit?limit=25, at most 25 rows each, newest first, one call per node), when the Activity opens or
+   Reload is pressed: no timer and no poll asks for them again. A node that cannot be read keeps its last rows and the page says why under the list. The rows are painted next to this board's
+   own, with the node's chip and the time this board received them. */
+async function settingsNdLoadRemote(force) {
+  const P = settingsNdPeers;
+  if (P.remoteBusy) return false;
+  if (!force && P.remoteAt && Date.now() - P.remoteAt < NodeView.STALE_S * 1000) return false;
+  const targets = settingsNdRemoteTargets();
+  const mine = ++P.remoteSeq;
+  P.remoteBusy = true;
+  const got = await Promise.all(targets.map(async (t) => {
+    try {
+      const r = await api('GET', `/api/nodes/${encodeURIComponent(t.handle)}/audit?limit=${NodeView.REMOTE_AUDIT_LIMIT}`);
+      return { t, rows: NodeView.list(r && r.data, 'rows') };
+    } catch (e) { return { t, err: (e && e.message) || 'it did not answer' }; }
+  }));
+  P.remoteBusy = false;
+  if (mine !== P.remoteSeq) return false;
+  const next = {};
+  for (const g of got) {
+    const old = P.remote[g.t.handle];
+    next[g.t.handle] = g.err === undefined ? { name: g.t.name || g.t.handle, rows: g.rows, err: '' } : { name: g.t.name || g.t.handle, rows: old ? old.rows : [], err: g.err };
+  }
+  P.remote = next;
+  P.remoteAt = Date.now();
+  for (const v of Object.values(next)) {
+    for (const r of v.rows) if (typeof r.action === 'string' && r.action && P.seen.actions.size < 200) P.seen.actions.add(r.action.slice(0, 40));
+    if (P.seen.nodes.size < 200) P.seen.nodes.add(String(v.name).slice(0, 64));
+  }
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  return true;
 }
 
 function settingsNdBusy(id, word) {
@@ -1369,7 +1412,12 @@ function settingsNdPaintAudit(nu) {
   const f = P.filter;
   const now = settingsNdNow();
   const minute = Math.floor(Date.now() / 60000);
-  const items = NodeView.list(P.audit, 'rows', 'audit', 'events').filter((r) => NodeView.auditMatch(r, f)).slice(0, 25).map((r, i) => NodeView.audit(r, i));
+  const remote = [];
+  for (const [h, v] of Object.entries(P.remote)) for (const r of v.rows) remote.push(NodeView.remoteAudit(h, v.name, r));
+  const items = NodeView.capAudit(NodeView.mergeAudit(NodeView.list(P.audit, 'rows', 'audit', 'events'), remote).filter((r) => NodeView.auditMatch(r, f)), 40).map((r, i) => NodeView.audit(r, i));
+  const trouble = Object.values(P.remote).filter((v) => v.err).map((v) => `${v.name} (${String(v.err).slice(0, 120)})`);
+  nu.auditNote.classList.toggle('hidden', !trouble.length);
+  nu.auditNote.textContent = trouble.length ? `Could not read the activity recorded on ${trouble.join('; ')}. The last rows read are kept.` : '';
   const active = NodeView.auditActive(f);
   nu.auditBar.classList.toggle('hidden', !active && !P.seen.actions.size);
   nu.fDir.paint(f.direction);
@@ -1579,6 +1627,7 @@ function settingsNdUi() {
     inEmpty: el('div', { class: 'dim nd-pempty hidden' }),
     auditList: el('div', { class: 'nd-list' }),
     auditEmpty: el('div', { class: 'dim nd-pempty hidden' }),
+    auditNote: el('div', { class: 'dim nd-pstatus nd-anote bad hidden', role: 'status' }),
   };
   ui.fDir = settingsNdSeg('Direction', [['', 'All', 'Every row'], ['out', 'Sent', 'What this board asked other nodes to do'], ['in', 'Received', 'What other nodes asked this board']],
     (v) => settingsNdFilter({ direction: v }));
@@ -1594,7 +1643,8 @@ function settingsNdUi() {
   ui.addBtn.addEventListener('click', () => settingsNdAddSheet(ui.addBtn, ''));
   ui.codeBtn = el('button', { type: 'button', title: 'Make a one-time code to type on another board', text: 'Create pairing code' });
   ui.codeBtn.addEventListener('click', () => settingsNdCodeSheet(ui.codeBtn));
-  ui.reload = el('button', { class: 'minimal', type: 'button', title: 'Read the paired nodes and the activity again', text: 'Reload', onclick: () => settingsNdLoadPeers() });
+  ui.reload = el('button', { class: 'minimal', type: 'button', title: 'Read the paired nodes and the activity again, including the rows each node keeps about this board', text: 'Reload',
+    onclick: () => { settingsNdLoadPeers().then((ok) => { if (ok) settingsNdLoadRemote(true); }); } });
   ui.authRoot = settingsNdAuthFrame(ui);                                                                       // issue #136: the Device check section (also makes ui.authCheck)
   ui.workerSlot = el('div', { class: 'nd-worker' });                                                            // issue #157: the Worker section joins this slot once nodes-worker.js (its lazy bundle) is here
   ui.root = el('div', { class: 'nd-panel' },
@@ -1611,7 +1661,7 @@ function settingsNdUi() {
     el('div', { class: 'nd-sec-head' }, settingsHead('Device check'), ui.authCheck),
     ui.authRoot,
     el('div', { class: 'nd-sec-head' }, settingsHead('Activity'), ui.reload),
-    ui.auditBar, ui.auditList, ui.auditEmpty);
+    ui.auditBar, ui.auditList, ui.auditNote, ui.auditEmpty);
   settingsNd.ui = ui;
   return ui;
 }
@@ -1813,6 +1863,10 @@ function settingsNdDispose() {
   P.nodes = P.pairs = P.audit = null;
   P.filter = NodeView.auditFilter();
   P.auditSeq++;
+  P.remote = {};
+  P.remoteAt = 0;
+  P.remoteBusy = false;
+  P.remoteSeq++;
   P.seen = { nodes: new Set(), actions: new Set() };
   P.err = '';
   P.at = 0;

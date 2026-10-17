@@ -1666,6 +1666,108 @@ def test_more_repositories_than_the_list_reads_are_said_and_the_extra_ones_are_n
     assert board.c.get(f"/api/epics/acme/r{nodes_epics.REPO_CAP + 2:02d}/5", headers=ID).status_code == 200, "a repository past the list's cap is still one of this board's own"
 
 
+def add_uncounted_epics(gh, repo: str, numbers) -> None:
+    """Epics with no sub_issues_summary, so counting each one costs a gh call; each has one child."""
+    for n in numbers:
+        gh.add_issue(repo, n, f"epic {n}", labels=["ccboard:epic"], updated_at=f"2026-10-0{n % 9 + 1}T09:00:00Z")
+        gh.add_issue(repo, n + 1000, f"child {n}")
+        gh.link(f"{repo}#{n}", f"{repo}#{n + 1000}")
+
+
+def test_a_refresh_of_the_epics_list_stops_at_its_call_budget_and_marks_the_epics_it_did_not_count_as_not_read_never_as_empty(board, clock, monkeypatch):
+    gh = board.gh
+    board.repos(REPO)
+    add_uncounted_epics(gh, REPO, range(1, 7))
+    monkeypatch.setattr(nodes_epics, "LIST_CALLS", 4)
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert len(gh.paths()) <= 4, gh.paths()
+    assert len(d["epics"]) == 6 and d["partial"] is True and d["deferred_counts"] == 3 and d["deferred_repos"] == [] and d["budget"] == {"calls": 4, "max": 4}
+    read = [e for e in d["epics"] if e["children"] is not None]
+    unread = [e for e in d["epics"] if e["children"] is None]
+    assert len(read) == 3 and len(unread) == 3
+    assert all(e["children_state"] == "budget" for e in unread), "marked: not read this time"
+    assert all(e["children"] == {"open": 1, "closed": 0, "total": 1, "more": False} for e in read)
+    assert not any("children_state" in e for e in read)
+    assert all(e["children"] != {"open": 0, "closed": 0, "total": 0, "more": False} for e in d["epics"]), "an unread epic is never shown as having no issues"
+
+
+def test_the_next_refresh_carries_on_where_the_budget_stopped_and_the_cache_pays_for_what_was_read(board, clock, monkeypatch):
+    gh = board.gh
+    board.repos(REPO)
+    add_uncounted_epics(gh, REPO, range(1, 7))
+    monkeypatch.setattr(nodes_epics, "LIST_CALLS", 4)
+    first = board.c.get("/api/epics", headers=ID).json()
+    before = len(gh.paths())
+    assert board.c.get("/api/epics", headers=ID).json()["deferred_counts"] == 3 and len(gh.paths()) == before, "a stopped refresh is reused for a few seconds, not asked again at once"
+    clock.t += nodes_epics.LIST_PARTIAL_TTL + 1
+    second = board.c.get("/api/epics", headers=ID).json()
+    assert second["partial"] is False and second["deferred_counts"] == 0 and all(e["children"] is not None for e in second["epics"])
+    assert len(gh.paths()) - before <= 4
+    asked_first = {e["number"] for e in first["epics"] if e["children"] is None}
+    assert asked_first == {e["number"] for e in second["epics"]} - {e["number"] for e in first["epics"] if e["children"] is not None}
+    done = len(gh.paths())
+    clock.t += 30
+    assert board.c.get("/api/epics", headers=ID).json()["partial"] is False and len(gh.paths()) == done, "a complete read is cached for the usual minute"
+
+
+def test_repositories_the_budget_did_not_reach_are_named_and_go_first_next_time(board, clock, monkeypatch):
+    gh = board.gh
+    slugs = [f"acme/r{i}" for i in range(6)]
+    board.repos(*slugs)
+    for i, slug in enumerate(slugs):
+        gh.add_issue(slug, 10 + i, f"epic in {slug}", labels=["ccboard:epic"], summary={"total": 2, "completed": 1})
+    monkeypatch.setattr(nodes_epics, "LIST_CALLS", 3)
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert len(gh.paths()) == 3 and d["partial"] is True and d["deferred_repos"] == slugs[3:]
+    assert {e["repo"] for e in d["epics"]} == set(slugs[:3]), "the repositories not reached have no rows, and are said"
+    gh.clear_calls()
+    clock.t += nodes_epics.LIST_TTL + 1                                   # the three read before have gone stale, so reading them again would cost calls
+    d2 = board.c.get("/api/epics", headers=ID).json()
+    assert {e["repo"] for e in d2["epics"]} >= set(slugs[3:]), "the repositories left over were read first"
+    assert d2["partial"] is True and d2["deferred_repos"] and set(d2["deferred_repos"]) <= set(slugs[:3])
+    assert len(gh.paths()) <= 3
+
+
+def test_pages_the_cache_answers_cost_nothing_so_the_budget_never_cuts_them(board, clock, monkeypatch):
+    gh = board.gh
+    slugs = [f"acme/r{i}" for i in range(6)]
+    board.repos(*slugs)
+    for i, slug in enumerate(slugs):
+        gh.add_issue(slug, 10 + i, f"epic in {slug}", labels=["ccboard:epic"], summary={"total": 2, "completed": 1})
+    monkeypatch.setattr(nodes_epics, "LIST_CALLS", 3)
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert d["partial"] is True and d["deferred_repos"] == slugs[3:] and d["budget"]["calls"] == 3
+    gh.clear_calls()
+    clock.t += nodes_epics.LIST_PARTIAL_TTL + 1                           # the first three are still fresh in the cache (60 s)
+    d2 = board.c.get("/api/epics", headers=ID).json()
+    assert {e["repo"] for e in d2["epics"]} == set(slugs), "the three left over cost the budget; the three in the cache cost nothing and are read too"
+    assert d2["partial"] is False and d2["deferred_repos"] == [] and len(gh.paths()) == 3 and d2["budget"]["calls"] == 3
+
+
+def test_the_budget_counts_only_this_refreshs_own_calls_not_other_readers_in_the_process(board, monkeypatch):
+    gh = board.gh
+    board.repos(REPO)
+    add_uncounted_epics(gh, REPO, range(1, 7))
+    real = github.api
+
+    def noisy(path, etag=None):
+        github.reader.calls += 50                                         # other threads (a detail or comments refresh) read GitHub meanwhile
+        return real(path, etag)
+    monkeypatch.setattr(github.reader, "fetch", noisy)
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert d["partial"] is False and d["deferred_counts"] == 0 and all(e["children"] is not None for e in d["epics"]), "their calls do not eat this list's 40"
+    assert d["budget"] == {"calls": 7, "max": nodes_epics.LIST_CALLS}, "one page of epics and six counts, and nothing else"
+
+
+def test_a_list_within_its_budget_is_not_partial_and_a_budget_is_a_named_constant(board):
+    gh = board.gh
+    board.repos(REPO)
+    gh.add_issue(REPO, 3, "epic", labels=["ccboard:epic"], summary={"total": 2, "completed": 0})
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert d["partial"] is False and d["deferred_repos"] == [] and d["deferred_counts"] == 0 and d["budget"]["max"] == nodes_epics.LIST_CALLS == 40 and d["budget"]["calls"] == 1
+    assert d["epics"][0]["children"] == {"open": 2, "closed": 0, "total": 2, "more": False}
+
+
 # ================================================================ `none` is a statement about a moment, and a thread is read as one reading
 
 ISSUE202 = "=/repos/acme/shop/issues/202"
