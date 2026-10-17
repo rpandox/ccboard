@@ -739,6 +739,7 @@ def _shape_task(body, reg):
             "repo": s(body.get("repo")), "branch": s(body.get("branch")), "tmux": s(body.get("tmux")), "issue_ref": s(body.get("issue_ref"), 20),
             "updated_at": s(body.get("updated_at"), 40), "slug": s(body.get("slug"), 80), "mode": s(body.get("mode"), 20), "base": s(body.get("base")),
             "created_at": s(body.get("created_at"), 40), "assigned_at": s(body.get("assigned_at"), 40), "done_at": s(body.get("done_at"), 40),
+            **({"failure_reason": reason} if s(body.get("phase"), 20) == "failed" and (reason := nodes_hub._trust_reason(body.get("failure_reason"), body.get("project"), body.get("repo"))) else {}),
             "pr_number": i(body.get("pr_number")), "pr_state": s(body.get("pr_state"), 20), "has_result": bool(body.get("has_result"))}
 
 
@@ -2354,7 +2355,8 @@ def clean_line(line: str) -> str:
 def peer_task(db, params: dict, body: dict) -> dict:
     """A task's detail for a paired node: the state row (title, phase, agent, project, repo, branch, tmux, issue, updated) plus a few facts. Never the prompt,
     the result, a worktree path or a session id."""
-    from . import node_state
+    from . import main, node_state
+    main._merged_sessions()
     t = db.task_get(int(params["tid"]))
     if not t:
         raise projects.NotFound("no such task")
