@@ -1,8 +1,11 @@
 """Settings from the environment. Read once at import, validated at startup."""
 from __future__ import annotations
 
+import hashlib
+import json
 import ipaddress
 import logging
+import math
 import os
 import re
 import stat
@@ -378,11 +381,107 @@ def apply_env_file(env, *, file_keys=None, info=None) -> dict | os._Environ:
     return merged
 
 
+PAGE_FILE_MAX = 64 * 1024
+# Keep these patterns identical to install.sh.
+NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
+_page_warnings = set()
+
+
+def page_path(env):
+    if "CCBOARD_PAGE_FILE" in env:
+        return Path(env["CCBOARD_PAGE_FILE"]) if env["CCBOARD_PAGE_FILE"] else None
+    if env is os.environ:
+        return Path(env.get("CCBOARD_DATA_DIR") or plat.default_data_dir()) / "settings.page.json"
+    return None
+
+
+def page_stamp(path) -> str:
+    if path is None:
+        return "disabled"
+    try:
+        st = os.lstat(path)
+        return hashlib.sha256(str((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)).encode()).hexdigest()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+
+
+def read_page_file(path, *, env=None, info=None) -> dict[str, str]:
+    """Read a private, bounded file; no rejected value is logged, even by a startup parser."""
+    from .options import safe_key, validate_value
+    info = info if info is not None else {}
+    if path is None:
+        return {}
+    problem = env_file_problem(path)
+    values = {}
+    if problem is None:
+        try:
+            with os.fdopen(os.open(path, os.O_RDONLY | plat.o_nofollow() | getattr(os, "O_NONBLOCK", 0)), "rb") as f:
+                st = os.fstat(f.fileno())
+                uid = plat.current_uid()
+                if not stat.S_ISREG(st.st_mode) or (uid is not None and (st.st_uid != uid or st.st_mode & 0o077)):
+                    raise ValueError("is not a private regular file owned by the board user")
+                raw = f.read(PAGE_FILE_MAX + 1)
+            if len(raw) > PAGE_FILE_MAX:
+                raise ValueError("exceeds 64 KB")
+            try:
+                doc = json.loads(raw)
+            except (ValueError, UnicodeError, RecursionError):
+                raise ValueError("is not valid JSON") from None
+            if (not isinstance(doc, dict) or type(doc.get("version")) is not int or doc["version"] != 1
+                    or not isinstance(doc.get("set"), dict) or any(not isinstance(v, str) for v in doc["set"].values())):
+                raise ValueError("must contain version 1 and string settings")
+            values = doc["set"]
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            problem = "cannot be read"
+        except ValueError as e:
+            problem = str(e)
+    if problem:
+        info["problem"] = problem
+        warning = (str(path), problem)
+        if warning not in _page_warnings:
+            _page_warnings.add(warning)
+            log.warning("ignoring settings.page.json: %s", problem)
+        return {}
+    allowed = {o.key: o for o in registry() if o.cls == "page" and not o.secret}
+    out = {}
+    for key, value in values.items():
+        reason = "not a page option" if key not in allowed else validate_value(allowed[key], value, env or {})
+        if reason:
+            # JSON keys are untrusted too; only option-shaped names can appear in diagnostics.
+            name = safe_key(key, env or {}) or "unknown key"
+            info.setdefault("ignored", []).append(name)
+            warning = (str(path), name, reason)
+            if warning not in _page_warnings:
+                _page_warnings.add(warning)
+                log.warning("ignoring page option %s: %s", name, reason)
+        else:
+            out[key] = value
+    return out
+
+
+def apply_page_settings(env, *, info=None):
+    values = read_page_file(page_path(env), env=env, info=info)
+    if info is not None:
+        info["values"] = values
+    return {**env, **values} if values else env
+
+
 class Settings:
-    def __init__(self, env=None):
+    def __init__(self, env=None, *, _quiet=False):
+        original = os.environ if env is None else env
+        self._input_env = dict(original)
+        self._process_env = original is os.environ
         self.file_keys: set[str] = set()
         info = {}
         env = apply_env_file(os.environ if env is None else env, file_keys=self.file_keys, info=info)
+        self.page_file = page_path(env)
+        self.page_info = {}
+        env = apply_page_settings(env, info=self.page_info)
         self.raw = {o.key: str(env[o.key]) for o in registry() if o.key in env}
         self.other_lines = info.get("other_lines", 0)
         self.projects_dir = Path(env["PROJECTS_DIR"]) if "PROJECTS_DIR" in env else plat.default_projects_dir()
@@ -392,6 +491,13 @@ class Settings:
         self.ccboard_https_port = int(env.get("CCBOARD_HTTPS_PORT", "443"))
         self.code_https_port = int(env.get("CODE_HTTPS_PORT", "8443"))
         self.allowed_users = parse_allowlist(env.get("CCBOARD_ALLOWED_USERS", ""))
+        self.local_signin = env.get("CCBOARD_LOCAL_SIGNIN", "0") == "1"
+        self.local_signin_hours = int(env.get("CCBOARD_LOCAL_SIGNIN_HOURS", "12"))
+        if not 1 <= self.local_signin_hours <= 168:
+            raise ValueError("CCBOARD_LOCAL_SIGNIN_HOURS must be between 1 and 168")
+        first = next((u.strip() for u in env.get("CCBOARD_ALLOWED_USERS", "").split(",") if u.strip()), "")
+        self.local_signin_user = first.lower() if first.isascii() else first
+
         self.clone_allowed_hosts = parse_clone_hosts(env.get("CCBOARD_CLONE_ALLOWED_HOSTS", ""))     # hosts a clone may name although they look local or private (app/projects.py check_clone_url)
         data_dir = env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())
         self.data_dir = Path(data_dir)
@@ -406,7 +512,8 @@ class Settings:
         # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID), launchd and inside the container.
         self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if plat.dev_bypass_allowed(env, runtime) else None
         if env.get("CCBOARD_DEV_BYPASS_USER") and self.dev_bypass_user is None:
-            log.warning("ignoring CCBOARD_DEV_BYPASS_USER (runtime %s): the dev bypass is for a dev shell only, never a service or a container", runtime)
+            if not _quiet:
+                log.warning("ignoring CCBOARD_DEV_BYPASS_USER (runtime %s): the dev bypass is for a dev shell only, never a service or a container", runtime)
         self.tmux_socket = env.get("CCBOARD_TMUX_SOCKET", "ccboard")
         self.public_url = (env.get("CCBOARD_PUBLIC_URL") or "").strip()
         # The remote MCP endpoint /mcp (issue #13): '1' turns it on until someone flips the switch in Settings > Agents (the stored
@@ -433,7 +540,10 @@ class Settings:
         self.epic_worker_max_hour, self.epic_worker_max_hour_bad = parse_bounded(env.get("CCBOARD_EPIC_WORKER_MAX_PER_HOUR"), 6, 1, 60)
         self.epic_worker_max_day, self.epic_worker_max_day_bad = parse_bounded(env.get("CCBOARD_EPIC_WORKER_MAX_PER_DAY"), 30, 1, 500)
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
-        self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
+        self.ntfy_topic = env.get("NTFY_TOPIC") if (env.get("NTFY_TOPIC") or "").strip() else "ccboard"     # empty means unset, as in the installer
+        self.ntfy_topic_bad = NTFY_TOPIC_RE.fullmatch(self.ntfy_topic) is None
+        if self.ntfy_topic_bad:
+            self.ntfy_topic = "ccboard"
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
         try:                                                               # ntfy's tailnet HTTPS port: a preview never takes it (#44 F-01)
             self.ntfy_https_port = int(env.get("NTFY_HTTPS_PORT") or 8444)
@@ -441,7 +551,10 @@ class Settings:
             self.ntfy_https_port = 8444
         self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
         self.auto_continue = (env.get("CCBOARD_AUTO_CONTINUE") or "1") != "0"   # type `continue` once a limit window resets (app/autoresume.py)
-        self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()
+        self.node_name = env.get("CCBOARD_NODE_NAME") if (env.get("CCBOARD_NODE_NAME") or "").strip() else ""     # empty means unset, as in the installer
+        self.node_name_bad = bool(self.node_name) and NODE_NAME_RE.fullmatch(self.node_name) is None
+        if self.node_name_bad:
+            self.node_name = ""
         self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
         # Task lanes this node advertises (issue #133): advice for routing and a warning on a hand start, never a refusal. 0 = no advisory cap.
         # Not a whole number from 0 to 999: the default (3), and the doctor's node check says so.
@@ -469,13 +582,15 @@ class Settings:
         self.bind_host = uvicorn_host(sys.argv)
         self.forwarded_allow_argv = uvicorn_forwarded_allow(sys.argv)      # issue #136: a widened uvicorn proxy trust keeps the whois modes off
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
-        # The hub read model (issue #138): seconds between two polls of one paired node. Default 20, never below 5; not a number: the default.
+        # The hub read model: never below 5 s (a smaller number is raised to 5, as always); over an hour or not a number: the default.
+        self.nodes_poll_bad = False
         try:
             poll = float((env.get("CCBOARD_NODES_POLL") or "").strip() or 20)
-            if poll != poll or poll in (float("inf"), float("-inf")):
-                raise ValueError("not finite")
+            if not math.isfinite(poll) or poll > 3600:
+                raise ValueError("outside poll bounds")
             self.nodes_poll = max(5.0, poll)
         except ValueError:
+            self.nodes_poll_bad = True
             self.nodes_poll = 20.0
         # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
         # file (written by install.sh), whether to copy unpushed work to backup branches on every repo's origin, extra paths to include.
@@ -487,17 +602,25 @@ class Settings:
             self.preview_https_base = int(env.get("PREVIEW_HTTPS_BASE") or 9100)
         except ValueError:
             self.preview_https_base = 9100
+        self.approve_timeout_bad = False
         try:
-            self.approve_timeout = float(env.get("CCBOARD_APPROVE_TIMEOUT") or 90)
+            raw_timeout = (env.get("CCBOARD_APPROVE_TIMEOUT") or "90").strip()
+            if not re.fullmatch(r"[0-9]{1,4}", raw_timeout) or not 1 <= int(raw_timeout) <= 9999:
+                raise ValueError("outside approval timeout bounds")
+            self.approve_timeout = int(raw_timeout)
         except ValueError:
-            self.approve_timeout = 90.0
+            self.approve_timeout_bad = True
+            self.approve_timeout = 90
         # Auto-close (app/taskflow.py): seconds between a task's Stop and the graceful close of its session, so a person can still say
         # "keep open" (the countdown is flags.autoclose.due). Not a positive number: the default.
+        self.autoclose_grace_bad = False
         try:
             self.autoclose_grace = float(env.get("CCBOARD_AUTOCLOSE_GRACE") or 45)
         except ValueError:
+            self.autoclose_grace_bad = True
             self.autoclose_grace = 45.0
         if not 0 <= self.autoclose_grace < 24 * 3600:
+            self.autoclose_grace_bad = True
             self.autoclose_grace = 45.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
         # The model Claude's subagents use on sessions, tasks and headless runs the board starts (CLAUDE_CODE_SUBAGENT_MODEL in their
@@ -506,8 +629,11 @@ class Settings:
         raw_sub = (env.get("CCBOARD_SUBAGENT_MODEL") or "").strip()
         if raw_sub.lower() == "inherit":
             raw_sub = ""
+        self.subagent_model_bad = False
         if raw_sub and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$", raw_sub):
-            log.warning("ignoring CCBOARD_SUBAGENT_MODEL=%r (use haiku, sonnet, opus or a full model id)", raw_sub)
+            self.subagent_model_bad = True
+            if not _quiet:
+                log.warning("ignoring CCBOARD_SUBAGENT_MODEL (use haiku, sonnet, opus or a full model id)")
             raw_sub = ""
         self.subagent_model = raw_sub
         # The most a scheduled or batch Claude run that resolves to Fable may be capped at (its Max $); a Fable job also needs its own
@@ -525,7 +651,8 @@ class Settings:
         self.codex_home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
         trust = (env.get("CCBOARD_CODEX_HOOK_TRUST") or "review").strip().lower()
         if trust not in ("review", "bypass"):
-            log.warning("ignoring unknown CCBOARD_CODEX_HOOK_TRUST=%r (use review or bypass)", trust)
+            if not _quiet:
+                log.warning("ignoring unknown CCBOARD_CODEX_HOOK_TRUST=%r (use review or bypass)", trust)
             trust = "review"
         self.codex_hook_trust = trust
         # claude-mem (the memory plugin): 0 skips the installer's plugin step and the health monitor (app/memory.py). The worker's
@@ -541,7 +668,8 @@ class Settings:
             if 0 < p < 65536:
                 self.mem_port = p
             else:
-                log.warning("ignoring CCBOARD_MEM_PORT=%r (not a port number)", raw_mem_port)
+                if not _quiet:
+                    log.warning("ignoring CCBOARD_MEM_PORT=%r (not a port number)", raw_mem_port)
         # An optional JSON file that adds to or replaces the built-in list prices behind the Usage page's estimates (app/pricing.py, issue #95). Server side only.
         self.price_table = (env.get("CCBOARD_PRICE_TABLE") or "").strip()
         self.claude_mem_dir = Path(env.get("CLAUDE_MEM_DATA_DIR") or (Path.home() / ".claude-mem"))   # claude-mem's own override
@@ -561,12 +689,19 @@ class Settings:
                 ntfy_port = 8444
             taken = {443, self.ccboard_https_port, self.code_https_port, ntfy_port}
             if not 0 < mp < 65536:
-                log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%r (not a port number)", raw_mem_https)
+                if not _quiet:
+                    log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%r (not a port number)", raw_mem_https)
             elif mp in taken:
-                log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%d (443 and the board's, code-server's and ntfy's ports are never used for the viewer)", mp)
+                if not _quiet:
+                    log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%d (443 and the board's, code-server's and ntfy's ports are never used for the viewer)", mp)
             else:
                 self.mem_https_port = mp
         self.login_shell = plat.login_shell()
+
+    @property
+    def sources(self):
+        return {o.key: "page" if o.key in self.page_info.get("values", {}) else "file" if o.key in self.file_keys
+                else "environment" if self.raw.get(o.key, "").strip() else "default" for o in registry()}
 
     @property
     def version(self) -> str:
@@ -640,6 +775,10 @@ settings = Settings()
 def _main(argv: list[str]) -> int:
     """For installers: `python -m app.config keys` prints the settings-file keys, one per line; `python -m app.config check <file>` prints why
     the board would refuse that file and exits 1, or exits 0 when it is absent or acceptable."""
+    if argv == ["open"]:
+        import subprocess
+        env = dict(os.environ, CCBOARD_PORT=str(settings.port), CCBOARD_DATA_DIR=str(settings.data_dir))
+        return subprocess.call([str(Path(__file__).resolve().parent.parent / "bin" / "ccboard-open")], env=env)
     if argv[:1] == ["keys"]:
         print("\n".join(ENV_FILE_KEYS))
         return 0
@@ -649,7 +788,7 @@ def _main(argv: list[str]) -> int:
             print(f"{argv[1]} {problem}")
             return 1
         return 0
-    print("usage: python -m app.config keys | check <settings file>")
+    print("usage: python -m app.config keys | check <settings file> | open")
     return 2
 
 

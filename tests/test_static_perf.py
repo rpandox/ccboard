@@ -103,7 +103,7 @@ def test_every_script_is_in_index_or_in_exactly_one_lazy_bundle():
     eager = [a["src"] for t, a in tags("index.html") if t == "script"]
     assert not set(lazy) & set(eager), "a script is both in index.html and in a bundle"
     on_disk = {"/static/" + p.relative_to(STATIC).as_posix() for p in list(STATIC.glob("*.js")) + list(STATIC.glob("pages/*.js"))}
-    on_disk -= {"/static/sw.js", "/static/term.js"}       # the worker has its own scope; term.js belongs to term.html
+    on_disk -= {"/static/sw.js", "/static/term.js", "/static/local-signin.js"}       # the worker has its own scope; term.js belongs to term.html, local-signin.js to local-signin.html
     assert on_disk == set(eager) | set(lazy), f"orphaned or missing: {sorted(on_disk ^ (set(eager) | set(lazy)))}"
 
 

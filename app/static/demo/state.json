@@ -2425,5 +2425,17 @@
   },
   "team": {
     "shared": true
+  },
+  "boot": {
+    "id": "demo-boot",
+    "at": "2026-10-17T00:00:00Z"
+  },
+  "settings_pending": {
+    "count": 1,
+    "labels": ["Task lanes"],
+    "keys": [
+      "CCBOARD_NODE_LANES"
+    ],
+    "restart_hint": "systemctl --user restart ccboard"
   }
 }

@@ -8,7 +8,10 @@
 3. The log-hygiene test: a representative slice (the full startup, device tokens minted, used, refused and revoked, the hook
    token right and wrong, a clone URL carrying a password) under DEBUG capture; no token, digest, password or login may appear.
 
-Kinds: identity (the Tailscale login on CCBOARD_ALLOWED_USERS), identity+csrf (that and X-CCBoard: 1), hook-token (the 0600
+Local sign-in (#127): local-gate means the feature is on, loopback peer, exact local Host, no proxy headers and no foreign Origin.
+The page and script need that gate; mint also needs the hook token, redeem a one-time token and X-CCBoard. Sessions are person-only.
+
+Kinds: identity (an allowed Tailscale login or a direct local cookie session), identity+csrf (that and X-CCBoard: 1), hook-token (the 0600
 <data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary), none (/api/node/hello,
 issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth), pair-code (POST /api/nodes/pair, issue #135: no
 identity, but X-CCBoard, no Origin, no disallowed identity header, a code; POST /api/nodes/pair/confirm, the callback that proves who is redeeming), node-token (POST /api/node/rotate and /api/node/unpair: a paired node's token,
@@ -40,6 +43,12 @@ NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 
 EXPECTED = {
+    ("GET", "/auth/local"): "local-gate",
+    ("GET", "/auth/local/script.js"): "local-gate",
+    ("POST", "/auth/local/token"): "local-gate+hook-token",
+    ("POST", "/auth/local/redeem"): "local-gate+one-time-token+csrf",
+    ("GET", "/api/auth/local/sessions"): "identity",
+    ("DELETE", "/api/auth/local/sessions"): "identity+csrf",
     ("GET", "/api/state"): "identity",
     ("GET", "/api/agents"): "identity",
     ("GET", "/api/doctor"): "identity",
@@ -140,6 +149,7 @@ EXPECTED = {
     ("POST", "/api/notify/test"): "identity+csrf",
     ("POST", "/mcp"): "identity+device-token",
     ("GET", "/api/settings/options"): "identity",    # signed-in person only; agents get 403
+    ("PUT", "/api/settings/options"): "identity+csrf",  # signed-in person only, same-origin; all token headers refused before the handler
     ("GET", "/api/mcp/nodes"): "identity",              # issue #152: the node list an agent may see (tool list_nodes); a person or the hook token, never a node token
     ("GET", "/api/mcp/tokens"): "identity",
     ("POST", "/api/mcp/tokens"): "identity+csrf",
@@ -287,6 +297,8 @@ def test_route_table_is_complete():
 def test_kinds_follow_the_method():
     """A non-GET route a person calls must be identity+csrf; only the token routes are exempt, and each is named."""
     for (method, path), kind in EXPECTED.items():
+        if kind.startswith("local-gate"):
+            continue
         if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none", "pair-code", "node-token", "relay"):
             continue
         assert kind == ("identity" if method == "GET" else "identity+csrf"), (method, path, kind)
@@ -301,6 +313,9 @@ def test_no_docs_or_openapi_listing():
 def test_every_route_refuses_a_request_without_identity(lite_client, method, path):
     kind = EXPECTED[(method, path)]
     r = send(lite_client, method, path)
+    if kind.startswith("local-gate"):
+        assert r.status_code == 403 and r.json()["error"] == "local sign-in refused"
+        return
     if kind == "identity+device-token":
         assert r.status_code == 404                  # off by default: the endpoint does not advertise itself
         return
@@ -311,6 +326,9 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
         assert r.status_code == 403 and r.json()["error"] == NO_CSRF, (method, path)
         return
     assert r.status_code == 403, (method, path, r.status_code)
+    if (method, path) == ("PUT", "/api/settings/options"):
+        assert r.json() == {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."}
+        return
     want = "bad hook token" if kind == "hook-token" else NO_ID
     assert r.json()["error"] == want, (method, path)
 
@@ -347,7 +365,10 @@ def test_every_non_get_route_needs_the_csrf_header(lite_client, method, path):
     for headers in (ID, {**ID, "X-CCBoard": "true"}, {**ID, "X-CCBoard": "0"}, {**ID, "Origin": "https://evil.example"}):
         r = send(lite_client, method, path, headers)
         assert r.status_code == 403, (method, path, headers)
-        assert r.json()["error"] == NO_CSRF, (method, path)
+        if (method, path) == ("PUT", "/api/settings/options"):
+            assert r.json() == {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."}
+        else:
+            assert r.json()["error"] == NO_CSRF, (method, path)
 
 
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "hook-token"))

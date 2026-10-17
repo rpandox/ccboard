@@ -175,13 +175,14 @@ def test_file_merge_keeps_all_parsed_attributes_identical(tmp_path):
     path = env_file(tmp_path, "".join(f"{k}={v}\n" for k, v in env.items()))
     direct = vars(config.Settings(env))
     merged = vars(config.Settings({"CCBOARD_ENV_FILE": path}))
-    for attr in direct.keys() - {"raw", "file_keys", "other_lines"}:
+    for attr in direct.keys() - {"raw", "file_keys", "other_lines", "_input_env", "page_file", "page_info"}:
         assert merged[attr] == direct[attr], attr
 
 
-def test_nonfinite_existing_float_is_displayable_without_changing_parsing(endpoint):
+def test_nonfinite_approval_timeout_displays_safe_default(endpoint):
     _, rows = endpoint({"CCBOARD_APPROVE_TIMEOUT": "nan"})
-    assert rows["CCBOARD_APPROVE_TIMEOUT"]["value"] == "nan"
+    assert rows["CCBOARD_APPROVE_TIMEOUT"]["value"] == 90
+    assert "default is in use" in rows["CCBOARD_APPROVE_TIMEOUT"]["problem"]
 
 
 @pytest.mark.parametrize("value", ["https://user:pass@example.invalid/", "https://u:p/ss@example.invalid/", "https://u:p?ss#x@y@example.invalid/"])

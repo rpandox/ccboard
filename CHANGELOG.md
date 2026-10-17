@@ -12,6 +12,26 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do. A new pairing between an updated and an older board still works.
 
+## v0.5.76 - 2026-10-17
+
+### Added
+- Settings > Options can save safe page options and remove overrides to use the file's value again.
+- Private atomic saves validate bounded numbers and installer-compatible names, reject stale edits and explain how to reset refused files.
+- Options keeps the last 20 saves separate from up to 5 identified-person refusals; anonymous refusals only produce debug logs, without audit writes.
+- Options and Home show saved changes waiting for a restart; Doctor reports unsafe files, rejected page names and overdue restarts.
+- Approval timeout is installer-only because agent hooks carry it; only whole seconds from 1 to 9999 are accepted, with invalid startup values falling back to 90.
+
+Upgrade: nothing to do.
+
+## v0.5.75 - 2026-10-17
+
+### Added
+- Optional local browser sign-in with a single-use link from bin/ccboard-open, off by default.
+- Local session expiry, a sign-out-all button in Settings > App, and a Doctor warning while enabled.
+- Signing in again replaces this browser's old session; Settings identifies this browser and explains how to sign in, including when no browser is signed in locally.
+
+Upgrade: nothing to do.
+
 ## v0.5.74 - 2026-10-17
 
 ### Changed

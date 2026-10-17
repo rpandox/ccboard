@@ -173,6 +173,8 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 [ "$CCBOARD_MEM_HTTPS_PORT" != off ] || CCBOARD_MEM_HTTPS_PORT=
 : "${CCBOARD_MEM_SERVICE:=0}"
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"
+: "${CCBOARD_LOCAL_SIGNIN:=0}"
+: "${CCBOARD_LOCAL_SIGNIN_HOURS:=12}"
 : "${CCBOARD_MCP_REMOTE:=0}"
 : "${CCBOARD_MCP_NODES:=0}"             # 0 = agents stay on this board; read (or 1) = they may list nodes and read their projects and tasks; tasks = they may also start tasks there (issue #152)
 : "${CCBOARD_EPIC_AUTHORS:=}"             # GitHub logins whose claim comments count on an epic, if they can write to the repository (empty = the gh login only; issue #147)
@@ -184,7 +186,7 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 
 [[ "$CCBOARD_NODE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$ ]] || die "CCBOARD_NODE_NAME must be letters, digits, - or _"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
-[[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
+if ! [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || (( 10#$CCBOARD_APPROVE_TIMEOUT < 1 )); then die "CCBOARD_APPROVE_TIMEOUT must be a whole number from 1 to 9999"; fi
 for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT NTFY_PORT NTFY_HTTPS_PORT; do
   eval "v=\${$k}"
   [[ "$v" =~ ^[0-9]{1,5}$ ]] || die "$k must be a port number (got '$v')"

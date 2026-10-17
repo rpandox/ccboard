@@ -1034,6 +1034,24 @@ def _c_ccusage(db) -> Outcome:
     return _pass(f"ccusage {v}" if v else "ccusage installed")
 
 
+def _c_settings_page(db) -> Outcome:
+    from .config import read_page_file
+    from .options import pending
+    info = {}
+    read_page_file(settings.page_file, env=settings.raw, info=info)
+    if info.get("problem"):
+        return _warn("Page settings file " + info["problem"])
+    if info.get("ignored"):
+        return _warn("Ignored page options: " + ", ".join(info["ignored"]))
+    try:
+        age = time.time() - settings.page_file.stat().st_mtime if settings.page_file else 0
+    except OSError:
+        age = 0
+    if age > 86400 and pending(settings):
+        return _warn("Saved options have waited more than a day for a restart", fix("Restart the board", plat.hint("restart", "ccboard")))
+    return _pass("Page settings file is absent or valid")
+
+
 def _c_identity(db) -> Outcome:
     rt = settings.runtime
     n = len(settings.allowed_users or ())
@@ -1143,9 +1161,13 @@ def _c_node(db) -> Outcome:
         return _warn(f"the saved node id ({rep['id']}) is not the id Tailscale reports now ({rep['ts_id']}): this device was registered again",
                      fix("Reset the node id (remove the node-id file in the data directory and restart the board); every pair must be made again afterwards"))
     problems = []
-    if settings.node_name and nodes.display_name() != settings.node_name:
+    page_name = (settings.sources.get("CCBOARD_NODE_NAME") == "page"
+                 or "CCBOARD_NODE_NAME" in settings.page_info.get("ignored", []))
+    if (getattr(settings, "node_name_bad", False) or (page_name and "CCBOARD_NODE_NAME" in settings.page_info.get("ignored", []))
+            or (settings.node_name and nodes.display_name() != settings.node_name)):
+        where = "Settings > Options" if page_name else "/etc/ccboard/env"
         problems.append(("CCBOARD_NODE_NAME is not a valid node name (letters, digits, - or _, at most 41 characters), so the shown name is " + nodes.display_name(),
-                         fix("Set CCBOARD_NODE_NAME in /etc/ccboard/env to letters, digits, - or _ and restart the board")))
+                         fix(f"Set CCBOARD_NODE_NAME in {where} to 1 to 41 letters, digits, - or _, starting with a letter or digit, and restart the board")))
     if getattr(settings, "node_lanes_bad", False):
         problems.append(("CCBOARD_NODE_LANES is not a whole number from 0 to 999, so the default 3 is used",
                          fix("Set CCBOARD_NODE_LANES in /etc/ccboard/env to a whole number (0 means no limit) and restart the board")))
@@ -2053,6 +2075,7 @@ for _id, _group, _label, _fn in (
     ("runtime-host", "box", "Container host", _c_runtime_host),
     ("gh", "box", "GitHub CLI", _c_gh),
     ("ccusage", "box", "ccusage", _c_ccusage),
+    ("settings-page", "box", "Page settings", _c_settings_page),
     ("identity", "box", "Identity and access", _c_identity),
     ("samples-heartbeat", "box", "Usage samples heartbeat", _c_samples),
     ("mcp-remote", "box", "MCP from other devices", _c_mcp_remote),
@@ -2064,6 +2087,17 @@ for _id, _group, _label, _fn in (
 ):
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
+def _c_local_signin(db) -> Outcome:
+    if settings.local_signin:
+        return _warn("Local browser sign-in is enabled: hooks, the MCP shim and agent sessions with the local token can mint browser sessions. "
+                     "Local processes can already send the sign-in identity header to loopback; this is off by default and for a single-user machine. "
+                     "The host-only cookie reaches other services on 127.0.0.1 (cookies ignore ports). Pages on other ports cannot use it: "
+                     "exact Origin and Host checks and X-CCBoard on writes protect the board. A local service copying it gains no extra access.",
+                     fix("Set CCBOARD_LOCAL_SIGNIN=0 and restart to turn it off"))
+    return _pass("Local browser sign-in is off")
+
+
+register("local-signin", "box", "Local browser sign-in", _c_local_signin)
 register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
 register("devcontainer", "box", "Devcontainer prerequisites (host)", _c_devcontainer)   # issue #104

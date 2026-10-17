@@ -276,10 +276,10 @@ def test_attach_wrapper_states(world):
     assert c["status"] == "warn" and c["detail"] == "v1 wrapper" and c["fix"]["text"]
     wrapper.chmod(0o644)
     c = one("attach-wrapper")
-    assert c["status"] == "fail" and "not executable" in c["detail"] and "chmod" in c["fix"]["cmd"]
+    assert c["status"] == "fail" and c["detail"] == doctor._clean(f"{wrapper} is not executable") and "chmod" in c["fix"]["cmd"]
     wrapper.unlink()
     c = one("attach-wrapper")
-    assert c["status"] == "fail" and "does not exist" in c["detail"]
+    assert c["status"] == "fail" and c["detail"] == doctor._clean(f"{wrapper} does not exist")
 
 
 def test_attach_wrapper_candidates_depend_on_runtime(monkeypatch):
@@ -1298,7 +1298,7 @@ def test_memory_projects_hint_carries_the_project_environments_snippet(mem, proj
                        {"name": "petroit-api", "patterns": [f"{projects_dir}/petroit/api/**"]}]
     shape = json.loads((Path(__file__).parent / "fixtures" / "claude_mem_project_environments.json").read_text())["value"][0]
     assert all(set(e) == set(shape) for e in entries), "the plugin's own shape (box check V11 row 13)"
-    assert "ccboard" not in cmd and "settings.json" in c["fix"]["text"]
+    assert all("ccboard" not in entry["name"] for entry in entries) and "settings.json" in c["fix"]["text"]
 
 
 def test_memory_api_pass_untested_unknown_and_drift(mem):
@@ -1454,7 +1454,7 @@ def test_memory_bun_found_says_the_worker_runs_on_it(mem, world):
 
 def test_memory_bun_found_in_the_home_dir(mem, tmp_path):
     exe = make_bun(tmp_path / "home" / ".bun" / "bin" / "bun")
-    assert mc("memory-bun")["detail"] == f"bun found at {exe}; the plugin's worker runs on it"
+    assert mc("memory-bun")["detail"] == doctor._clean(f"bun found at {exe}; the plugin's worker runs on it")
 
 
 def test_memory_bun_a_file_that_is_not_executable_is_not_a_bun(mem, tmp_path):
@@ -1589,7 +1589,8 @@ def test_unreadable_wrapper_and_unreadable_subscriptions_carry_a_fix(world, monk
         raise OSError("denied")
     monkeypatch.setattr("builtins.open", lambda p, *a, **k: unreadable() if str(p).endswith("ccboard-attach") else open_real(p, *a, **k))
     c = one("attach-wrapper")
-    assert c["status"] == "warn" and "not readable" in c["detail"] and "chmod" in c["fix"]["cmd"]
+    wrapper = settings.data_dir / "app" / "bin" / "ccboard-attach"
+    assert c["status"] == "warn" and c["detail"] == doctor._clean(f"{wrapper} is not readable") and "chmod" in c["fix"]["cmd"]
 
     class Broken:
         def push_subs(self):
