@@ -1,0 +1,31 @@
+#!/bin/sh
+# Direct loopback only; never use CCBOARD_URL or follow a redirect with the hook token.
+set -eu
+port=${CCBOARD_PORT:-8000}
+case "$port" in ''|*[!0-9]*|0*) echo 'CCBOARD_PORT must be a port from 1 to 65535' >&2; exit 1;; esac
+[ "${#port}" -le 5 ] && [ "$port" -le 65535 ] || exit 1
+url="http://127.0.0.1:$port"
+tokfile=${CCBOARD_HOOK_TOKEN_FILE:-${CCBOARD_DATA_DIR:-$HOME/.local/share/ccboard}/hook-token}
+tok=$(cat "$tokfile") || exit 1
+[ -n "$tok" ] || exit 1
+# Headers on stdin keep the hook token out of curl's process arguments. -q ignores .curlrc.
+headers=$(printf 'X-CCBoard-Token: %s\n' "$tok" | curl -q --noproxy '*' --proto '=http' --max-time 5 --silent --show-error --fail \
+  -X POST -H @- -D - -o /dev/null "$url/auth/local/token") || {
+  echo 'Local sign-in failed. Enable CCBOARD_LOCAL_SIGNIN=1 on the board and check the port.' >&2
+  exit 1
+}
+unset tok
+link_token=$(printf '%s\n' "$headers" | awk 'tolower($1) == "x-ccboard-local-link:" {gsub("\r", "", $2); print $2}')
+case "$link_token" in ''|*[!A-Za-z0-9_-]*) echo 'No local sign-in link received' >&2; exit 1;; esac
+[ "${#link_token}" -eq 43 ] || exit 1
+link="$url/auth/local#$link_token"
+# WSL must use the Windows browser; cmd.exe is available through WSL interop.
+if [ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ]; then
+  if command -v wslview >/dev/null 2>&1 && wslview "$link" >/dev/null 2>&1; then exit 0; fi
+  if command -v cmd.exe >/dev/null 2>&1 && cmd.exe /c start "" "$link" >/dev/null 2>&1; then exit 0; fi
+elif [ "$(uname -s)" = Darwin ]; then
+  if command -v open >/dev/null 2>&1 && open "$link" >/dev/null 2>&1; then exit 0; fi
+else
+  if command -v xdg-open >/dev/null 2>&1 && xdg-open "$link" >/dev/null 2>&1; then exit 0; fi
+fi
+printf '%s\n' "$link"

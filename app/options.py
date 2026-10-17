@@ -97,6 +97,8 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_NODE_AUTH", "safety", "Node authentication", "Require a pair token alone or also its device and an app capability.", "choice", "token", "confirm", attr="node_auth", bad="node_auth_bad", choices=("token", "whois", "whois+cap")),
         Option("CCBOARD_NODE_CAP", "safety", "Node capability", "The domain/cap/name capability required by whois+cap authentication.", "text", "", "confirm", attr="node_cap", bad="node_cap_bad"),
         Option("CCBOARD_NODE_KEYS", "safety", "Node signing keys", "prefer keeps old unkeyed pairs working and upgrades them; require refuses unkeyed pairs; off turns signing off.", "choice", "prefer", "confirm", attr="node_keys", choices=("prefer", "require", "off")),
+        Option("CCBOARD_LOCAL_SIGNIN", "safety", "Local sign-in", "Allow a browser on this machine to sign in with a one-time link from bin/ccboard-open.", "bool", "0", "confirm", attr="local_signin"),
+        Option("CCBOARD_LOCAL_SIGNIN_HOURS", "safety", "Local session hours", "How long a local browser session lasts, from 1 to 168 hours.", "int", "12", "confirm", attr="local_signin_hours", bounds=(1, 168)),
         Option("CCBOARD_RECOVER", "agents", "Session recovery", "Relaunch Claude sessions after a reboot unless this is 0.", "bool", "1", "confirm", attr="recover"),
         Option("CCBOARD_TMUX_SOCKET", "advanced", "Terminal socket", "The named tmux socket used for board sessions.", "text", "ccboard", "file", attr="tmux_socket"),
         Option("CCBOARD_ENV_FILE", "advanced", "Settings file", "An explicit path selects the settings file and an explicit empty value disables it.", "path", "", "file"),

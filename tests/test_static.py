@@ -281,13 +281,15 @@ def test_js_no_style_key_in_el_attrs():
 
 
 def test_js_history_state_only_in_router():
-    """Only router.js may touch the history stack, so the back button and the legacy-hash rewrite have one owner."""
+    """The router owns navigation; the standalone sign-in page may only erase its secret fragment."""
     bad = []
     for p in app_files(".js"):
         if p.name == "router.js" and p.parent == STATIC:
             continue
         code = blank_js(p.read_text(encoding="utf-8"))
         for m in re.finditer(r"\bhistory\s*\.\s*(?:pushState|replaceState)\b", code):
+            if p.name == "local-signin.js" and p.parent == STATIC and m.group().endswith("replaceState"):
+                continue  # erase the secret fragment before POST; covered by local-signin.test.mjs
             bad.append(f"{rel(p)}:{line_of(code, m.start())}: {snippet(code, m.start())}")
     assert not bad, "history.pushState/replaceState outside app/static/router.js (call navigate() or rewriteLegacyHash()):\n" + "\n".join(bad)
 

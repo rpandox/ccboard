@@ -2064,6 +2064,17 @@ for _id, _group, _label, _fn in (
 ):
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
+def _c_local_signin(db) -> Outcome:
+    if settings.local_signin:
+        return _warn("Local browser sign-in is enabled: hooks, the MCP shim and agent sessions with the local token can mint browser sessions. "
+                     "Local processes can already send the sign-in identity header to loopback; this is off by default and for a single-user machine. "
+                     "The host-only cookie reaches other services on 127.0.0.1 (cookies ignore ports). Pages on other ports cannot use it: "
+                     "exact Origin and Host checks and X-CCBoard on writes protect the board. A local service copying it gains no extra access.",
+                     fix("Set CCBOARD_LOCAL_SIGNIN=0 and restart to turn it off"))
+    return _pass("Local browser sign-in is off")
+
+
+register("local-signin", "box", "Local browser sign-in", _c_local_signin)
 register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
 register("devcontainer", "box", "Devcontainer prerequisites (host)", _c_devcontainer)   # issue #104

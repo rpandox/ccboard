@@ -1212,6 +1212,45 @@
       "problem": null
     },
     {
+      "key": "CCBOARD_LOCAL_SIGNIN",
+      "group": "safety",
+      "label": "Local sign-in",
+      "help": "Allow a browser on this machine to sign in with a one-time link from bin/ccboard-open.",
+      "kind": "bool",
+      "default": "0",
+      "cls": "confirm",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": false,
+      "set": false,
+      "line": "CCBOARD_LOCAL_SIGNIN=0",
+      "source": "default",
+      "problem": null
+    },
+    {
+      "key": "CCBOARD_LOCAL_SIGNIN_HOURS",
+      "group": "safety",
+      "label": "Local session hours",
+      "help": "How long a local browser session lasts, from 1 to 168 hours.",
+      "kind": "int",
+      "default": "12",
+      "cls": "confirm",
+      "applies": "restart",
+      "secret": false,
+      "bounds": [
+        1,
+        168
+      ],
+      "choices": null,
+      "value": 12,
+      "set": false,
+      "line": "CCBOARD_LOCAL_SIGNIN_HOURS=12",
+      "source": "default",
+      "problem": null
+    },
+    {
       "key": "CCBOARD_RECOVER",
       "group": "agents",
       "label": "Session recovery",

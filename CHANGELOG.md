@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.75 - 2026-10-17
+
+### Added
+- Optional local browser sign-in with a single-use link from bin/ccboard-open, off by default.
+- Local session expiry, a sign-out-all button in Settings > App, and a Doctor warning while enabled.
+- Signing in again replaces this browser's old session; Settings identifies this browser and explains how to sign in, including when no browser is signed in locally.
+
+Upgrade: nothing to do.
+
 ## v0.5.74 - 2026-10-17
 
 ### Changed
