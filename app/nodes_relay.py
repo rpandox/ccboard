@@ -1748,9 +1748,11 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
             raise RelayError(502, "bad_answer", f"{name} answered something that is not a JSON object" + _check_note(extra, name), kind="failed", **extra)
         return r.json
     msg = _cut((r.json or {}).get("error") if isinstance(r.json, dict) else "")
-    if r.status == 401:
-        raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="failed")
     peer_reason = r.json.get("reason") if isinstance(r.json, dict) else None
+    if r.status == 401:
+        if peer_reason == "pairing_not_acknowledged":
+            raise RelayError(409, peer_reason, nodes.PAIR_PENDING_MESSAGE, kind="failed")
+        raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="failed")
     if r.status == 403 and peer_reason == "asking" and row.dialog_scope:          # the session asks a question in its terminal: the pair needs the scope that may answer it
         raise RelayError(409, "scope", f"needs the {row.dialog_scope} scope on {name}: this session is asking a question in its terminal", kind="failed")
     if r.status == 403:

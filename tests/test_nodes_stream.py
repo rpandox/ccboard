@@ -702,6 +702,23 @@ def test_the_peer_answering_401_is_a_gone_repair_and_marks_the_pair(world):
         assert any(r.get("needs_repair") for r in nodes.out_peers(w.a.db))
 
 
+def test_pending_pair_401_keeps_its_reason_and_plain_message(world):
+    w = world
+    nodes.peer_stream_transport = Upstream(status=401, body=b'{"reason":"pairing_not_acknowledged","error":"re-pair"}')
+
+    async def scenario():
+        c = await Conn(url(w)).open()
+        await c.until(lambda: c.done)
+        events = c.events("gone")
+        assert len(events) == 1
+        assert events[0]["reason"] == "pairing_not_acknowledged"
+        assert events[0]["message"] == "the other board has not confirmed this pairing yet; pair again if it does not finish"
+    run(w, scenario)
+    with w.a.enter():
+        assert nodes.peer(w.reg["peer_id"])["needs_repair"] is False
+    assert ns.open_count() == 0
+
+
 @pytest.mark.parametrize("status,code,reason", [(403, 409, "scope"), (429, 429, "rate_limited")])
 def test_a_refusal_of_the_peer_before_the_stream_is_a_json_answer(world, status, code, reason):
     w = world

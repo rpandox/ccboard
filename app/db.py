@@ -227,6 +227,7 @@ MIGRATIONS = [
     "ALTER TABLE node_pairs ADD COLUMN peer_pubkey TEXT",
     "ALTER TABLE node_pairs ADD COLUMN peer_key_source TEXT",
     "ALTER TABLE node_pairs ADD COLUMN peer_key_at TEXT",
+    "ALTER TABLE node_pairs ADD COLUMN pending_until TEXT",
     # ---- issue #246: signed requests remain spent across restarts. Keep each sender/nonce until
     #      its timestamp window ends; the expiry index bounds cleanup work on each insertion.
     """CREATE TABLE IF NOT EXISTS node_nonces (
@@ -261,7 +262,7 @@ JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
 NODE_PAIR_COLS = ("peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
                   "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by",
-                  "peer_ts_id", "peer_tags", "peer_pubkey", "peer_key_source", "peer_key_at")
+                  "peer_ts_id", "peer_tags", "peer_pubkey", "peer_key_source", "peer_key_at", "pending_until")
 NODE_AUDIT_CAP = 20000
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 

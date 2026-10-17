@@ -119,6 +119,7 @@ NodeView.peer = function (rec) {
   const seen = [r.last_seen, r.last_ok_at, r.last_used_at].map((v) => NodeView.epoch(v)).find((v) => v !== null) || null;
   return {
     id, key: id || s(r.node_id, 80), name: s(r.name || r.peer_name || handle || id, 80) || 'unnamed node', handle, host: NodeView.hostOf(s(r.url || r.peer_url, 300)),
+    pendingUntil: NodeView.epoch(r.pending_until),
     scopes: NodeView.scopeList(r.scopes), seen, unverified: r.callback_unverified === true, repair: r.needs_repair === true, legacy: r.legacy === true,
     revoked: !!r.revoked_at, error: s(r.last_error, 120), direction: r.direction === 'in' ? 'in' : 'out',
     superseded: s(r.superseded_by, 80), supersededHost: NodeView.hostOf(s(r.superseded_by_url, 300)),
@@ -247,6 +248,7 @@ NodeView.authView = function (a) {
 /* The state chip of a pair: re-pair (amber), read only (a CCBOARD_NODES row: it is polled, it is not paired, whatever time it was last read), paired and heard from, or waiting for the first contact. 'Paired' is said only once the board has actually heard from it. For a
    node that calls this board (`incoming`) the words are about use. */
 NodeView.peerState = function (p, incoming) {
+  if (incoming && Number.isFinite(p.pendingUntil)) return { word: "pairing not finished", tone: "warn", glyph: "·", hint: "The caller has not confirmed this pairing yet." };
   if (p.repair) return { word: 're-pair needed', tone: 'warn', glyph: '!', hint: 'The saved token stopped working. Remove this node and pair it again.' };
   if (p.legacy && !incoming) return { word: 'read only', tone: '', glyph: '·', hint: 'Set in CCBOARD_NODES and read with the hub token: pair it to enable actions.' };
   if (p.seen !== null) return { word: incoming ? 'in use' : 'paired', tone: 'ok', glyph: '✓', hint: incoming ? 'This node has called this board.' : 'This board has reached the node.' };
@@ -255,6 +257,7 @@ NodeView.peerState = function (p, incoming) {
 
 /* The line under a pair's chips: where it is, when it was last heard, the last error, and for 60 s after a rotation that the old token still works. */
 NodeView.peerNote = function (p, { nowMs = Date.now(), incoming = false, rotatedMs = 0 } = {}) {
+  if (incoming && Number.isFinite(p.pendingUntil)) return `Pairing with ${p.name} not finished, expires in ${Math.max(0, Math.ceil((p.pendingUntil * 1000 - nowMs) / 60000))} min`;
   const parts = [];
   if (p.host) parts.push(p.host);
   const ago = p.seen !== null ? NodeView.span(p.seen, nowMs) : '';
@@ -306,12 +309,12 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
   return el('div', { class: `nd-row${p.repair ? ' repair' : ''}${replaced ? ' superseded' : ''}`, 'data-key': p.key, 'data-kind': incoming ? 'in' : 'out' },
     el('div', { class: 'nd-main' },
       el('div', { class: 'nd-head' }, el('b', { class: 'nd-name', text: p.name }), p.handle ? el('span', { class: 'dim nd-handle', text: p.handle }) : null),
-      !p.legacy ? el('p', { class: 'nd-key-note', text: `${p.keyState}${p.keyId ? ' · ' + p.keyId : ''}` }) : null,
+      !p.legacy && p.pendingUntil === null ? el('p', { class: 'nd-key-note', text: `${p.keyState}${p.keyId ? ' · ' + p.keyId : ''}` }) : null,
       p.keySource === 'upgrade' ? el('p', { class: 'dim', text: 'Pinned by upgrade using the token. Pair again to bind the key with a code.' }) : null,
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
         incoming ? NodeView.deviceChips(p, deviceCheck) : null,
-        p.unverified ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
+        p.unverified && p.pendingUntil === null ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
         replaced ? NodeView.chip('same node id', 'warn', '!', 'A newer pair from another address gave this node\'s id. A node id is only the word of the board at its address, so neither pair was cut.') : null),
       replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''} says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.` }) : null,
       el('div', { class: 'dim nd-note', text: NodeView.peerNote(p, { nowMs, incoming, rotatedMs }) })),

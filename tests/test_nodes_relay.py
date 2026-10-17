@@ -180,7 +180,8 @@ def test_names_actions_and_routes_are_unique_and_every_row_has_its_routes():
 
 def test_node_routes_are_the_base_routes_and_the_rows_and_nothing_else():
     base = {("POST", "/api/node/rotate"): nodes.SCOPE_ANY, ("POST", "/api/node/unpair"): nodes.SCOPE_ANY, ("GET", "/api/node/summary"): "read",
-            ("GET", "/api/node/stream"): "sessions"}          # the stream relay (issue #143, app/nodes_stream.py) is not a JSON row; screen text needs `sessions`
+            ("GET", "/api/node/stream"): "sessions",          # the stream relay (issue #143, app/nodes_stream.py) is not a JSON row; screen text needs `sessions`
+            ("POST", "/api/node/pair/ack"): nodes.SCOPE_ANY}   # the caller confirms a pending pair (issue #260): the one route a pending token may call
     assert dict(nodes.NODE_ROUTES) == {**base, **{(r.peer_method, r.peer_path): r.scope for r in ROWS}}
 
 
@@ -689,6 +690,17 @@ def test_every_status_of_the_peer_has_a_mapping_and_a_stable_reason(two_nodes, p
         with two_nodes.a.enter():
             assert nodes.peer(reg["peer_id"], two_nodes.a.db)["needs_repair"] is True, "the pair is marked, the next call is refused before it is made"
     assert audit_rows(two_nodes.a, action="read_task")[0]["status"] in ("failed", "refused")
+
+
+def test_pending_pair_401_keeps_its_reason_and_plain_message(two_nodes, pair_up):
+    reg = pair_up()
+    nodes.peer_transport = Answer(401, b'{"reason":"pairing_not_acknowledged","error":"re-pair"}')
+    r = two_nodes.a.get(hub_path(BY["task"], reg["handle"]))
+    assert r.status_code == 409
+    assert r.json()["reason"] == "pairing_not_acknowledged"
+    assert r.json()["error"] == "the other board has not confirmed this pairing yet; pair again if it does not finish"
+    with two_nodes.a.enter():
+        assert nodes.peer(reg["peer_id"])["needs_repair"] is False
 
 
 def test_a_timeout_after_the_request_was_sent_is_504_could_not_confirm_and_is_not_retried(two_nodes, pair_up):

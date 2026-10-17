@@ -446,9 +446,13 @@ async def _node_auth(request: Request, call_next):
         if den is not None:
             return _whois_refused(den)
     addr = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
-    peer = nodes.verify_token(mcp_tokens.bearer(request.headers.get("authorization")), ip=addr, db=db)
+    peer = nodes.verify_token(mcp_tokens.bearer(request.headers.get("authorization")), ip=addr, db=db,
+                              allow_pending=True)
     if peer is None:
         return _node_refused(401, "this node token is wrong, expired or was revoked", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
+    if peer.get("pending_until") and (request.method, request.url.path) != ("POST", "/api/node/pair/ack"):
+        return JSONResponse({"error": nodes.PAIR_PENDING_MESSAGE, "reason": "pairing_not_acknowledged"}, status_code=401,
+                            headers={**NODE_SECURITY_HEADERS, "WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
     pid = peer["peer_id"]
     ok, wait = nodes.rate_check(pid, write=nodes_relay.rate_class(request.method, request.url.path) == nodes_relay.WRITE)      # the row's class (issue #140), else by method
     if not ok:
@@ -5718,7 +5722,8 @@ async def api_nodes_pair(request: Request):
     caller = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
     try:
         bind = (lambda: nodes_whois.bind_pair(*conn, request.headers)) if nodes_whois.enabled() else None      # whois once the code is right
-        out = await asyncio.to_thread(nodes.handle_pair, body, caller, db=db, bind=bind)
+        out = await asyncio.to_thread(nodes.handle_pair, body, caller, db=db, bind=bind,
+                                      will_ack=request.headers.get("x-ccboard-pair-ack") == "1")
     except nodes.PairError as e:
         return _pair_failed(e)
     doctor.invalidate()
@@ -5799,7 +5804,7 @@ def api_nodes(request: Request):
     (direction in), as {nodes, pairs, at}. Rows are {peer_id, node_id, name, url, scopes, created_at, last_seen, direction, ...}; never a token or a digest.
     A board with no pair answers empty lists and starts nothing."""
     _node_manager(request)
-    rows = nodes.peers(db=db)
+    rows = nodes.peers(db=db, include_pending=True)
     out = [r for r in rows if r.get("direction") != "in"]
     if out:                                                  # issue #138: each row also carries what the hub last read from that node (status, age, counts)
         live = _hub().list_rows()
@@ -5843,7 +5848,7 @@ def api_nodes_auth(request: Request, check: int = 0):
 def api_nodes_pairs(request: Request):
     """Who can control this node: the pairs that call this board (direction in), {pairs, at}. Never a token or a digest."""
     _node_manager(request)
-    return JSONResponse({"pairs": [r for r in nodes.peers(db=db) if r.get("direction") == "in"], "at": db_now()}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"pairs": [r for r in nodes.peers(db=db, include_pending=True) if r.get("direction") == "in"], "at": db_now()}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/nodes/audit")
@@ -5958,6 +5963,23 @@ def api_nodes_remove(peer: str, request: Request, body: NodeRemoveIn | None = No
     doctor.invalidate()
     return JSONResponse({"removed": True, "peer_notified": bool(done["peer_told"]) if rec.get("direction") != "in" and not rec.get("legacy") else None,
                          "auto_revoked": done["auto_revoked"], "also_revoked": done["also_revoked"], "other_pairs": done["other_pairs"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/node/pair/ack")
+async def api_node_pair_ack(request: Request):
+    """The caller has verified and saved the answer; activate its provisional pair."""
+    pid = getattr(request.state, "node_pair", None)
+    if not pid:
+        raise projects.Forbidden("this route takes a node token")
+    try:
+        body = await request.json()
+        out = await asyncio.to_thread(nodes.acknowledge_pair, pid, body, db=db)
+    except ValueError:
+        return _pair_failed(nodes.PairError("bad_request"))
+    except nodes.PairError as e:
+        return _pair_failed(e)
+    doctor.invalidate()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/node/rotate")

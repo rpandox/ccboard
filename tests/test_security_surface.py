@@ -164,6 +164,7 @@ EXPECTED = {
     ("GET", "/api/node/hello"): "none",         # the one route that answers with no identity (issue #133): three fixed keys, 30 per minute per source
     ("GET", "/api/node"): "identity",            # the node card; a paired node's token will open it too (issue #135)
     ("POST", "/api/node/rotate"): "node-token",     # a paired node rotating its own token (issue #135); the owner's identity reaches a handler that says it takes a node token
+    ("POST", "/api/node/pair/ack"): "node-token",
     ("POST", "/api/node/unpair"): "node-token",     # a paired node leaving (issue #135)
     ("GET", "/api/node/state"): "identity",         # the trimmed read-only state a hub reads (issue #138); a paired node's token with scope read opens it too; no prompt, result, transcript or account label in it
     ("GET", "/api/epics"): "identity",              # the epics of the repos this board knows, read through gh (GET only; issue #147); a GitHub problem is an `error` in a 200 answer

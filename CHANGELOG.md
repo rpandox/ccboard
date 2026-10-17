@@ -10,6 +10,16 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do; an unattended Intel install that relied on v0.5.74 needs CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1 again.
 
+## v0.5.77 - 2026-10-17
+
+### Fixed
+- Updated callers opt into pending pairing and acknowledge verified answers; new pairings with older boards still activate without an ack.
+- Reverse pairing and replacement of older pairs wait for acknowledgement when requested. A failed re-pair ack preserves the caller's existing row and token.
+- Unfinished pairs expire after ten minutes; revoked pairs keep their revocation history and are not audited as expired.
+- Settings lists unfinished incoming pairings with their expiry and Remove. Pending calls explain what is unfinished without marking the pair for repair; pending rows count toward the limit only up to three.
+
+Upgrade: nothing to do. A new pairing between an updated and an older board still works.
+
 ## v0.5.76 - 2026-10-17
 
 ### Added

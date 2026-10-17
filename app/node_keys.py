@@ -324,6 +324,8 @@ def verify_request(method, target, body, *, headers, peer, recipient_id, token, 
         except (ValueError, TypeError):
             return "bad_signature"
         pub, source = pinned, None
+        if current and current.get("pending_until") and pinned and kid != key_id(pinned):
+            return "key_changed"
         if pinned and kid != key_id(pinned):
             pub = rotated_public(pinned, headers.get("x-ccboard-key-rotation"))
             if not pub or key_id(pub) != kid:
@@ -351,7 +353,7 @@ def verify_request(method, target, body, *, headers, peer, recipient_id, token, 
             return "stale"
         if not db.node_nonce_accept(sender, nonce, int(timestamp) + WINDOW, now):
             return "replay"
-        if source:
+        if source and not (current and current.get("pending_until")):
             if defer_pin:
                 peer["_key_pin"] = (pinned, pub, source)
             else:
