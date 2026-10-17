@@ -398,6 +398,8 @@ def action(db, owner: str, verb: str, tid: str, user="ccagent", folder="projects
             permitted = all(r["ok"] for r in result["rows"] if r["key"] in ("ssh", "user", "groups"))
             record = {"ts_id": tid, "name": device["name"], "dns_name": device["dns_name"], "os": device["os"], "tags": device["tags"], "user": user,
                       "folder": folder, "owner": owner, "check": {**result, "login_url": None}}
+            if saved and saved.get("state_log") and saved.get("user") == user:   # hooks live under one device user's home
+                record["state_log"] = saved["state_log"]
             if permitted or saved:
                 db.kv_set(key, record)
             ok = permitted
@@ -709,9 +711,15 @@ def read_ticket(name, *, data_dir=None):
 # Poll output is NUL-framed: tmux's printable capture cannot manufacture a record boundary.
 # Each requested session is passed as a separate validated shell argument, never interpolated.
 POLL = r'''set -f
-sock=$1; shift
+sock=$1; want=$2; shift 2
 alive=$(tmux -L "$sock" list-sessions -F '#{session_name}') || exit $?
 printf '%s\000' "$alive"
+now=; log=
+if [ "$want" = 1 ]; then
+  now=$(date +%s)
+  log=$(tail -c 16384 "$HOME/.ccboard-bare/state.log" 2>/dev/null | tr -d '\000')
+fi
+printf '%s\000%s\000' "$now" "$log"
 for name do
   found=false
   for live in $alive; do [ "$live" != "$name" ] || found=true; done
@@ -738,30 +746,363 @@ def _screen_read(row, command, text):
     return parser.screen_state(text), (dialog, fingerprint) if dialog else None
 
 
-def _screens(saved, device, rows):
+def _screens(saved, device, rows, want_log=False):
+    """(alive names, {name: (screen state, dialog)}, (device clock, log tail) or None). The log is read only when asked for."""
     names = list(rows)
     for name in names:
         session_command('attach', session=name)  # validate before constructing transport argv
-    remote = shlex.join(['sh', '-c', POLL, 'bare-poll', session_socket(), *names])
+    remote = shlex.join(['sh', '-c', POLL, 'bare-poll', session_socket(), '1' if want_log else '0', *names])
     p = runner(ssh_argv(device, saved['user']) + [remote], stdin=None, stdout_limit=2 * 1024 * 1024)
     if p.returncode == 1 and not p.stdout and ('no server running on' in p.stderr or 'No such file or directory' in p.stderr):
-        return set(), {}
+        return set(), {}, None
     error = 'The device could not be read; its sessions may still run.'
     if p.returncode or not p.stdout.endswith('\0'):
         raise ValueError(error)
     parts = p.stdout[:-1].split('\0')
+    if len(parts) < 3 or (len(parts) - 3) % 3:
+        raise ValueError(error)
     alive = set(parts[0].splitlines())
-    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', n) for n in alive) or (len(parts) - 1) % 3:
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', n) for n in alive):
         raise ValueError(error)
     screens = {}
-    for i in range(1, len(parts), 3):
+    for i in range(3, len(parts), 3):
         name, command, text = parts[i:i + 3]
         if name not in rows or name not in alive or name in screens:
             raise ValueError(error)
         screens[name] = _screen_read(rows[name], command, text)
     if screens.keys() != alive.intersection(rows):
         raise ValueError(error)
-    return alive, screens
+    log = (int(parts[1]), parts[2]) if want_log and re.fullmatch(r'[0-9]{1,12}', parts[1]) else None
+    return alive, screens, log
+
+
+# ---- the optional state log on a device (issue #277) ----
+# A tiny hook, installed only by the explicit Install state log button, appends one line per state change to ~/.ccboard-bare/state.log:
+# {"state":"working","session":"bare-<32 hex>","time":<epoch seconds>}. It never reads the hook's input, so no prompt text, tool input or
+# path can reach the file. The script is this fixed text; nothing from a request is ever part of it.
+STATE_DIR = ".ccboard-bare"
+HOOK_REL = STATE_DIR + "/hook"
+HOOK_FILES = {"claude": ".claude/settings.json", "codex": ".codex/hooks.json"}
+HOOK_EVENTS = {"SessionStart": "waiting", "UserPromptSubmit": "working", "Stop": "waiting", "PermissionRequest": "dialog"}
+LOG_STATES = ("working", "waiting", "dialog")
+LOG_STALE = 3600       # a log line older than this is no evidence (seconds)
+LOG_FIRST_SIGHT = 30   # after a board restart only a line this young is believed over the screen
+LOG_MAX_LINES = 400
+
+HOOK_SCRIPT = r'''#!/bin/sh
+# ccboard state log for a device without a board. Arguments: <agent> <event>.
+# Appends {"state":...,"session":...,"time":...} to ~/.ccboard-bare/state.log when a ccboard-bare tmux session changes state.
+# It drains the hook's input without reading it: prompt text, tool input and paths never reach the log.
+# The log is capped at 64 KB: past that it moves to state.log.1 and the newest 50 lines carry over.
+umask 077
+cat >/dev/null 2>&1
+case "$2" in
+  SessionStart|Stop) state=waiting ;;
+  UserPromptSubmit) state=working ;;
+  PermissionRequest) state=dialog ;;
+  *) exit 0 ;;
+esac
+case "$TMUX" in */ccboard-bare-*,*) ;; *) exit 0 ;; esac
+[ -n "$TMUX_PANE" ] || exit 0
+session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null) || exit 0
+case "$session" in bare-*) ;; *) exit 0 ;; esac
+id=${session#bare-}
+case "$id" in *[!a-f0-9]*) exit 0 ;; esac
+[ "${#id}" -eq 32 ] || exit 0
+dir=$HOME/.ccboard-bare
+log=$dir/state.log
+mkdir -p "$dir" || exit 0
+last=$(grep -F "\"session\":\"$session\"" "$log" 2>/dev/null | tail -n 1)
+case "$last" in *"\"state\":\"$state\""*) exit 0 ;; esac
+if [ -f "$log" ] && [ "$(($(wc -c < "$log") + 0))" -gt 65536 ]; then
+  mv -f "$log" "$log.1" && tail -n 50 "$log.1" > "$log"
+fi
+printf '{"state":"%s","session":"%s","time":%s}\n' "$state" "$session" "$(date +%s)" >> "$log"
+exit 0
+'''
+
+# Read step: HOME, then for each settings file its kind (file, missing or link), its cksum and its text, NUL-framed.
+HOOK_READ = r'''set -f
+printf '%s\000' "$HOME"
+for f in .claude/settings.json .codex/hooks.json; do
+  p=$HOME/$f
+  if [ -L "$p" ]; then printf 'link\000\000\000'
+  elif [ -e "$p" ]; then
+    sum=$(cksum < "$p") || exit 1
+    text=$(cat "$p") || exit 1
+    printf 'file\000%s\000%s\000' "$sum" "$text"
+  else printf 'missing\000missing\000\000'
+  fi
+done
+'''
+
+# Write step: stdin is the new content. The file is replaced only if it still has the checksum the board read (exit 3 if not), after one
+# backup of the previous version (.ccboard-bak), through a temporary file in the same folder and an atomic rename. A symlink is refused (4).
+# The board passes the byte count it sends: a stream that ended early (a timeout, a kill or a broken pipe still gives the device a clean
+# EOF) leaves a short temporary file, which is removed with the original untouched (exit 5).
+HOOK_WRITE = r'''set -f
+umask 077
+rel=$1; sum=$2; mode=$3; size=$4
+f=$HOME/$rel; tmp=$f.ccboard-tmp
+mkdir -p "${f%/*}" || exit 1
+[ ! -L "$f" ] || exit 4
+if [ -e "$f" ]; then
+  if [ "$sum" != any ]; then
+    [ "$(cksum < "$f")" = "$sum" ] || exit 3
+    cp -p "$f" "$f.ccboard-bak" || exit 1
+  fi
+  cp -p "$f" "$tmp" || exit 1
+else
+  [ "$sum" = missing ] || [ "$sum" = any ] || exit 3
+  : > "$tmp" && chmod "$mode" "$tmp" || exit 1
+fi
+cat > "$tmp" || { rm -f "$tmp"; exit 1; }
+[ "$(($(wc -c < "$tmp") + 0))" -eq "$size" ] || { rm -f "$tmp"; exit 5; }
+mv -f "$tmp" "$f" || { rm -f "$tmp"; exit 1; }
+'''
+
+HOOK_CLEAN = r'''set -f
+rm -f "$HOME/.ccboard-bare/hook" "$HOME/.ccboard-bare/state.log" "$HOME/.ccboard-bare/state.log.1"
+rmdir "$HOME/.ccboard-bare" 2>/dev/null
+exit 0
+'''
+
+
+class HookRefused(ValueError):
+    """A plain sentence for the person; the file it names was not written."""
+
+
+def hook_argv(device, user, step, *, rel=None, expected=None, mode=None, size=None):
+    """The three fixed state-log scripts, each one quoted command. Only a path from the fixed table, a checksum, a file mode and a byte count vary."""
+    validate(user, "projects")
+    if step == "read":
+        command = ["sh", "-c", HOOK_READ, "bare-hook-read"]
+    elif step == "clean":
+        command = ["sh", "-c", HOOK_CLEAN, "bare-hook-clean"]
+    elif step == "write":
+        if rel not in (HOOK_REL, *HOOK_FILES.values()):
+            raise ValueError("Unknown state log file.")
+        if not isinstance(expected, str) or not re.fullmatch(r"any|missing|[0-9]{1,10} [0-9]{1,12}", expected):
+            raise ValueError("Unreadable file checksum.")
+        if not isinstance(mode, str) or not re.fullmatch(r"[0-7]{3}", mode):
+            raise ValueError("Unknown file mode.")
+        if type(size) is not int or not 0 <= size <= 99999999:
+            raise ValueError("Unknown file size.")
+        command = ["sh", "-c", HOOK_WRITE, "bare-hook-write", rel, expected, mode, str(size)]
+    else:
+        raise ValueError("Unknown state log step.")
+    return ssh_argv(device, user) + [shlex.join(command)]
+
+
+def hook_command(home, agent, event):
+    if agent not in HOOK_FILES or event not in HOOK_EVENTS:
+        raise ValueError("Unknown hook.")
+    return shlex.join([home + "/" + HOOK_REL, agent, event])
+
+
+def _our_hook(hook):
+    return isinstance(hook, dict) and hook.get("type") == "command" and HOOK_REL in str(hook.get("command", ""))
+
+
+def _drop_ours(groups):
+    out = []
+    for g in groups:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
+            out.append(g)
+            continue
+        kept = [h for h in g["hooks"] if not _our_hook(h)]
+        if kept:
+            out.append({**g, "hooks": kept})
+    return out
+
+
+def _upsert(groups, hook):
+    """Replace our entry where it already sits, drop any second one, else append a group of our own after the person's."""
+    out, placed = [], False
+    for g in groups:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
+            out.append(g)
+            continue
+        hooks = []
+        for h in g["hooks"]:
+            if not _our_hook(h):
+                hooks.append(h)
+            elif not placed:
+                hooks.append(dict(hook))
+                placed = True
+        if hooks:
+            out.append({**g, "hooks": hooks})
+    if not placed:
+        out.append({"hooks": [dict(hook)]})
+    return out
+
+
+def hook_merge(text, label, agent, home, *, install):
+    """The settings text with our hooks added (install) or taken out (remove), or None when nothing would change. Everything of the
+    person's stays; a file this cannot understand raises HookRefused, and the caller writes nothing at all."""
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except (ValueError, RecursionError):
+        raise HookRefused(f"{label} is not valid JSON, so nothing was changed. Fix or remove that file on the device, then try again.") from None
+    if not isinstance(data, dict):
+        raise HookRefused(f"{label} is not a JSON object, so nothing was changed. Fix it on the device, then try again.")
+    hooks = data.get("hooks")
+    if hooks is not None and not isinstance(hooks, dict):
+        raise HookRefused(f"{label} has a hooks entry that is not an object, so nothing was changed. Fix it on the device, then try again.")
+    for event in HOOK_EVENTS:
+        if hooks and event in hooks and not isinstance(hooks[event], list):
+            raise HookRefused(f"{label} has hooks.{event} that is not a list, so nothing was changed. Fix it on the device, then try again.")
+    new = json.loads(json.dumps(data))
+    hooks = new.setdefault("hooks", {}) if install else new.get("hooks")
+    if install:
+        for event in HOOK_EVENTS:
+            entry = {"type": "command", "command": hook_command(home, agent, event), "timeout": 5}
+            if event != "PermissionRequest":
+                entry["async"] = True
+            hooks[event] = _upsert(hooks.get(event, []), entry)
+    elif hooks:
+        for event in list(hooks):
+            if isinstance(hooks[event], list):
+                groups = _drop_ours(hooks[event])
+                if groups:
+                    hooks[event] = groups
+                else:
+                    del hooks[event]
+        if not hooks:
+            new.pop("hooks")
+    return None if new == data else json.dumps(new, indent=2) + "\n"
+
+
+def _hook_read(device, user):
+    p = runner(hook_argv(device, user, "read"), stdin=None, stdout_limit=600000)
+    parts = p.stdout[:-1].split("\0") if p.stdout.endswith("\0") else []
+    unreadable = HookRefused("The device's settings could not be read, so nothing was changed. Check the device and try again.")
+    if p.returncode or len(parts) != 7 or not re.fullmatch(r"/[A-Za-z0-9_.+@/-]{1,200}", parts[0]) or ".." in parts[0].split("/"):
+        raise unreadable
+    files = {}
+    for agent, i in (("claude", 1), ("codex", 4)):
+        kind, sum_, text = parts[i:i + 3]
+        if kind == "link":
+            raise HookRefused(f"~/{HOOK_FILES[agent]} is a link, so nothing was changed. Edit it by hand on the device.")
+        if kind not in ("file", "missing") or not re.fullmatch(r"missing|[0-9]{1,10} [0-9]{1,12}", sum_):
+            raise unreadable
+        files[agent] = (kind, sum_, text)
+    return parts[0], files
+
+
+def _hook_write(device, user, rel, expected, content, mode):
+    p = runner(hook_argv(device, user, "write", rel=rel, expected=expected, mode=mode, size=len(content.encode())), stdin=content)
+    if p.returncode == 3:
+        raise HookRefused(f"~/{rel} changed on the device while the board worked, so it was not overwritten. Try again.")
+    if p.returncode == 4:
+        raise HookRefused(f"~/{rel} is a link, so it was not changed. Edit it by hand on the device.")
+    if p.returncode == 5:
+        raise HookRefused(f"The device received only part of ~/{rel}, so it was not changed. Try again.")
+    if p.returncode:
+        raise HookRefused(f"The device would not save ~/{rel}. Check the device and try again; the change is safe to repeat.")
+
+
+def hook_action(db, owner, tid, verb, *, confirm=False):
+    """Install or remove the state log hooks on one checked device, only on an explicit second tap. Both settings files are read, merged
+    on the board and written back only when they change (checksum-guarded, backed up, atomic). Idempotent. A refusal writes nothing."""
+    from . import nodes
+    ok = False
+    with LOCK:
+        try:
+            if verb not in ("install", "remove"):
+                raise ValueError("Choose Install state log or Remove state log.")
+            if not confirm:
+                raise ValueError(f"Confirm {'installing' if verb == 'install' else 'removing'} the state log with a second tap.")
+            saved, device = _ready(db, owner, tid)
+            user, install = saved["user"], verb == "install"
+            agents = ([a for a in HOOK_FILES if any(r["key"] == a and r["ok"] for r in saved["check"]["rows"])]
+                      if install else list(HOOK_FILES))
+            if install and not agents:
+                raise ValueError("Neither Claude nor Codex is on this device's PATH. Install one, check the device again, then install the state log.")
+            written, refusal = [], None
+            try:
+                home, files = _hook_read(device, user)
+                plan = []
+                for agent in agents:
+                    kind, sum_, text = files[agent]
+                    if kind == "missing" and not install:
+                        continue
+                    new = hook_merge(text, "~/" + HOOK_FILES[agent], agent, home, install=install)
+                    if new is not None:
+                        plan.append((agent, sum_, new))
+                if install:
+                    _hook_write(device, user, HOOK_REL, "any", HOOK_SCRIPT, "700")
+                for agent, sum_, new in plan:
+                    _hook_write(device, user, HOOK_FILES[agent], sum_, new, "600")
+                    written.append(agent)
+                if not install:
+                    runner(hook_argv(device, user, "clean"), stdin=None)
+            except HookRefused as e:
+                refusal = e
+            if install and (written or refusal is None):
+                saved["state_log"] = {"installed": True, "agents": agents if refusal is None else written,
+                                      "at": datetime.now(timezone.utc).isoformat()}
+                db.kv_set(PREFIX + tid, saved)
+            if refusal:
+                raise ValueError(str(refusal)) from None
+            if not install:
+                saved.pop("state_log", None)
+                db.kv_set(PREFIX + tid, saved)
+            ok = True
+            return {"ok": True, "state_log": saved.get("state_log"), "changed": written}
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError("The device did not answer. The change is safe to repeat; check the device, then try again.") from None
+        finally:
+            nodes.audit("out", tid, "bare_hook_" + verb, ok, user=owner, db=db)
+
+
+def parse_log(now, text):
+    """{session: (state, time)}: the newest valid line of each session. A line that is not exactly {state, session, time} with a known state,
+    a board-made session name and a plausible time is skipped, so a truncated first line or a corrupt log can only cost evidence."""
+    out = {}
+    for line in text.splitlines()[-LOG_MAX_LINES:]:
+        try:
+            item = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(item, dict) or set(item) != {"state", "session", "time"}:
+            continue
+        state, session, at = item["state"], item["session"], item["time"]
+        if (state not in LOG_STATES or not isinstance(session, str) or not re.fullmatch(r"bare-[a-f0-9]{32}", session)
+                or type(at) is not int or not 0 < at <= now + 300):
+            continue
+        if session not in out or at >= out[session][1]:
+            out[session] = (state, at)
+    return out
+
+
+def merged_state(memory, key, entry, screen, now):
+    """(state, event label). The screen is always read. A log line wins when it is a new event since the last poll (after a board restart:
+    a young one) and holds only until the screen itself changes, so a stale line (Esc sends no hook) can not outlive what the pane shows.
+    A visible dialog is hard evidence and always wins, and a log 'dialog' never overrides a screen that shows no dialog (answering a
+    permission sends no hook). While a dialog shows, the newest line's time stays in memory as a floor, so a later first sight of that
+    line or an older one cannot bring the dialog back. No line, or a stale one, means the screen read alone."""
+    if entry is None or now - entry[1] > LOG_STALE:
+        memory.pop(key, None)
+        return screen, "bare_screen"
+    state, at = entry
+    seen = memory.get(key)
+    if screen == "dialog":
+        memory[key] = {"at": max(at, seen["at"]) if seen else at, "state": "dialog", "screen": "dialog"}
+        return screen, "bare_screen"
+    if seen is None or at > seen["at"]:
+        if (seen is None and now - at > LOG_FIRST_SIGHT) or state == "dialog":
+            memory[key] = {"at": at, "state": screen, "screen": screen}
+            return screen, "bare_screen"
+        memory[key] = {"at": at, "state": state, "screen": screen}
+        return state, "bare_log" if state != screen else "bare_screen"
+    if screen == seen["screen"]:
+        return seen["state"], "bare_log" if seen["state"] != screen else "bare_screen"
+    memory[key] = {"at": seen["at"], "state": screen, "screen": screen}
+    return screen, "bare_screen"
+
+
+_log_memory = WeakKeyDictionary()
 
 
 def poll_device(db, owner, tid):
@@ -772,8 +1113,13 @@ def poll_device(db, owner, tid):
         if not rows:
             return
         saved, device = _ready(db, owner, tid)
+        want_log = bool((saved.get('state_log') or {}).get('installed'))
         before = datetime.now(timezone.utc).isoformat()
-        alive, screens = _screens(saved, device, rows)
+        alive, screens, log = _screens(saved, device, rows, want_log)
+        entries = parse_log(*log) if log else {}
+        memory = _log_memory.setdefault(db, {})
+        for key in [k for k in memory if k[0] == tid and k[1] not in rows]:
+            del memory[key]
         db.bare_reconcile(tid, alive, before)
         notices = []
         with _prompt_lock:
@@ -782,8 +1128,12 @@ def poll_device(db, owner, tid):
                 state, read = screens.get(name, ('unknown', None))
                 if row['state'] == 'stopping':
                     read = None
-                elif name in alive and row['state'] != state:
-                    db.bare_set_state(tid, name, state, 'bare_screen')
+                elif name in alive:
+                    event = 'bare_screen'
+                    if log and name in screens and row['agent'] in ('claude', 'codex'):
+                        state, event = merged_state(memory, (tid, name), entries.get(name), state, log[0])
+                    if row['state'] != state:
+                        db.bare_set_state(tid, name, state, event)
                 key = (tid, name)
                 old_id = cache.get(key, {}).get('public', {}).get('id')
                 public = permissions.terminal_observe(cache, key, name, read, rearm=True, bare_device=tid)
@@ -831,7 +1181,7 @@ def answer(db, owner, tid, session, decision, *, pid=None, text=None):
             row = db.bare_open_rows(tid).get(session)
             if not row or row['state'] == 'stopping':
                 raise ValueError('Choose an open session on this device.')
-            _, screens = _screens(saved, device, {session: row})
+            _, screens, _ = _screens(saved, device, {session: row})
             state, read = screens.get(session, ('unknown', None))
             prefix = session_command('attach', session=session)[:3]
             target = '=' + session + ':'

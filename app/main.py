@@ -4973,6 +4973,31 @@ class BareStopIn(BaseModel):
     confirm: bool = False
 
 
+class BareHookIn(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    confirm: bool = False
+
+
+def _bare_hook(request, tid, verb, body):
+    _node_manager(request)
+    _epic_person(request, "only a signed-in person can change hooks on a device")
+    try:
+        result = bare.hook_action(db, request.state.user, tid, verb, confirm=body.confirm)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/bare/{tid}/state-log/install")
+def api_bare_hook_install(tid: str, body: BareHookIn, request: Request):
+    return _bare_hook(request, tid, "install", body)
+
+
+@app.post("/api/bare/{tid}/state-log/remove")
+def api_bare_hook_remove(tid: str, body: BareHookIn, request: Request):
+    return _bare_hook(request, tid, "remove", body)
+
+
 def _bare_session(request, tid, verb, **fields):
     _node_manager(request)
     try:
