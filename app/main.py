@@ -700,6 +700,7 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     if _esc_dismissed_permissions(live, rows):
         rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
+    queued = taskflow.queued_counts(db) if rich else {}      # #79: prompts the board itself holds for a busy session (never Claude's own typed queue)
     waits = _wait_kinds({n: rows.get(n, {}) for n in live if not tmux.is_internal(n)})
     try:                                             # one list-clients per scan; the 3 s poll must not depend on it
         viewers = tmux.viewers()
@@ -732,6 +733,8 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             "flags": {k: v for k, v in (row.get("flags") or {}).items() if k not in ("transcript_path", "last_result")},   # last_result is up to 20 KB: GET /api/sessions/{name} has it
             "task": chip,
         }
+        if rich:
+            out[name]["queued_prompts"] = queued.get(row.get("row_id"), 0)
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
             out[name]["wait_kind"] = waits[name]
         if rich and row.get("agent") == "codex" and not row.get("state"):
@@ -1125,6 +1128,7 @@ def api_session(name: str):
             "state_at": s["state_at"], "last_prompt": s["last_prompt"], "last_message": s["last_message"], "stats": s["stats"],
             "flags": s["flags"], "agent_session_id": s["agent_session_id"], "account": s["account"], "task": s["task"],
             "hooks_missing": s.get("hooks_missing"),
+            "queued_prompts": s.get("queued_prompts", 0),
             "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
             # viewers and win come from tmux (list-clients, the session window's size); shell_version (the attach wrapper's) is
             # still unset

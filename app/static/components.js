@@ -137,6 +137,23 @@ function hooksMissingChip(kind, cls) {
     onclick: (e) => e.stopPropagation() }, el('span', { class: 'bdg-hooks-g', 'aria-hidden': 'true', text: '◇' }), ' ' + HOOKS_MISSING_LABEL);
 }
 
+/* #79: "+2 queued", the prompts the BOARD itself has queued for a busy session (s.queued_prompts from the state builder: running tasks that wait for an
+   earlier turn, whether the text is in Claude's queue or still held here). Only the board's own count: text typed straight into Claude's terminal is not
+   known to the board, so nothing here claims it. Zero shows nothing. One chip on every surface (Home row, quad tile, terminal header). */
+const QUEUED_PROMPTS_TITLE = 'prompts the board will send when the session is free';
+function queuedPromptsChip() { return el('span', { class: 'bdg bdg-queued hidden' }); }
+function queuedPromptsSet(node, n) {
+  const k = Math.floor(Number(n));
+  const on = Number.isFinite(k) && k > 0;
+  if (on) {
+    const text = `+${k} queued`;
+    if (node.textContent !== text) node.textContent = text;
+    node.setAttribute('title', QUEUED_PROMPTS_TITLE);
+    node.setAttribute('aria-label', `${text}: ${QUEUED_PROMPTS_TITLE}`);
+  }
+  node.classList.toggle('hidden', !on);
+}
+
 function stateBadge(s) {
   const parked = limitParkedText(s);                          // #71: parked on a rate limit: amber, glyph and words, not a bare "error"
   const st = parked ? 'waiting' : s.state || 'unknown';

@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.63 - 2026-10-17
+
+### Added
+- A session the board has queued prompts for wears a **+2 queued** chip (#79) on its Home row, its Quad tile header and its terminal header. The number is only the prompts the board itself holds for that session (the tasks it queued behind a turn in flight, whether the text is already in Claude's queue or still waiting in the board); the chip's title says "prompts the board will send when the session is free". Zero shows nothing. Text typed straight into Claude's own terminal is not counted: Claude exposes no such queue.
+- `queued_prompts` on each session of `GET /api/state` and on `GET /api/sessions/{name}`. The demo (`?demo=1`) shows one row with **+2 queued**.
+
+Upgrade: nothing to do.
+
 ## v0.5.60 - 2026-10-16
 
 ### Fixed

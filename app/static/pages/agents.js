@@ -708,12 +708,13 @@ function sessionCard(s, opts) {
     b.pr = el('a', { class: 'bdg bdg-pr hue-slate hidden', target: '_blank', rel: 'noopener' });
     b.sub = el('span', { class: 'bdg bdg-sub hue-slate hidden' });
     b.cost = el('span', { class: 'bdg bdg-cost mono hidden', title: 'session cost (API-equivalent)' });
+    b.queued = queuedPromptsChip();                                          // #79: '+2 queued', only the prompts the board itself holds for this session
     b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
     b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
     b.hooks = el('span', { class: 'rr-hooks hidden' });                     // #96: 'no hooks (untrusted?)' (hooksMissingChip), a link to the Doctor
     b.noauto = el('span', { class: 'bdg bdg-noauto hidden', title: 'Auto-continue is off for this session: the board will not type continue after a limit reset or a reboot' },
       el('span', { class: 'bdg-noauto-g', 'aria-hidden': 'true', text: '⊘' }), ' no auto-continue');       // #84: only while the session is opted out
-    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked, b.noauto, b.hooks);
+    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.queued, b.cost, b.limit, b.blocked, b.noauto, b.hooks);
   }
   // the peek says it in words too (a title is no help on touch): the chip and its explanation, only while hooks_missing
   const hooksNote = o.peek ? el('div', { class: 'peek-hooks hidden', role: 'status' }) : null;
@@ -863,6 +864,7 @@ function sessionCard(s, opts) {
     const nSub = s2.flags && typeof s2.flags.subagents === 'number' ? s2.flags.subagents : 0;
     show(b.sub, nSub > 0);
     if (nSub > 0) setTextIfChanged(b.sub, `${nSub} subagent${nSub === 1 ? '' : 's'}`);
+    queuedPromptsSet(b.queued, s2.queued_prompts);
     const usd = typeof t.cost_usd === 'number' ? t.cost_usd : 0;
     show(b.cost, usd > 0);
     if (usd > 0) { setTextIfChanged(b.cost, '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))); b.cost.className = 'bdg bdg-cost mono' + sessionCostClass(usd); }
@@ -885,7 +887,7 @@ function sessionCard(s, opts) {
     const accts = rich && s2.account ? agentsAccounts(st) : [];
     const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
-      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null, s2.parked,
+      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null, s2.parked, s2.queued_prompts || 0,
       pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
       rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null, Nodes.sig(s2)]);

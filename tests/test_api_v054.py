@@ -29,7 +29,7 @@ AUTH = {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True,
         "email": "me@example.com", "subscriptionType": "max"}
 SESSION_KEYS = {"tmux", "project", "repo", "name", "agent", "state", "state_at", "last_prompt", "last_message", "stats", "flags",
                 "agent_session_id", "account", "task", "pending", "viewers", "win", "shell_version",
-                "hooks_missing"}      # the plan's GET /api/sessions/{name}; hooks_missing: #96 (the terminal header's chip)
+                "hooks_missing", "queued_prompts"}      # the plan's GET /api/sessions/{name}; hooks_missing: #96 (the terminal header's chip); queued_prompts: #79
 
 
 @pytest.fixture(autouse=True)
@@ -462,6 +462,36 @@ def test_state_task_chip_from_one_query(board, monkeypatch):
     assert by[b["tmux"]]["task"] is None
     assert len(calls) == 1, "one query per state build, not one per session"
     assert t1 != t2 and rid_b != rid_a
+
+
+def test_state_and_session_carry_the_boards_own_queued_prompt_count(board):
+    """#79: queued_prompts = the running tasks of the session that wait for an earlier turn (spec.turns_ahead > 0), whether their text is in
+    Claude's queue or held in the board. The turn in flight (no counter), a finished task and another session's tasks are not counted."""
+    a = new_session(board, "claude", name="one")
+    b = new_session(board, "claude", name="two")
+    rid_a, rid_b = row_of(a["tmux"])["id"], row_of(b["tmux"])["id"]
+
+    def add(slug, rid, tmux, phase="running", **spec):
+        return db().task_add(project="shop", repo="api", slug=slug, title=slug, prompt="p", tmux_name=tmux, session_row=rid, phase=phase,
+                             spec=spec or None)
+
+    add("flight", rid_a, a["tmux"])                                     # the turn in flight: no counter
+    add("q1", rid_a, a["tmux"], turns_ahead=1)
+    add("q2", rid_a, a["tmux"], turns_ahead=2, unsent="held text")      # held in the board: still the board's own prompt
+    add("old", rid_a, a["tmux"], phase="done", turns_ahead=1)           # finished: not waiting any more
+    other = add("other", rid_b, b["tmux"], turns_ahead=1)
+    from app import main
+    main._invalidate_scan()
+    st = board.client.get("/api/state", headers=H).json()
+    by = {s["tmux"]: s for s in all_sessions(st)}
+    assert by[a["tmux"]]["queued_prompts"] == 2
+    assert by[b["tmux"]]["queued_prompts"] == 1
+    assert board.client.get(f"/api/sessions/{a['tmux']}", headers=H).json()["queued_prompts"] == 2
+    db().task_update(other, phase="done")
+    main._invalidate_scan()
+    by = {s["tmux"]: s for s in all_sessions(board.client.get("/api/state", headers=H).json())}
+    assert by[b["tmux"]]["queued_prompts"] == 0, "zero is a plain 0 (the UI draws nothing)"
+    assert board.client.get(f"/api/sessions/{b['tmux']}", headers=H).json()["queued_prompts"] == 0
 
 
 def test_state_tasks_resolve_their_session_by_row_and_bind_legacy_tasks(board):
