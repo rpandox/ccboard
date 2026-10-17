@@ -51,16 +51,124 @@ function settingsRestartCommand(command) {
   return command ? el('div', { class: 'doc-cmdline' }, el('code', { class: 'doc-cmd', text: command }), copyButton(command, 'the restart command')) : null;
 }
 
+const settingsRestart = { info: null, active: false, sending: false, force: false, message: '', at: 0, boot: null, timer: null };
+
+function settingsRestartPaint() {
+  document.querySelectorAll('.set-restart-control').forEach(root => settingsRestartFill(root));
+}
+
+function settingsRestartFill(root) {
+  const m = settingsRestart, info = m.info || {};
+  root.textContent = '';
+  if (!info.method) return;
+  if (info.method === 'none') {
+    root.append(el('p', { text: info.why }), settingsRestartCommand(info.hint));
+    return;
+  }
+  if (!m.active && !m.sending) {
+    const control = confirmButton('settings-restart', 'Restart board', settingsRestartSend, false, settingsRestartArm);
+    root.append(control);
+  }
+  for (const line of info.blockers || []) root.append(el('p', { class: 'set-restart-blocker', text: line }));
+  if (m.message) root.append(el('p', { role: 'status', text: m.message }));
+  if (m.active) root.append(el('p', { role: 'status', text: `Restarting. Back in about ${m.seconds} seconds. ${Math.floor((Date.now() - m.at) / 1000)} seconds since the tap.` }));
+  if (m.message && !m.active) root.append(settingsRestartCommand(info.logs), settingsRestartCommand(info.hint));
+}
+
+async function settingsRestartArm() {
+  const m = settingsRestart;
+  m.force = false;
+  settingsRestartPaint();
+  if (ui.confirm !== 'settings-restart' || (typeof demoOn === 'function' && demoOn())) return;
+  try {
+    const data = await api('GET', '/api/settings/options?readiness=1');
+    if (ui.confirm === 'settings-restart' && !m.sending && !m.active && !m.force && data.restart) {
+      m.info = data.restart; settingsRestartPaint();
+    }
+  } catch (_) { /* Confirm checks readiness again on the server before accepting the restart. */ }
+}
+
+function settingsRestartControl(info) {
+  if (info) settingsRestart.info = info;
+  const root = el('div', { class: 'set-restart-control' });
+  settingsRestartFill(root);
+  return root;
+}
+
+async function settingsRestartSend() {
+  const m = settingsRestart;
+  if (m.active || m.sending) return;
+  m.sending = true; m.message = 'Requesting restart…'; settingsRestartPaint();
+  const demo = typeof demoOn === 'function' && demoOn();
+  let deadline;
+  try {
+    const answer = demo ? { boot_id: state.boot?.id || 'demo', expect_seconds: 2 } : await Promise.race([
+      api('POST', '/api/settings/restart', { force: m.force }),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('No response')), 10000); }),
+    ]);
+    m.boot = answer.boot_id; m.seconds = answer.expect_seconds; m.at = Date.now();
+    m.active = true; m.message = ''; m.force = false;
+    pageToast('Restarting board', 'ok');
+    m.timer = setTimeout(() => settingsRestartPoll(demo), 1000);
+  } catch (e) {
+    const body = e.body || {};
+    if (body.reason === 'busy') {
+      m.info.blockers = body.blockers || []; m.force = true; ui.confirm = 'settings-restart';
+      m.message = 'Review these warnings, then Confirm Restart board to continue, or Cancel.';
+    } else {
+      m.message = body.reason === 'rate' ? (body.message || `Wait ${body.retry_after || 60} seconds, then try again.`) : 'Restart was not confirmed. Check the commands below, or try again.';
+      if (body.command || body.hint) m.info.hint = body.command || body.hint;
+    }
+  } finally { clearTimeout(deadline); m.sending = false; settingsRestartPaint(); }
+}
+
+async function settingsRestartPoll(demo = false) {
+  const m = settingsRestart;
+  clearTimeout(m.timer);
+  if (!m.active) return;
+  if (Date.now() - m.at >= 90000) {
+    m.active = false; m.message = `No new board process after 90 seconds. Check ${m.info?.launch_log || 'the logs'} and run the restart command, or try again.`;
+    settingsRestartPaint(); return;
+  }
+  let deadline;
+  try {
+    const next = demo ? { ...state, boot: { id: 'demo-' + Date.now() }, settings_pending: { count: 0 } } : await Promise.race([
+      api('GET', '/api/state'), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('offline')), 4000); }),
+    ]);
+    if (next.boot?.id && next.boot.id !== m.boot) {
+      m.active = false; m.message = ''; m.info.blockers = []; state = next;
+      if (demo) {
+        m.demoBoot = next.boot;
+        if (!settingsDemoOptions) settingsDemoOptions = m.options || await demoApi('GET', '/api/settings/options');
+        settingsDemoOptions.pending = [];
+        for (const row of settingsDemoOptions.options) { row.running = row.value; row.pending = false; }
+      }
+      updateCurrentPage(state); settingsRestartPaint(); pageToast('Board restarted', 'ok');
+      return;
+    }
+  } catch (e) { m.message = e.status === 401 || e.status === 403 ? 'Sign in again with bin/ccboard-open, then reload this page.' : 'Offline, retrying.'; }
+  finally { clearTimeout(deadline); }
+  settingsRestartPaint();
+  m.timer = setTimeout(() => settingsRestartPoll(demo), 1000);
+}
+
+function settingsRestartDemoState(st) {
+  return settingsRestart.demoBoot ? { ...st, boot: settingsRestart.demoBoot, settings_pending: { count: 0 } } : st;
+}
+
 function settingsRestartBanner(pending, home = false) {
   const labels = pending.labels || [];
   const names = labels.slice(0, 3).join(', ') + (pending.count > 3 ? ' and ' + (pending.count - 3) + ' more' : '');
   return el('div', { class: 'callout warn settings-restart ' + (home ? 'home-settings-pending' : 'set-pending'), role: 'status' },
     el('p', { text: (pending.count === 1 ? 'A saved setting waits' : 'Saved settings wait') + ' for a restart' + (names ? ': ' + names : '') + '.' }),
     settingsRestartCommand(pending.restart_hint),
+    pending.restart?.docker_notice ? el('p', { text: pending.restart.docker_notice }) : null,
+    settingsRestartControl(pending.restart),
     home ? el('a', { href: '#/settings?sec=options', text: 'Open Settings > Options' }) : null);
 }
 
 function settingsHomePending(r, pending) {
+  pending = { ...pending, restart: state.restart };
   const sig = JSON.stringify(pending);
   if (r.settingsPendingSig === sig) return;
   r.settingsPendingSig = sig;
@@ -71,7 +179,7 @@ function settingsHomePending(r, pending) {
 
 function settingsPendingSummary(data) {
   const keys = data.pending || [];
-  return { count: keys.length, keys, labels: keys.map(key => data.options.find(o => o.key === key)?.label).filter(Boolean), restart_hint: data.restart_hint };
+  return { count: keys.length, keys, labels: keys.map(key => data.options.find(o => o.key === key)?.label).filter(Boolean), restart_hint: data.restart_hint, restart: data.restart };
 }
 
 function settingsOptionText(value, option) {
@@ -172,11 +280,14 @@ async function demoSettingsOptions(body) {
 }
 
 function settingsOptionsPaint(p, data) {
+  settingsRestart.options = data;
   p.textContent = '';
   p.ccOptionCancel = null;
   const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
   const pending = settingsPendingSummary(data);
   if (pending.count) p.append(settingsRestartBanner(pending));
+  p.append(el('div', { class: 'set-restart-header' }, settingsHead('Options'), settingsRestartControl(data.restart)));
+  if (!pending.count && data.restart?.docker_notice) p.append(el('p', { text: data.restart.docker_notice }));
   p.append(el('div', { class: 'dim set-note set-options-guidance' },
     el('p', { text: 'Page options save here; others are set by the installer or settings file.' }),
     pending.count ? null : settingsRestartCommand(data.restart_hint)), filter);

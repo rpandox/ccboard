@@ -149,6 +149,7 @@ EXPECTED = {
     ("POST", "/api/notify/test"): "identity+csrf",
     ("POST", "/mcp"): "identity+device-token",
     ("GET", "/api/settings/options"): "identity",    # signed-in person only; agents get 403
+    ("POST", "/api/settings/restart"): "identity+csrf",  # person-only, same-origin; no automation token may restart the board
     ("PUT", "/api/settings/options"): "identity+csrf",  # signed-in person only, same-origin; all token headers refused before the handler
     ("GET", "/api/mcp/nodes"): "identity",              # issue #152: the node list an agent may see (tool list_nodes); a person or the hook token, never a node token
     ("GET", "/api/mcp/tokens"): "identity",
@@ -325,8 +326,9 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
         assert r.status_code == 403 and r.json()["error"] == NO_CSRF, (method, path)
         return
     assert r.status_code == 403, (method, path, r.status_code)
-    if (method, path) == ("PUT", "/api/settings/options"):
-        assert r.json() == {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."}
+    if (method, path) in (("PUT", "/api/settings/options"), ("POST", "/api/settings/restart")):
+        assert r.json() == ({"reason": "person"} if path.endswith("/restart") else
+                            {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."})
         return
     want = "bad hook token" if kind == "hook-token" else NO_ID
     assert r.json()["error"] == want, (method, path)
@@ -364,8 +366,9 @@ def test_every_non_get_route_needs_the_csrf_header(lite_client, method, path):
     for headers in (ID, {**ID, "X-CCBoard": "true"}, {**ID, "X-CCBoard": "0"}, {**ID, "Origin": "https://evil.example"}):
         r = send(lite_client, method, path, headers)
         assert r.status_code == 403, (method, path, headers)
-        if (method, path) == ("PUT", "/api/settings/options"):
-            assert r.json() == {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."}
+        if (method, path) in (("PUT", "/api/settings/options"), ("POST", "/api/settings/restart")):
+            assert r.json() == ({"reason": "person"} if path.endswith("/restart") else
+                            {"key": None, "reason": "A signed-in person on this board with X-CCBoard: 1 is required."})
         else:
             assert r.json()["error"] == NO_CSRF, (method, path)
 

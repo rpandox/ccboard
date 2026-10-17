@@ -29,6 +29,7 @@ services:
         required: false
     environment:
       CCBOARD_RUNTIME: docker
+      CCBOARD_RESTART_POLICY: unless-stopped  # matches restart above; permits the board to exit for a restart
       HOME: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}
       TMUX_TMPDIR: /tmp
       # The host's claude, codex and ccusage first, then the image's venv, then the system (also for `docker exec`).

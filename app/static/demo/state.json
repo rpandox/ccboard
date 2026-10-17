@@ -2436,6 +2436,19 @@
     "keys": [
       "CCBOARD_NODE_LANES"
     ],
-    "restart_hint": "systemctl --user restart ccboard"
+    "restart_hint": "docker compose up -d --force-recreate ccboard"
+  },
+  "restart": {
+    "launch_log": "",
+    "method": "docker",
+    "expect_seconds": 10,
+    "hint": "docker compose up -d --force-recreate ccboard",
+    "why": "",
+    "logs": "docker compose logs --tail 100 ccboard",
+    "docker_notice": "A restart will not read /etc/ccboard/env. On the box run: docker compose up -d --force-recreate ccboard",
+    "blockers": [
+      "1 permission is waiting for an answer and will be lost",
+      "2 terminals are open; ttyd and tmux sessions keep running"
+    ]
   }
 }
