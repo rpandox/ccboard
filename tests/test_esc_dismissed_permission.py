@@ -77,7 +77,7 @@ def asked(lite_client, agent_row, fake_tmux, monkeypatch):
 
 def test_an_esc_dismissed_dialog_leaves_waiting_within_one_scan(asked, fake_tmux):
     s = view(asked)
-    assert s["state"] == "waiting" and s["flags"]["wait_kind"] == "permission" and s["pending"] == [], "the dialog is still up"
+    assert s["state"] == "waiting" and s["flags"]["wait_kind"] == "permission" and s["pending"][0]["kind"] == "terminal_prompt", "the dialog is still up and can be answered"
     assert needs_you()
     fake_tmux["screen"] = INTERRUPTED                          # Esc: no hook, only the pane changes
     s = view(asked)                                            # one scan

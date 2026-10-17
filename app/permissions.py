@@ -1,11 +1,15 @@
 """Remote approve/deny: the PermissionRequest hook long-polls here; decisions come from the board,
-an ntfy action button or Web Push click. No decision in time -> the TUI prompt (unchanged flow)."""
+an ntfy action button or Web Push click. No decision in time -> the TUI prompt; recognized Claude tool dialogs remain answerable here."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+import secrets
 import threading
+import time
+from weakref import WeakKeyDictionary
 
 from . import notify
 
@@ -84,3 +88,110 @@ def push_request(pid: int, name: str, summary: str) -> None:
         notify.send(n)
     except Exception as e:          # the permission hook must still get its answer when a notice cannot be built
         notify.log.warning("permission push failed: %s", e)
+
+
+# Terminal requests live only in this process. A restart invalidates their ids; no captured screen is stored in the database.
+_terminal = WeakKeyDictionary()
+_terminal_reads = WeakKeyDictionary()
+_terminal_lock = threading.RLock()
+TERMINAL_ID_MIN = 100_000_000_000
+TERMINAL_CHANGED = "the terminal prompt changed or is no longer available; nothing was sent. Refresh and check it again"
+
+
+def _terminal_read(db, name, *, row=None, panes=None):
+    from . import tmux
+    from .agents import claude_pane
+    row = row if row is not None else db.open_row(name)
+    if not row or (row.get("agent") or "claude") != "claude" or tmux.is_internal(name):
+        return None
+    try:
+        pane = (panes if panes is not None else tmux.list_sessions()).get(name)
+        if not pane or not claude_pane.foreground(pane.get("command")):
+            return None
+        text = tmux.capture(name, lines=0)     # current screen only, never an old dialog in scrollback
+        dialog = claude_pane.approval_dialog(text)
+    except (tmux.TmuxError, tmux.TmuxDown, OSError):
+        return None
+    if not dialog:
+        return None
+    fingerprint = hashlib.sha256(json.dumps([row.get("row_id"), row.get("id"), row.get("state_at"), pane.get("pane_id"), pane.get("command"), text]).encode()).hexdigest()
+    return dialog, fingerprint
+
+
+def terminal_pending(db, live: list[dict], *, max_age: float) -> list[dict]:
+    from . import hooks, nodes_relay, tmux
+    from .db import now
+    with _terminal_lock:
+        cache = _terminal.setdefault(db, {})
+        reads = _terminal_reads.setdefault(db, {})
+        blocked = {p["tmux_name"] for p in live}
+        rows = db.open_rows()
+        try:
+            panes = tmux.list_sessions()
+        except (tmux.TmuxError, tmux.TmuxDown, OSError):
+            panes = {}
+        for name in list(cache):
+            if name not in rows:
+                del cache[name]
+        for name in list(reads):
+            if name not in rows:
+                del reads[name]
+        out = []
+        for name, row in rows.items():
+            attention = row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")
+            eligible = name not in blocked and (row.get("state") == "waiting" or attention)
+            pane = panes.get(name) or {}
+            stamp = (row.get("id"), row.get("state"), row.get("state_at"), row.get("acked_at"), row.get("agent"), pane.get("pane_id"), pane.get("command"))
+            prior = reads.get(name)
+            if not eligible:
+                reads.pop(name, None)
+                read = None
+            elif prior and prior[1] == stamp and time.monotonic() - prior[0] < max_age:
+                read = prior[2]
+            else:
+                read = _terminal_read(db, name, row=row, panes=panes)
+                reads[name] = (time.monotonic(), stamp, read)
+            old = cache.get(name)
+            if not read:
+                if old:
+                    old["active"] = False
+                continue
+            dialog, fingerprint = read
+            if old and old["answered"] and old["fingerprint"] == fingerprint:
+                continue
+            if not old or old["fingerprint"] != fingerprint or not old["active"]:
+                pid = TERMINAL_ID_MIN + secrets.randbelow(900_000_000_000)
+                known = nodes_relay.known_secrets()
+                public = {"id": pid, "kind": "terminal_prompt", "tmux_name": name, "tool_name": dialog["tool_name"],
+                          "summary": nodes_relay._perm_summary(dialog["summary"], known), "created_at": now(),
+                          "choices": [{"number": c["number"], "label": nodes_relay._perm_summary(c["label"], known)} for c in dialog["choices"]]}
+                old = cache[name] = {"public": public, "fingerprint": fingerprint, "active": True, "answered": False}
+            if not old["answered"]:
+                out.append(dict(old["public"]))
+        return out
+
+
+def terminal_get(db, pid: int) -> dict | None:
+    with _terminal_lock:
+        return next((dict(r["public"]) for r in _terminal.get(db, {}).values() if r["public"]["id"] == pid), None)
+
+
+def terminal_answer(db, pid: int, decision: str, source: str, live) -> None:
+    from . import projects, tmux
+    with _terminal_lock:
+        old = next((r for r in _terminal.get(db, {}).values() if r["public"]["id"] == pid), None)
+        if not old or not old["active"] or old["answered"]:
+            raise projects.Conflict(TERMINAL_CHANGED)
+        name = old["public"]["tmux_name"]
+        if decision not in ("allow", "deny"):
+            raise projects.BadRequest("a terminal prompt accepts only allow or deny")
+        if any(p["tmux_name"] == name for p in live()):
+            raise projects.Conflict(TERMINAL_CHANGED)
+        _terminal_reads.get(db, {}).pop(name, None)
+        read = _terminal_read(db, name)
+        if not read or read[1] != old["fingerprint"]:
+            old["active"] = False
+            raise projects.Conflict(TERMINAL_CHANGED)
+        old["answered"] = True           # consume before sending: a failed transport must not cause an automatic retry
+        tmux.send_text(name, read[0][decision], enter=False)
+        db.add_event(name, "TerminalPermission", read[0]["tool_name"], decision, {"id": pid, "source": source}, agent="claude")

@@ -839,7 +839,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["agents"] = agents.status_all()
     st["login"] = _login_payload()
-    st["pending_permissions"] = db.perm_pending()
+    st["pending_permissions"] = _pending_permissions()
     st["tasks"] = _tasks_view()
     st["preview"] = previews.capability()                 # #126: {available, code, reason}: the Preview control says why it is off before the click
     st["jobs"] = _jobs_view()
@@ -1137,7 +1137,7 @@ def api_session(name: str):
             "flags": s["flags"], "agent_session_id": s["agent_session_id"], "account": s["account"], "task": s["task"],
             "hooks_missing": s.get("hooks_missing"),
             "queued_prompts": s.get("queued_prompts", 0),
-            "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
+            "pending": [p for p in _pending_permissions() if p["tmux_name"] == name],
             # viewers and win come from tmux (list-clients, the session window's size); shell_version (the attach wrapper's) is
             # still unset
             "viewers": s["viewers"], "win": s["win"], "shell_version": ASSET_VERSION}
@@ -3628,6 +3628,7 @@ class KeysIn(BaseModel):
     keys: list[str] | None = None
     text: str | None = None
     enter: bool = False
+    confirm: StrictBool = False
 
 
 @app.post("/api/sessions/{name}/keys")
@@ -3638,6 +3639,16 @@ def api_send_keys(name: str, body: KeysIn):
         raise projects.BadRequest("not a ccboard session name")
     if not tmux.has_session(name):
         raise projects.NotFound(f"session {name} not found")
+    row = db.open_row(name) or {}
+    pane_block = _pane_block(name, row)
+    if (row.get("agent") or "claude") == "claude" and pane_block and pane_block[0] == "dialog":
+        allowed = {"Escape", "Up", "Down", "Tab"} | ({"C-c"} if body.confirm else set())
+        if body.text is not None or body.enter or any(k not in allowed for k in (body.keys or [])):
+            return _terminal_refusal("asking", "this permission accepts only navigation or a confirmed interrupt; use Allow or Deny to answer", row, None)
+    asks = (_permission_pending(name) or (row.get("state") == "waiting" and (row.get("flags") or {}).get("wait_kind") != "idle")
+            or pane_block is not None)
+    if asks and (body.text is not None or body.enter or any(k in nodes_relay.ANSWER_KEYS for k in (body.keys or []))):
+        return _terminal_refusal("asking", "this session is asking a question in its terminal: answer it with Allow or Deny, not with a key", row, None)
     if body.text is not None:
         text = body.text.replace("\r\n", "\n").replace("\r", "\n")       # the composer's newlines; multi-line goes through bracketed paste
         # every Cc character but tab and newline (DEL and the C1 range too), the rule /prompt uses: #44 F-04
@@ -3768,12 +3779,19 @@ LAUNCH_GRACE = 20                                # s after a session row is made
 
 def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True,
                 claude_trust: bool = False) -> tuple[str, str] | None:
-    """(code, message) for a blocked Codex pane or a Claude task refused for workspace trust, else None. `agent_exited`: the pane's
-    foreground process is the login shell (codex quit; a prompt typed now would run as a shell command); the row is marked errored with
-    the reason. `dialog`: the screen shows Codex's update dialog (its default, Update now, runs npm install -g) or its trust dialog; the
-    board never answers one. Box checks 86 and 92. A tmux hiccup is no evidence: None. `invalidate` is off inside the state builder,
-    which holds the scan lock. Claude trust detection is opt-in for launch polling only; typing callers never act on it."""
+    """(code, message) when the board must not type into a Claude approval or Codex dialog, or a Claude task was refused for workspace
+    trust, else None. `agent_exited`: the pane's foreground process is the login shell (codex quit; a prompt typed now would run as a
+    shell command); the row is marked errored with the reason. `dialog`: the screen shows Claude's approval dialog, Codex's update dialog
+    (its default, Update now, runs npm install -g) or its trust dialog; the board never answers one. Box checks 86 and 92. A tmux hiccup
+    is no evidence: None. `invalidate` is off inside the state builder, which holds the scan lock. Claude trust detection is opt-in for
+    launch polling only; typing callers never act on it."""
     agent = (row or {}).get("agent") or "claude"
+    if row and agent == "claude":
+        try:
+            if claude_pane.approval_dialog(tmux.capture(name, lines=0)):
+                return "dialog", "Claude is asking for a permission"
+        except (tmux.TmuxError, tmux.TmuxDown, OSError):
+            return None
     if agent != "codex" and not (agent == "claude" and (row or {}).get("launcher") == "task"):
         return None
     if agent == "claude":
@@ -3823,7 +3841,7 @@ def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> 
 
 
 def _typing_refusal(name: str, row: dict, queue: bool = False) -> JSONResponse | None:
-    """None when typing into the pane is safe, else the 409: the row's state (_state_refusal), then what a Codex pane shows (_pane_block)."""
+    """None when typing into the pane is safe, else the 409: the row's state (_state_refusal), then what the agent pane shows (_pane_block)."""
     refusal = _state_refusal(name, row, queue)
     if refusal is not None:
         return refusal
@@ -3869,6 +3887,11 @@ def _permission_pending(name: str) -> bool:
     """Is a permission request of this session waiting for its answer? Only one the hook can still be long-polling counts: a row left
     undecided by a restart (its waiter died with the process) would otherwise block the session for good."""
     return any(p.get("tmux_name") == name for p in _live_permissions())
+
+
+def _pending_permissions() -> list[dict]:
+    live = _live_permissions()
+    return live + permissions.terminal_pending(db, live, max_age=SCAN_TTL)
 
 
 def _live_permissions() -> list[dict]:
@@ -4753,7 +4776,7 @@ def api_node_state(request: Request):
     page poll uses (the 2 s scan cache). A weak ETag over the body without `node.now`; `If-None-Match` that matches answers 304 with no body (and the node's
     time in X-CCBoard-Now). A paired node's token with scope `read` opens it; so does a signed-in person."""
     nodes_relay.note_inbound(request, "state", db)
-    body = node_state.build(db, _scan_entry())
+    body = node_state.build(db, {**_scan_entry(), "pending_permissions": _pending_permissions()})
     tag = node_state.etag(body)
     now = body["node"]["now"]
     headers = {"ETag": tag, "Cache-Control": "no-cache", "X-CCBoard-Now": now, "X-Content-Type-Options": "nosniff"}
@@ -5978,8 +6001,8 @@ async def api_permission(request: Request):
         except (tmux.TmuxError, tmux.TmuxDown):
             return 0
     if await asyncio.to_thread(at_terminal) > 0:
-        # Someone is looking at the terminal: let the TUI prompt appear at once. The board still
-        # lists the request; a board/phone answer within the timeout is ignored by Claude.
+        # Someone is looking at the terminal: let the TUI prompt appear at once. Once visible, a recognized
+        # Claude dialog can be answered through its own terminal_prompt entry.
         await asyncio.to_thread(db.perm_expire, pid, "tui")
         return {"behavior": None, "reason": "attached", "id": pid}
 
@@ -6006,11 +6029,15 @@ async def api_permission(request: Request):
 
 @app.post("/api/permission/{pid}/{decision}")
 def api_permission_decide(pid: int, decision: str, request: Request):
-    if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
-        raise projects.BadRequest("decision must be allow, deny or tui")
     # A person's answer only: the hook token is held by every agent session on this board, so an agent could otherwise approve its own request
     # (the hub's relayed answer goes through peer_permission_answer, not this route).
     _epic_person(request, "only a signed-in person can answer a permission request")
+    if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
+        raise projects.BadRequest("decision must be allow, deny or tui")
+    if pid >= permissions.TERMINAL_ID_MIN:
+        permissions.terminal_answer(db, pid, decision, request.state.user, _live_permissions)
+        _invalidate_scan()
+        return {"ok": True, "id": pid, "decision": decision}
     row = db.perm_get(pid)
     if not row:
         raise projects.NotFound("no such permission request")

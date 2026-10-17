@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EPOCH, ISO, calls, fakeState, fixtureState, homeWorld, page, plain, projectsOf, sess, setState, text, tick } from './world.mjs';
 
-const KINDS = ['permission', 'plan', 'question', 'needs', 'limit', 'error', 'done-question', 'waiting', 'done'];
+const KINDS = ['permission', 'terminal_prompt', 'plan', 'question', 'needs', 'limit', 'error', 'done-question', 'waiting', 'done'];
 
 /** A world over `st`; kind(over, extraState) classifies a one-off session `shop--api--x` built from the defaults plus `over`. */
 function world(st = fixtureState()) {
@@ -445,4 +445,23 @@ test('#/inbox: a click on a card selects it (the j / k selection paints the lega
   assert.equal(w.run('Pages.selected().tmux'), 'petroit--api--s3');
   assert.equal(w.run('Pages.items().length'), 5, 'the keyboard walks the same list the page draws');
   assert.deepEqual(plain(w.run('Pages.items().map((s) => s.tmux)')), [CK, P3, S1, P2, P1], 'in the same order');
+});
+
+test('terminal prompts keep Allow and Deny with a full client and show the numbered choices', async () => {
+  const st = fixtureState();
+  const p = st.pending_permissions[0];
+  p.kind = 'terminal_prompt';
+  p.summary = 'Bash command: git add src && git commit -m fix';
+  p.choices = [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }];
+  const { w } = world(st);
+  w.ctx.__stx = st;
+  w.run('const ss = Inbox.items(__stx).find((s) => s.tmux === __stx.pending_permissions[0].tmux_name); ss.viewers = { full: 1 }; globalThis.__terminalCard = inboxCard(ss, __stx)');
+  const n = w.get('__terminalCard');
+  assert.equal(text(n.querySelector('.ib-kind')), 'terminal prompt');
+  assert.ok(text(n).includes(p.summary));
+  assert.match(text(n), /2\. Yes · 4\. No/);
+  assert.deepEqual(buttons(n, '.perm-btns button'), ['Allow', 'Deny']);
+  n.querySelector('.perm-btns button').click();
+  await tick();
+  assert.ok(calls(w).some((c) => c.path === `/api/permission/${p.id}/allow`));
 });

@@ -235,7 +235,7 @@ def build(db, scan: dict) -> dict:
     keys = _repo_keys(projs)
     sess_all = [_session_row(p, r, s, keys) for p, r, s in _groups(projs)]
     sess_all = [s for s in sess_all if s["tmux"]]
-    needs = {"permissions": len(db.perm_pending()),
+    needs = {"permissions": len(scan["pending_permissions"] if "pending_permissions" in scan else db.perm_pending()),
              "input": sum(1 for s in sess_all if s["needs_you"] and s["state"] in ("waiting", "done")),
              "errors": sum(1 for s in sess_all if s["needs_you"] and s["state"] == "errored")}
     sess = sorted(sess_all, key=lambda s: s["state"] == "ended")             # stable: live sessions first, the scan's order inside each group

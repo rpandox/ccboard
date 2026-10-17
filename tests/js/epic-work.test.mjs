@@ -583,3 +583,20 @@ test('the demo page end to end: Work on node-b starts the issue, the row runs wi
   assert.match(text(rowOf(bad, 205).querySelector('[data-work-note]')), /asks for bypass permissions/);
   assert.equal(rowOf(bad, 205).getAttribute('data-state'), 'open');
 });
+
+test('a terminal permission makes the epic wait for a person with the same Allow and Deny', async () => {
+  const w = await epicWorld();
+  w.ctx.__child = { work: { task_id: 71, phase: 'running' } };
+  w.run(`state.tasks = [{ id: 71, tmux_name: 'shop--api--s1' }];
+    state.pending_permissions = [{ id: 123, tmux_name: 'shop--api--s1', kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] }];
+    globalThis.__phase = epWorkPhaseNode(__child);
+    globalThis.__permission = epPermissionNode(epPermission(__child));`);
+  assert.match(text(w.get('__phase')), /waiting for a person/);
+  const n = w.get('__permission');
+  assert.ok(text(n).includes('Bash command: git add src && git commit -m fix'));
+  assert.match(text(n), /2\. Yes · 4\. No/);
+  assert.deepEqual(n.querySelectorAll('button').map(text), ['Allow', 'Deny']);
+  n.querySelector('button').click();
+  await tick();
+  assert.ok(calls(w).some((c) => c.path === '/api/permission/123/allow'));
+});

@@ -1309,6 +1309,16 @@ def _shape_epic_work(body, reg):
             "tmux": _shaped_tmux(body.get("tmux")), "repo": repo, "issue": issue}
 
 
+def _terminal_fields(row):
+    if row.get("kind") != "terminal_prompt":
+        return {}
+    choices = row.get("choices")
+    return {"kind": "terminal_prompt", "choices": [
+        {"number": c["number"], "label": _perm_summary(c.get("label"), known_secrets())}
+        for c in (choices if isinstance(choices, list) else [])[:9]
+        if isinstance(c, dict) and isinstance(c.get("number"), str) and re.fullmatch(r"[1-9]", c["number"])]}
+
+
 def _shape_permissions(body, reg):
     """The pending requests rebuilt field by field: {permissions: [{id, tmux, tool, summary (300 characters), since}]}. A row without an id or a session name is dropped."""
     from . import nodes_hub
@@ -1322,7 +1332,7 @@ def _shape_permissions(body, reg):
         if pid is None or pid < 1 or tm is None:
             continue
         out.append({"id": pid, "tmux": tm, "tool": _shaped(r.get("tool"), _TOOL_OUT, 60) or "tool", "summary": nodes_hub._s(r.get("summary"), SUMMARY_MAX) or "",
-                    "since": _shaped(r.get("since"), _TIME_OUT, 40)})
+                    "since": _shaped(r.get("since"), _TIME_OUT, 40), **_terminal_fields(r)})
     return {"permissions": out}
 
 
@@ -1761,7 +1771,7 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         facts = _work_facts(r.json if isinstance(r.json, dict) else {})
         why = _known_why(why, WORK_PEER_WHY, facts)
         raise RelayError(409, "work_refused", _work_text(name, why, facts), kind="failed", why=why, **facts)
-    if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
+    if r.status == 409 and peer_reason in ("busy", "answered", "expired", "changed"):          # the peer's own state answers, passed on with the words it chose from a closed list
         extra = _busy_extra(r.json) if peer_reason == "busy" else {}
         raise RelayError(409, peer_reason, msg or f"{name} cannot take this now", kind="failed", **extra)
     if r.status == 429:
@@ -2804,13 +2814,13 @@ def peer_permissions(db, params: dict, body: dict) -> dict:
     from . import main
     known = known_secrets()
     out = []
-    for p in main._live_permissions():
+    for p in main._pending_permissions():
         name = p.get("tmux_name") or ""
         if permission_refusal(db, db.perm_get(int(p["id"])) or p):
             continue
         tool = str(p.get("tool_name") or "")
         out.append({"id": int(p["id"]), "tmux": name, "tool": tool if _TOOL_OUT.fullmatch(tool) else "tool", "summary": _perm_summary(p.get("summary"), known),
-                    "since": str(p.get("created_at") or "")[:40]})
+                    "since": str(p.get("created_at") or "")[:40], **_terminal_fields(p)})
     return {"permissions": out[:_PERMISSIONS_MAX]}
 
 
@@ -2819,19 +2829,27 @@ def peer_permission_answer(db, params: dict, body: dict) -> dict:
     answered (here, in the terminal, or by a timeout) is 409 `answered`, one nobody is waiting for any more is 409 `expired`; none of these writes anything."""
     from . import main
     pid, decision = int(params["pid"]), params["decision"]
-    row = db.perm_get(pid)
-    if not row or not _alive(row.get("tmux_name") or ""):
-        raise Refusal(404, "gone", GONE)
-    if row.get("decision") is not None:
-        raise Refusal(409, "answered", ANSWERED)
-    if pid not in {p["id"] for p in main._live_permissions()}:
-        raise Refusal(409, "expired", EXPIRED)
-    why = permission_refusal(db, row)                       # the session is the peer's own agent session and the request is an ordinary one: else it stays with the terminal
+    terminal = pid >= main.permissions.TERMINAL_ID_MIN
+    if terminal:
+        row = main.permissions.terminal_get(db, pid)
+        if not row:
+            raise Refusal(409, "changed", main.permissions.TERMINAL_CHANGED)
+    else:
+        row = db.perm_get(pid)
+        if not row or not _alive(row.get("tmux_name") or ""):
+            raise Refusal(404, "gone", GONE)
+        if row.get("decision") is not None:
+            raise Refusal(409, "answered", ANSWERED)
+        if pid not in {p["id"] for p in main._live_permissions()}:
+            raise Refusal(409, "expired", EXPIRED)
+    why = permission_refusal(db, row)
     if why:
         raise Refusal(409, "refused", f"{why}: answer it on {nodes.display_name()}")
     try:
         main.api_permission_decide(pid, decision, _standin())
     except projects.Conflict:
+        if terminal:
+            raise Refusal(409, "changed", main.permissions.TERMINAL_CHANGED) from None
         raise Refusal(409, "answered", ANSWERED) from None
     except projects.NotFound:
         raise Refusal(404, "gone", GONE) from None
