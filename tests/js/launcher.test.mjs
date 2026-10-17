@@ -102,6 +102,9 @@ const inputWith = (f, re) => f.querySelectorAll('input').find((i) => re.test(i.g
 const typeInto = (n, v) => { n.value = v; n.dispatchEvent({ type: 'input' }); };
 const choose = (sel, v) => { sel.value = v; sel.dispatchEvent({ type: 'change' }); };
 const tickBox = (cb, on = true) => { cb.checked = on; cb.dispatchEvent({ type: 'change' }); };
+const devcBox = (f) => f.querySelector('details[data-agent=claude]').querySelectorAll('label').find((l) => /devcontainer/.test(text(l))).querySelector('input');
+const bypassOpt = (f) => fieldOf(f, /^Permissions$/).querySelector('select').children.find((o) => o.getAttribute('value') === 'bypassPermissions');
+const permNote = (f) => text(f.querySelector('.lx-agentbox[data-agent=claude] .lx-bypass-note'));
 
 const CLAUDE = (over = {}) => ({ agent: 'claude', launch: 'new', model: 'opus', effort: 'high', ...over });
 const CODEX = (over = {}) => ({ agent: 'codex', launch: 'new', cx_mode: 'default', ...over });
@@ -149,14 +152,14 @@ test('commandPreview, Claude: ultracode is a second line (/effort ultracode on) 
     "devcontainer up --workspace-folder /srv/projects/shop/web && devcontainer exec --workspace-folder /srv/projects/shop/web -- claude --session-id '<uuid>' --name s1 --model opus --effort high");
 });
 
-test('commandPreview, Codex: the mode picker is the flags (default, auto, read-only, bypass, custom), reasoning is -c model_reasoning_effort, then -c lines, --search, --add-dir, extra, the prompt after --', () => {
+test('commandPreview, Codex: the mode picker is the flags (default, auto, read-only, custom; never a bypass, owner decision #104), reasoning is -c model_reasoning_effort, then -c lines, --search, --add-dir, extra, the prompt after --', () => {
   const w = lWorld();
   assert.equal(prev(w, CODEX()), 'codex --no-alt-screen -s workspace-write -a on-request');
   assert.equal(prev(w, CODEX({ cx_mode: 'auto' })), 'codex --no-alt-screen -s workspace-write -a on-request', 'no --approve-for-me on a Codex without it: it asks on request');
   assert.equal(prev(w, CODEX({ cx_mode: 'auto' }), { caps: { approve_for_me: true } }), 'codex --no-alt-screen --approve-for-me -s workspace-write');
   assert.equal(prev(w, CODEX({ cx_mode: 'read-only' })), 'codex --no-alt-screen -s read-only -a on-request');
-  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' })), 'codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox');
-  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' }), { caps: { bypass_approvals: false, yolo: true } }), 'codex --no-alt-screen --yolo');
+  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' })), 'codex --no-alt-screen -s workspace-write -a on-request', 'a bypass reads as the default: the server refuses a Codex bypass, so the preview never says one');
+  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' }), { caps: { bypass_approvals: false, yolo: true } }), 'codex --no-alt-screen -s workspace-write -a on-request');
   assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'read-only', approval: 'never' })), 'codex --no-alt-screen -s read-only -a never');
   assert.equal(prev(w, CODEX({ model: 'gpt-5.5', reasoning: 'high', config: 'model_verbosity=low\n\ntui.theme=dark', search: true, add_dirs: ['shop/web'], args: '--foo', prompt: 'review the diff' }), { dirs: { 'shop/web': '/srv/projects/shop/web' } }),
     "codex --no-alt-screen -s workspace-write -a on-request -m gpt-5.5 -c 'model_reasoning_effort=\"high\"' -c model_verbosity=low -c tui.theme=dark --search --add-dir /srv/projects/shop/web --foo -- 'review the diff'");
@@ -190,8 +193,7 @@ test('commandPreview matches the route where the review found it did not: --name
     assert.equal(t, "claude --model opus --effort high --worktree fix-it --session-id '<uuid>' -- go", `${mode}: the lane's worktree is its slug and it has no session name of its own`);
   }
   assert.equal(prev(w, CODEX({ worktree: true }), { nextName: 's4' }), 'codex --no-alt-screen -s workspace-write -a on-request\n# in a new worktree: .ccboard/worktrees/s4', 'Codex: the board makes the folder from the name, no random suffix');
-  assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'danger-full-access', approval: 'never' })), 'codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox', 'the danger sandbox is the one bypass flag, as the adapter builds it');
-  assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'danger-full-access' }), { caps: { bypass_approvals: false, yolo: true } }), 'codex --no-alt-screen --yolo');
+  assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'danger-full-access', approval: 'never' })), 'codex --no-alt-screen -s workspace-write -a never', 'the danger sandbox is never a line (#104): it reads as workspace-write');
   assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'danger-full-access', approval: 'never' }), { mode: 'task', slug: 'x' }).split('\n')[0], 'codex --no-alt-screen -s workspace-write -a never', 'a task is never given the danger sandbox');
   assert.equal(prev(w, CODEX({ launch: 'fork' })), 'codex fork --no-alt-screen -s workspace-write -a on-request', 'a blank id opens Codex\'s picker: the route adds no --last');
   assert.ok(!/--last/.test(prev(w, CODEX({ launch: 'fork', resume_id: '' }))));
@@ -233,6 +235,7 @@ test('the preview is one nowrap span per token (a flag is never cut after its --
 test('the sheet\'s command line and body for every case of tests/fixtures/launcher_cases.json (the same file tests/test_launcher_api.py posts to the real route): launcherPayload(v) is the body, the preview splits into the route\'s tokens', () => {
   const { cases } = JSON.parse(readFileSync(new URL('../fixtures/launcher_cases.json', import.meta.url), 'utf8'));
   assert.ok(cases.length >= 15);
+  assert.ok(!cases.some((c) => /bypass|danger|yolo/.test(JSON.stringify(c.tokens))), 'no case builds a bypass line on the host (owner decision #104): the devcontainer ones are pinned in tests/test_launcher_api.py and below');
   const w = lWorld();
   const seen = new Set();
   for (const c of cases) {
@@ -243,7 +246,7 @@ test('the sheet\'s command line and body for every case of tests/fixtures/launch
     assert.deepEqual(plain(w.run(`lxSplit(${JSON.stringify(lines[0])})`)), c.tokens, `${c.id}: the preview's tokens`);
     assert.deepEqual(lines.slice(1), c.notes, `${c.id}: the note lines`);
   }
-  for (const want of ['claude-resume-fork', 'claude-continue-fork', 'claude-worktree-named', 'claude-worktree-blank-name', 'claude-from-pr-number-with-hash', 'codex-custom-danger-full-access', 'codex-fork-blank-id-has-no-last', 'claude-bypass']) {
+  for (const want of ['claude-resume-fork', 'claude-continue-fork', 'claude-worktree-named', 'claude-worktree-blank-name', 'claude-from-pr-number-with-hash', 'codex-fork-blank-id-has-no-last']) {
     assert.ok(seen.has(want), `the fixture list keeps ${want}`);
   }
 });
@@ -271,13 +274,15 @@ test('launcherPayload, Claude: the launcher\'s words next to the flat compat fie
   assert.equal(pay(w, CLAUDE({ ultracode: true }), { ultraNative: true }).effort, 'ultracode', 'unless this box takes it');
   const byp = pay(w, CLAUDE({ permission_mode: 'bypassPermissions' }));
   assert.deepEqual([byp.permission_mode, byp.mode, byp.bypass], ['bypassPermissions', 'bypass', true], 'Claude bypass: the permission mode, mode bypass and bypass true (the route\'s gate needs both words)');
+  const bypd = pay(w, CLAUDE({ permission_mode: 'bypassPermissions', devcontainer: true }), { devcontainer: true });
+  assert.deepEqual([bypd.permission_mode, bypd.mode, bypd.bypass, bypd.devcontainer], ['bypassPermissions', 'bypass', true, true], 'the body the server takes: bypass beside the devcontainer (the server refuses it without)');
   const ask = pay(w, CLAUDE({ permission_mode: 'acceptEdits' }));
   assert.deepEqual([ask.permission_mode, 'mode' in ask, 'bypass' in ask], ['acceptEdits', false, false], 'no other Claude mode says bypass');
   const known = plain(w.run(`launcherPayload(${JSON.stringify(CLAUDE({ fallback_model: 'sonnet', tools: 'Bash', fast: true }))}, { has: (k) => k !== 'fallback_model' && k !== 'tools' && k !== 'fast' })`));
   assert.deepEqual(known, { launcher: 'claude', agent: 'claude', model: 'opus', effort: 'high' }, 'a field the schema does not know is not sent');
 });
 
-test('launcherPayload, Codex: launcher + mode (the one picker) with the adapter\'s older words beside it, reasoning twice, bypass only for the danger choices', () => {
+test('launcherPayload, Codex: launcher + mode (the one picker) with the adapter\'s older words beside it, reasoning twice, never a bypass (owner decision #104)', () => {
   const w = lWorld();
   assert.deepEqual(pay(w, CODEX({ model: 'gpt-5.5', reasoning: 'high', name: 'cx', prompt: 'hi', search: true, config: 'a.b=1\n\nc=2', worktree: true, add_dirs: ['shop/web'] })), {
     launcher: 'claude', agent: 'codex', name: 'cx', prompt: 'hi', model: 'gpt-5.5', reasoning: 'high', reasoning_effort: 'high', mode: 'default', permission_mode: 'default', search: true, config: ['a.b=1', 'c=2'],
@@ -285,9 +290,9 @@ test('launcherPayload, Codex: launcher + mode (the one picker) with the adapter\
   const mode = (m, extra) => { const b = pay(w, CODEX({ cx_mode: m, ...extra })); return [b.mode, b.permission_mode, b.bypass, b.sandbox, b.approval]; };
   assert.deepEqual(mode('auto'), ['auto', 'auto', undefined, undefined, undefined]);
   assert.deepEqual(mode('read-only'), ['read-only', 'plan', undefined, undefined, undefined]);
-  assert.deepEqual(mode('bypass'), ['bypass', 'bypassPermissions', true, undefined, undefined], 'bypass carries the acknowledgement');
+  assert.deepEqual(mode('bypass'), ['default', 'default', undefined, undefined, undefined], 'a bypass is sent as the default: the server refuses a Codex bypass');
   assert.deepEqual(mode('custom', { sandbox: 'read-only', approval: 'never' }), ['custom', undefined, undefined, 'read-only', 'never'], 'custom is sandbox + approval, no permission mode');
-  assert.deepEqual(mode('custom', { sandbox: 'danger-full-access', approval: 'never' }), ['custom', undefined, true, 'danger-full-access', 'never'], 'the danger sandbox needs the acknowledgement too');
+  assert.deepEqual(mode('custom', { sandbox: 'danger-full-access', approval: 'never' }), ['custom', undefined, undefined, 'workspace-write', 'never'], 'the danger sandbox is sent as workspace-write');
   assert.deepEqual(pay(w, CODEX({ launch: 'resume', resume_id: 'my session' })).resume_id, 'my session', 'a Codex resume takes an id or a name');
   assert.equal(pay(w, CODEX({ launch: 'fork' })).launcher, 'fork');
   assert.equal(pay(w, CODEX({ launch: 'continue' })).launcher, 'continue');
@@ -437,19 +442,19 @@ test('Advanced follows the launch kind: Fork the session only under Resume and C
   assert.deepEqual([plain(ctl.payload()).worktree, plain(ctl.payload()).fork_session], [true, undefined], 'back under New: the other way round');
 });
 
-test('Codex: ONE mode picker (default, auto, read-only, bypass, custom) as a segmented control; custom shows sandbox and approval; the model select lists the catalogue', () => {
+test('Codex: ONE mode picker (default, auto, read-only, custom; no bypass, owner decision #104) as a segmented control; custom shows sandbox and approval; the model select lists the catalogue', () => {
   const w = lWorld();
   open(w, { agent: 'codex' });
   const f = form(w);
   assert.deepEqual(pressed(f, 'Agent'), ['◇ Codex']);
-  assert.deepEqual(labels(f, 'Codex mode'), ['default', 'auto', 'read-only', 'bypass', 'custom']);
+  assert.deepEqual(labels(f, 'Codex mode'), ['default', 'auto', 'read-only', 'custom']);
   assert.deepEqual(pressed(f, 'Codex mode'), ['auto'], 'issue #83: auto is the start; the server maps it to the default pair where this Codex has no --approve-for-me');
   assert.equal(hidden(f.querySelector('.lx-custom')), true);
   btn(f, 'Codex mode', 'custom').click();
   assert.equal(hidden(f.querySelector('.lx-custom')), false);
   const sandbox = fieldOf(f, /^Sandbox$/).querySelector('select');
   const approval = fieldOf(f, /^Approval policy$/).querySelector('select');
-  assert.deepEqual(sandbox.children.map((o) => o.getAttribute('value')), ['read-only', 'workspace-write', 'danger-full-access']);
+  assert.deepEqual(sandbox.children.map((o) => o.getAttribute('value')), ['read-only', 'workspace-write']);
   assert.deepEqual(approval.children.map((o) => o.getAttribute('value')), ['on-request', 'never'], 'codex 0.160: untrusted is retired (#17)');
   choose(sandbox, 'read-only'); choose(approval, 'never');
   assert.match(previewOf(f), /-s read-only -a never/);
@@ -470,7 +475,7 @@ test('commandPreview, Codex: --no-daemon right after codex (or codex resume|fork
   assert.equal(prev(w, CODEX({ prompt: 'hi' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request -- hi');
   assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'read-only', approval: 'never' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s read-only -a never');
   assert.equal(prev(w, CODEX({ cx_mode: 'auto' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --approve-for-me -s workspace-write');
-  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --dangerously-bypass-approvals-and-sandbox');
+  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request', 'never a bypass line');
   assert.equal(prev(w, CODEX({ launch: 'resume', resume_id: id }), { caps }), `codex resume --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request ${id}`);
   assert.equal(prev(w, CODEX({ launch: 'continue' }), { caps }), 'codex resume --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request --last');
   assert.equal(prev(w, CODEX({ launch: 'fork', resume_id: id }), { caps }), `codex fork --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request ${id}`);
@@ -675,34 +680,126 @@ test('issue #83: a Backlog card dispatched from the sheet keeps the permission i
   assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'auto');
 });
 
-test('a bypass-class choice is never remembered: the next sheet starts from the default again', async () => {
-  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2' } } });
-  open(w, {});
-  let f = form(w);
+test('a bypass-class choice is never remembered: the next sheet starts from the default again (the devcontainer switch is)', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/web/sessions': { tmux: 'shop--web--s2' } } });
+  open(w, { repo: 'web' });
+  const f = form(w);
+  tickBox(devcBox(f));
   choose(fieldOf(f, /^Permissions$/).querySelector('select'), 'bypassPermissions');
   tickBox(f.querySelector('.lx-ack input'));
   submit(f);
   await tick(); await tick();
-  assert.equal(store(w, 'ccboard:launch:shop/api:claude').permission_mode, undefined);
-  open(w, {});
-  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'auto', 'back to the default, which is auto, never bypass');
-  open(w, { agent: 'codex' });
+  assert.equal(posts(w, /\/sessions$/).length, 1);
+  assert.equal(store(w, 'ccboard:launch:shop/web:claude').permission_mode, undefined);
+  assert.equal(store(w, 'ccboard:launch:shop/web:claude').devcontainer, true);
+  open(w, { repo: 'web' });
+  assert.equal(fieldOf(form(w), /^Permissions$/).querySelector('select').value, 'auto', 'back to the default (auto), never bypass');
+});
+
+// ---------------------------------------------------------------- bypass only inside the devcontainer (owner decision on #104)
+
+test('bypass is offered only while "Run in the devcontainer" is on: disabled with its reason on a repo without one and until the box is ticked; turning it off again switches the mode to auto', () => {
+  const w = lWorld();
+  open(w, {});                                                                       // shop/api: no devcontainer
+  let f = form(w);
+  assert.ok(off(bypassOpt(f)), 'a repo with no devcontainer: bypass is disabled');
+  assert.match(text(bypassOpt(f)), /only inside the devcontainer/);
+  assert.match(permNote(f), /devcontainer, and this repo has none/);
+  open(w, { repo: 'web' });                                                          // shop/web has one
   f = form(w);
-  btn(f, 'Codex mode', 'bypass').click();
-  tickBox(f.querySelector('.lx-ack input'), true);
-  submit(f);
-  await tick(); await tick();
-  assert.equal(store(w, 'ccboard:launch:shop/api:codex').cx_mode, 'auto');
+  assert.ok(off(bypassOpt(f)), 'devcontainer off: disabled');
+  assert.match(text(bypassOpt(f)), /only inside the devcontainer/);
+  assert.match(permNote(f), /turn on "Run in the devcontainer"/);
+  tickBox(devcBox(f));
+  assert.ok(!off(bypassOpt(f)), 'devcontainer on: the choice is there');
+  assert.match(text(bypassOpt(f)), /bypass: never ask/);
+  assert.equal(permNote(f), '');
+  const perm = fieldOf(f, /^Permissions$/).querySelector('select');
+  choose(perm, 'bypassPermissions');
+  assert.equal(hidden(f.querySelector('.lx-danger')), false, 'the acknowledgement gate is still there');
+  assert.match(previewOf(f), /^devcontainer up .* -- claude .*--permission-mode bypassPermissions/);
+  tickBox(devcBox(f), false);
+  assert.equal(perm.value, 'auto', 'turning the devcontainer off drops the bypass');
+  assert.ok(off(bypassOpt(f)));
+  assert.match(permNote(f), /only inside the devcontainer, so the mode is now auto/);
+  assert.equal(hidden(f.querySelector('.lx-danger')), true);
+  assert.doesNotMatch(previewOf(f), /bypass/);
+});
+
+test('Codex has no bypass choice: no bypass button, no danger sandbox, in a repo with a devcontainer too', () => {
+  const w = lWorld();
+  for (const repo of ['api', 'web']) {
+    open(w, { repo, agent: 'codex' });
+    const f = form(w);
+    assert.deepEqual(labels(f, 'Codex mode'), ['default', 'auto', 'read-only', 'custom']);
+    assert.ok(!fieldOf(f, /^Sandbox$/).querySelector('select').children.some((o) => o.getAttribute('value') === 'danger-full-access'));
+    assert.equal(hidden(f.querySelector('.lx-danger')), true);
+  }
+});
+
+test('a saved default, a preset or a remembered form that holds a bypass falls back to auto with a note unless the same values turn the devcontainer on; Codex always falls back', () => {
+  const w = lWorld();
+  w.localStorage.setItem('ccboard:launch:shop/web:claude', JSON.stringify({ model: 'opus', permission_mode: 'bypassPermissions' }));
+  w.localStorage.setItem('ccboard:launch:shop/web:codex', JSON.stringify({ cx_mode: 'bypass' }));
+  open(w, { repo: 'web' });
+  let f = form(w);
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'auto');
+  assert.match(permNote(f), /so the mode is now auto/);
+  assert.equal(hidden(f.querySelector('.lx-danger')), true, 'no bypass, no danger callout');
+  assert.doesNotMatch(previewOf(f), /bypass|dangerously/);
+  btn(f, 'Agent', '◇ Codex').click();
+  assert.deepEqual(pressed(f, 'Codex mode'), ['auto']);
+  assert.match(text(f.querySelector('.lx-agentbox[data-agent=codex] .lx-bypass-note')), /only for Claude inside the devcontainer/);
+  assert.doesNotMatch(previewOf(f), /bypass|dangerously|yolo/);
+  // the project defaults are read the same way
+  const w2 = lWorld();
+  w2.localStorage.setItem('ccboard:defaults:shop', JSON.stringify({ claude: { permission_mode: 'bypassPermissions' } }));
+  open(w2, {});
+  assert.equal(fieldOf(form(w2), /^Permissions$/).querySelector('select').value, 'auto');
+  // a stored bypass that comes with the devcontainer is the person's own saved pair: kept, behind the acknowledgement
+  const w3 = lWorld();
+  w3.localStorage.setItem('ccboard:launch:shop/web:claude', JSON.stringify({ permission_mode: 'bypassPermissions', devcontainer: true }));
+  open(w3, { repo: 'web' });
+  f = form(w3);
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'bypassPermissions');
+  assert.equal(hidden(f.querySelector('.lx-danger')), false);
+  // a hand-edited preset
+  const w4 = lWorld();
+  w4.localStorage.setItem('ccboard:presets:shop/web', JSON.stringify({ list: [{ agent: 'claude', name: 'yolo', v: { permission_mode: 'bypassPermissions' } }, { agent: 'codex', name: 'cx yolo', v: { cx_mode: 'bypass' } }] }));
+  open(w4, { repo: 'web' });
+  f = form(w4);
+  f.querySelectorAll('.lx-presets button.chip-btn').find((b) => text(b) === 'yolo').click();
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'auto');
+  assert.match(permNote(f), /so the mode is now auto/);
+});
+
+test('the bypass drop note names the mode the sheet really fell back to: auto where this Claude has it, ask where it has none', async () => {
+  const claude = (modes) => ({ '/api/agents': { agents: { claude: { name: 'claude', installed: true, options: [{ key: 'model' }], models: ['opus'], efforts: ['low'], permission_modes: modes, capabilities: {} } } } });
+  const stored = JSON.stringify({ model: 'opus', permission_mode: 'bypassPermissions' });
+  const w = lWorld({ answers: claude(['manual', 'acceptEdits', 'bypassPermissions']) });
+  w.localStorage.setItem('ccboard:launch:shop/web:claude', stored);
+  await w.run('launcherSchemaLoad()');                        // the schema is in before the sheet builds, as on every open after the first
+  open(w, { repo: 'web' });
+  const f = form(w);
+  assert.equal(fieldOf(f, /^Permissions$/).querySelector('select').value, 'manual', 'no auto here: the default (ask) it is');
+  assert.match(permNote(f), /so the mode is now ask\./);
+  assert.doesNotMatch(permNote(f), /now auto/);
+  const w2 = lWorld({ answers: claude(['manual', 'auto', 'bypassPermissions']) });
+  w2.localStorage.setItem('ccboard:launch:shop/web:claude', stored);
+  await w2.run('launcherSchemaLoad()');
+  open(w2, { repo: 'web' });
+  assert.match(permNote(form(w2)), /so the mode is now auto\./);
 });
 
 // ---------------------------------------------------------------- the danger gate
 
-test('the danger gate: bypass shows the red BYPASS_WARNING callout and Start waits for "I understand"; the acknowledgement is kept ONCE PER REPO (ccboard:bypass-ack:<p>/<r>)', async () => {
-  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'claude ...' } } });
-  open(w, {});
+test('the danger gate: bypass (in the devcontainer) shows the red BYPASS_WARNING callout and Start waits for "I understand"; the acknowledgement is kept ONCE PER REPO (ccboard:bypass-ack:<p>/<r>)', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/web/sessions': { tmux: 'shop--web--s2', cmd: 'claude ...' } } });
+  open(w, { repo: 'web' });
   let f = form(w);
   const danger = () => f.querySelector('.lx-danger');
   assert.equal(hidden(danger()), true, 'nothing dangerous chosen: no callout');
+  tickBox(devcBox(f));
   choose(fieldOf(f, /^Permissions$/).querySelector('select'), 'bypassPermissions');
   assert.equal(hidden(danger()), false);
   assert.equal(text(danger().querySelector('.lx-danger-t')), w.get('BYPASS_WARNING'));
@@ -722,44 +819,16 @@ test('the danger gate: bypass shows the red BYPASS_WARNING callout and Start wai
   assert.equal(sent[0].body.permission_mode, 'bypassPermissions');
   assert.equal(sent[0].body.mode, 'bypass', 'the danger gate\'s answer is said to the server the way Codex says it: mode bypass');
   assert.equal(sent[0].body.bypass, true, '... with the acknowledgement');
-  assert.equal(w.localStorage.getItem('ccboard:bypass-ack:shop/api'), '1');
+  assert.equal(sent[0].body.devcontainer, true, '... and the devcontainer, the only place the server takes it');
+  assert.equal(w.localStorage.getItem('ccboard:bypass-ack:shop/web'), '1');
   // the next time in this repo the callout is still there, the box is not and Start is free
-  open(w, {});
+  open(w, { repo: 'web' });
   f = form(w);
   choose(fieldOf(f, /^Permissions$/).querySelector('select'), 'bypassPermissions');
   assert.equal(hidden(danger()), false, 'the warning is still shown');
   assert.equal(hidden(f.querySelector('.lx-ack')), true, 'but the box is not asked again in this repo');
   assert.ok(!off(start(f)));
-  // another repo has not acknowledged
-  open(w, { repo: 'web' });
-  f = form(w);
-  choose(fieldOf(f, /^Permissions$/).querySelector('select'), 'bypassPermissions');
-  assert.equal(hidden(f.querySelector('.lx-ack')), false);
-  assert.ok(off(start(f)));
-  assert.equal(w.localStorage.getItem('ccboard:bypass-ack:shop/web'), null);
-});
-
-test('the danger gate for Codex: bypass and a custom danger-full-access sandbox show the Codex warning and the same box; Start sends bypass: true', async () => {
-  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--cx1', cmd: 'codex ...' } } });
-  open(w, { agent: 'codex' });
-  const f = form(w);
-  const danger = f.querySelector('.lx-danger');
-  assert.equal(hidden(danger), true);
-  btn(f, 'Codex mode', 'bypass').click();
-  assert.equal(hidden(danger), false);
-  assert.equal(text(danger.querySelector('.lx-danger-t')), w.get('BYPASS_WARNING_CODEX'));
-  assert.ok(off(start(f)));
-  btn(f, 'Codex mode', 'custom').click();
-  assert.equal(hidden(danger), true, 'custom with the default sandbox is not dangerous');
-  choose(fieldOf(f, /^Sandbox$/).querySelector('select'), 'danger-full-access');
-  assert.equal(hidden(danger), false);
-  assert.ok(off(start(f)));
-  tickBox(f.querySelector('.lx-ack input'));
-  assert.ok(!off(start(f)));
-  submit(f);
-  await tick(); await tick();
-  const b = posts(w, /\/sessions$/)[0].body;
-  assert.deepEqual([b.mode, b.sandbox, b.bypass], ['custom', 'danger-full-access', true]);
+  assert.equal(w.localStorage.getItem('ccboard:bypass-ack:shop/api'), null, 'another repo has not acknowledged');
 });
 
 test('task and dispatch mode never offer bypass: no bypass permission, no bypass button, no danger-full-access sandbox in the DOM, and a remembered one is turned back', () => {

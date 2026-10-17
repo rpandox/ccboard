@@ -29,7 +29,7 @@ AUTH = {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True,
         "email": "me@example.com", "subscriptionType": "max"}
 SESSION_KEYS = {"tmux", "project", "repo", "name", "agent", "state", "state_at", "last_prompt", "last_message", "stats", "flags",
                 "agent_session_id", "account", "task", "pending", "viewers", "win", "shell_version",
-                "hooks_missing"}      # the plan's GET /api/sessions/{name}; hooks_missing: #96 (the terminal header's chip)
+                "hooks_missing", "queued_prompts"}      # the plan's GET /api/sessions/{name}; hooks_missing: #96 (the terminal header's chip); queued_prompts: #79
 
 
 @pytest.fixture(autouse=True)
@@ -464,6 +464,36 @@ def test_state_task_chip_from_one_query(board, monkeypatch):
     assert t1 != t2 and rid_b != rid_a
 
 
+def test_state_and_session_carry_the_boards_own_queued_prompt_count(board):
+    """#79: queued_prompts = the running tasks of the session that wait for an earlier turn (spec.turns_ahead > 0), whether their text is in
+    Claude's queue or held in the board. The turn in flight (no counter), a finished task and another session's tasks are not counted."""
+    a = new_session(board, "claude", name="one")
+    b = new_session(board, "claude", name="two")
+    rid_a, rid_b = row_of(a["tmux"])["id"], row_of(b["tmux"])["id"]
+
+    def add(slug, rid, tmux, phase="running", **spec):
+        return db().task_add(project="shop", repo="api", slug=slug, title=slug, prompt="p", tmux_name=tmux, session_row=rid, phase=phase,
+                             spec=spec or None)
+
+    add("flight", rid_a, a["tmux"])                                     # the turn in flight: no counter
+    add("q1", rid_a, a["tmux"], turns_ahead=1)
+    add("q2", rid_a, a["tmux"], turns_ahead=2, unsent="held text")      # held in the board: still the board's own prompt
+    add("old", rid_a, a["tmux"], phase="done", turns_ahead=1)           # finished: not waiting any more
+    other = add("other", rid_b, b["tmux"], turns_ahead=1)
+    from app import main
+    main._invalidate_scan()
+    st = board.client.get("/api/state", headers=H).json()
+    by = {s["tmux"]: s for s in all_sessions(st)}
+    assert by[a["tmux"]]["queued_prompts"] == 2
+    assert by[b["tmux"]]["queued_prompts"] == 1
+    assert board.client.get(f"/api/sessions/{a['tmux']}", headers=H).json()["queued_prompts"] == 2
+    db().task_update(other, phase="done")
+    main._invalidate_scan()
+    by = {s["tmux"]: s for s in all_sessions(board.client.get("/api/state", headers=H).json())}
+    assert by[b["tmux"]]["queued_prompts"] == 0, "zero is a plain 0 (the UI draws nothing)"
+    assert board.client.get(f"/api/sessions/{b['tmux']}", headers=H).json()["queued_prompts"] == 0
+
+
 def test_state_tasks_resolve_their_session_by_row_and_bind_legacy_tasks(board):
     name = "shop--api--work"
     # an earlier session of that name that ended: tmux names are reused, session rows are not
@@ -559,11 +589,11 @@ def test_api_create_session_refuses_codex_without_a_binary_and_unknown(board):
 
 def test_create_claude_session_stores_agent_cwd_opts_and_exports_the_agent(board):
     r = new_session(board, "claude", name="dev", model="fable", effort="high", permission_mode="acceptEdits",
-                    allowed_tools="Bash(npm test), Read", bypass=True, args="--verbose")
+                    allowed_tools="Bash(npm test), Read", args="--verbose")
     assert r["agent"] == "claude" and r["agent_session_id"] == r["claude_session_id"] and r["tmux"] == "shop--api--dev"
     argv = shlex.split(r["cmd"])
     assert argv[:5] == ["claude", "--session-id", r["claude_session_id"], "--name", "dev"]
-    assert "--dangerously-skip-permissions" in argv and "--verbose" in argv
+    assert "--dangerously-skip-permissions" not in argv and "--verbose" in argv
     name, cwd, env = board.tmux["created"][-1]
     assert env["CCBOARD_AGENT"] == "claude" and env["CCBOARD_SESSION"] == name
     row = row_of(name)
@@ -572,10 +602,9 @@ def test_create_claude_session_stores_agent_cwd_opts_and_exports_the_agent(board
     assert opts == {"model": "fable", "effort": "high", "permission_mode": "acceptEdits", "allowed_tools": ["Bash(npm test)", "Read"]}
     assert "bypass" not in row["opts"] and "--verbose" not in row["opts"] and "extra" not in opts, "never stored: bypass, extra args"
     assert row["claude_session_id"] == r["claude_session_id"]
-    # bypassPermissions as the permission mode is run (an explicit choice) but never stored for resume
-    r2 = new_session(board, "claude", name="byp", permission_mode="bypassPermissions", model="opus")
-    assert "--permission-mode bypassPermissions" in r2["cmd"]
-    assert json.loads(row_of(r2["tmux"])["opts"]) == {"model": "opus"}
+    # bypassPermissions as the permission mode is refused on the host (owner decision, #104); the devcontainer cases are in test_launcher_api and test_tmux_cmd
+    r2 = board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "name": "byp", "permission_mode": "bypassPermissions", "model": "opus"})
+    assert r2.status_code == 400 and r2.json()["error"].startswith("bypass is allowed only inside the repo's devcontainer")
 
 
 def test_create_resume_continue_and_shell_sessions(board):

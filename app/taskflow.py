@@ -173,6 +173,18 @@ def must_hold(db, row_id: int | None) -> bool:
     return row_id is not None and any(turns_ahead(o) > 0 for o in db.tasks_for_session(row_id, ("running",)))
 
 
+def queued_counts(db) -> dict[int, int]:
+    """{sessions.id: n} of the prompts the BOARD has queued for a busy session (issue #79): the running tasks of the row whose counter is above
+    zero, whether their prompt sits in Claude's queue or is held here (spec.unsent). Rows with none are absent. Text typed straight into
+    Claude's own terminal is not counted: Claude exposes no such queue."""
+    out: dict[int, int] = {}
+    for r in db.queued_task_specs():
+        if turns_ahead(r) > 0:
+            rid = int(r["session_row"])
+            out[rid] = out.get(rid, 0) + 1
+    return out
+
+
 def forget_queue(db, t: dict | None) -> None:
     """A task leaves its session's queue without running (detached): its counter and held prompt go, and the tasks behind it have one
     Stop less to wait for (the Stop it would have used never comes)."""

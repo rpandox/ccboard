@@ -96,14 +96,6 @@
       "notes": []
     },
     {
-      "id": "claude-bypass",
-      "v": {"agent": "claude", "launch": "new", "name": "b1", "model": "opus", "effort": "high", "permission_mode": "bypassPermissions"},
-      "ctx": {},
-      "body": {"launcher": "claude", "agent": "claude", "name": "b1", "model": "opus", "effort": "high", "permission_mode": "bypassPermissions", "mode": "bypass", "bypass": true},
-      "tokens": ["claude", "--session-id", "<uuid>", "--name", "b1", "--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions"],
-      "notes": []
-    },
-    {
       "id": "codex-new-default",
       "v": {"agent": "codex", "launch": "new", "cx_mode": "default", "name": "cx", "prompt": "hi", "model": "gpt-5.5", "reasoning": "high", "config": "a.b=1", "search": true, "args": "--foo"},
       "ctx": {},
@@ -126,22 +118,6 @@
       "ctx": {},
       "body": {"launcher": "claude", "agent": "codex", "mode": "custom", "sandbox": "read-only", "approval": "never"},
       "tokens": ["codex", "--no-alt-screen", "-s", "read-only", "-a", "never"],
-      "notes": []
-    },
-    {
-      "id": "codex-custom-danger-full-access",
-      "v": {"agent": "codex", "launch": "new", "cx_mode": "custom", "sandbox": "danger-full-access", "approval": "never", "model": "gpt-5.5", "prompt": "review it"},
-      "ctx": {},
-      "body": {"launcher": "claude", "agent": "codex", "prompt": "review it", "model": "gpt-5.5", "mode": "custom", "bypass": true, "sandbox": "danger-full-access", "approval": "never"},
-      "tokens": ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.5", "--", "review it"],
-      "notes": []
-    },
-    {
-      "id": "codex-bypass",
-      "v": {"agent": "codex", "launch": "new", "cx_mode": "bypass"},
-      "ctx": {},
-      "body": {"launcher": "claude", "agent": "codex", "mode": "bypass", "permission_mode": "bypassPermissions", "bypass": true},
-      "tokens": ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"],
       "notes": []
     },
     {

@@ -185,6 +185,7 @@ def test_bypass_is_refused_for_now_later_and_dispatch(board):
         for when in ("now", "later"):
             r = post_task(board, when=when, **kw)
             assert r.status_code == 400 and "not allowed for tasks" in r.json()["error"], (kw, when, r.text)
+            assert r.json()["error"].endswith("bypass is only for an interactive Claude session in the repo's devcontainer (#104)"), r.text
     assert not board.tmux["created"] and db().tasks() == []
     tid = backlog(board)
     r = board.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"permission_mode": "bypassPermissions"})

@@ -339,3 +339,8 @@ a.bdg-hooks:hover, a.bdg-hooks:focus-visible { text-decoration:underline; }
   background:var(--mute-amber-bg); font-size:13px; line-height:1.45; }
 .peek-hooks-why { flex:1 1 24ch; min-width:0; overflow-wrap:anywhere; }
 html.force-coarse a.bdg-hooks { min-height:28px; }
+/* #79: '+2 queued' (components.js queuedPromptsChip), the board's own queued prompts for a busy session: a quiet chip, the same on the Home row, the quad
+   tile header and the terminal header. It never wraps its words. */
+.bdg-queued { display:inline-flex; align-items:center; flex:0 0 auto; min-height:18px; padding:0 7px; border:1px solid var(--line); border-radius:9px;
+  color:var(--dim); font-size:11px; line-height:16px; white-space:nowrap; }
+.bdg-queued.hidden { display:none; }
