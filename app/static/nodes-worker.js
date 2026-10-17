@@ -4,7 +4,7 @@
 
    The data is app/nodes_worker.py Worker.view(), answered as `state.node.epic_worker` on every poll while the worker is ON (the key is absent while it is off), in the node card of a paired node
    (`rec.card.epic_worker`) and by GET /api/epic-worker. POST /api/epic-worker/stop and /start (a signed-in person only) answer the same view, which is painted at once and kept until a poll that is newer
-   has the same thing to say. There is no switch here that turns the worker on: that is the env key CCBOARD_EPIC_WORKER on the box, and the panel says so.
+   has the same thing to say. Settings > Options configures the next start; these buttons control the running worker.
 
    A state is a glyph and words, never colour alone (✽ working, ✻ waiting, ∙ idle, ○ off or stopped, ✕ refused). Everything the board sends is drawn through textContent. The panel is built once and painted in
    place, so a poll never recreates the button under a finger.
@@ -33,7 +33,9 @@ const EW_SHOWN = 20;
 const EW_ENV = ['CCBOARD_EPIC_WORKER=1', 'CCBOARD_EPIC_WRITES=1', 'CCBOARD_EPIC_REPOS=owner/name'];
 const EW_OFF_WHAT = 'When it is on, this node watches the epics of the repositories you list and takes the next ready issue by itself whenever it has a free lane, with nobody pressing Run.';
 const EW_RISK = 'The risk: the text of an issue starts an agent on this machine, with acceptEdits in a worktree and nobody watching. Anyone who can create or edit issues in the listed repositories can steer it. Use a private repository and a dedicated epic.';
-const EW_HOW = 'To turn it on, set these on the box and rerun ./install.sh. It refuses to start until a repository is listed and an author is known (CCBOARD_EPIC_AUTHORS, or the gh login). The caps and the poll interval have their own keys (README, Settings). Nothing on this page turns it on, on purpose.';
+const EW_SAFETY = "If on, an issue's text starts an agent on that machine with nobody pressing Run. Only for repos and authors you list.";
+const EW_HOW = 'Set it up in Settings > Options > Epics & worker';
+const EW_WIDEN_OFF = 'The page may not turn it on until CCBOARD_PAGE_WIDEN=1 is set in the settings file.';
 const EW_NODE_NOTE = 'Read only here. Stop the worker on that node\'s own board (Open board).';
 
 const EpicWorker = { override: null, busy: false, err: '', demo: null, demoMade: null, fixture: null };
@@ -134,8 +136,11 @@ EpicWorker.build = function (opts) {
   const start = node ? null : el('button', { class: 'ew-btn hidden', type: 'button', text: 'Start worker', title: 'Let the worker read the listed epics again', onclick: () => EpicWorker.act('start', o) });
   const acts = node ? null : el('div', { class: 'ew-acts' }, stop, start);                      // a paired node's worker is stopped on that node's own board
   const nodeNote = el('p', { class: 'ew-note dim hidden', text: EW_NODE_NOTE });
+  const fileLines = el('div', { class: 'ew-file' }, el('p', { class: 'dim', text: EW_WIDEN_OFF }), el('ul', { class: 'ew-env' }, EW_ENV.map((k) => el('li', {}, el('code', { class: 'ew-code', text: k })))));
+  // The link goes to the Options form, so it is only in the off panel, and never inside the form itself or on a paired node's card.
+  const setupLink = node || o.form ? null : el('a', { class: 'ew-setup', href: '#/settings?sec=options&group=epics', text: EW_HOW });
   const offBox = el('div', { class: 'ew-off hidden' }, el('p', { class: 'ew-what', text: EW_OFF_WHAT }), el('p', { class: 'ew-risk', text: EW_RISK }),
-    el('p', { class: 'ew-how dim', text: EW_HOW }), el('ul', { class: 'ew-env' }, EW_ENV.map((k) => el('li', {}, el('code', { class: 'ew-code', text: k })))));
+    setupLink, fileLines);
   const repos = row('Repositories'), authors = row('Authors'), hour = row('This hour'), day = row('Today'), poll = row('Looks every'), nextAt = row('Next look'), seen = row('Read');
   const risk = el('p', { class: 'ew-risk-short dim', text: 'An issue\'s text starts an agent here with nobody pressing Run. Only issues from the repositories and authors above, with the ready label set by an allowed author, are taken.' });
   const rows = el('div', { class: 'ew-rows' }, repos.row, authors.row, hour.row, day.row, poll.row, nextAt.row, seen.row, risk);
@@ -175,6 +180,8 @@ EpicWorker.build = function (opts) {
   function paint(view, ctx) {
     const v = view || null;
     const c = ctx || {};
+    // The settings-file lines are only true when the board said widening is off; unknown (still loading, or failed) says nothing.
+    setClass(fileLines, 'hidden', (c.page_widen === undefined ? EpicWorker.pageWiden : c.page_widen) !== false);
     const off = !v || v.state === 'off' || !v.on;
     const h = v && !off ? EpicWorker.headline(v) : { glyph: EW_STATE.off.glyph, tone: '', word: 'Off' };
     setTextIfChanged(glyph, h.glyph);

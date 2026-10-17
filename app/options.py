@@ -19,6 +19,38 @@ GROUPS = (
 EXTRAS = {"CCBOARD_RECOVER", "CCBOARD_TMUX_SOCKET", "CCBOARD_ENV_FILE", "CCBOARD_DEV_BYPASS_USER"}
 
 
+WORKER_KEYS = frozenset({
+    "CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES",
+    "CCBOARD_EPIC_WORKER_POLL", "CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
+})
+WORKER_SAFETY = "If on, an issue's text starts an agent on that machine with nobody pressing Run. Only for repos and authors you list."
+
+
+AUTHORS_PENDING = "No author is listed and this board's gh login is not known yet. Type your GitHub login in Allowed authors."
+
+
+def worker_next(settings, known_author=None, stopped=False):
+    """Pure next-start view. The caller may supply an already cached login and the kept Stop flag; never probe gh."""
+    from .nodes_worker import refusal_reason
+    authors = settings.epic_authors or ((known_author,) if known_author else ())
+    reason = refusal_reason(settings.epic_writes, settings.epic_repos, authors) if settings.epic_worker else None
+    words = {"repos_empty": "no repository is listed", "authors_empty": "no allowed author known", "writes_off": "epic writes off"}
+    text = ("After the restart the worker will refuse to start: " + words[reason] if reason else
+            "After the restart the worker will start" + (", but it stays stopped until you press Start worker" if stopped else "")
+            if settings.epic_worker else "After the restart the worker will be off")
+    return {"on": settings.epic_worker, "reason": reason, "text": text, "known_author": known_author, "stopped": bool(stopped and settings.epic_worker),
+            "repos": list(settings.epic_repos),
+            "authors": [name + (":" + str(settings.epic_author_ids[name]) if name in settings.epic_author_ids else "") for name in authors],
+            "writes": settings.epic_writes, "poll": settings.epic_worker_poll,
+            "hour": settings.epic_worker_max_hour, "day": settings.epic_worker_max_day}
+
+
+def worker_saved(settings, db=None):
+    from .nodes_worker import kept_stop
+    from .prpoll import gh_identity_cached
+    return worker_next(settings, gh_identity_cached()[0], kept_stop(db))
+
+
 @dataclass(frozen=True)
 class Option:
     key: str
@@ -176,7 +208,7 @@ def view(settings, page_values=None) -> dict:
 write_lock = threading.Lock()
 
 
-def validate_value(option, value, raw) -> str | None:
+def validate_value(option, value, raw, *, submission=False) -> str | None:
     from .config import Settings, NTFY_TOPIC_RE, NODE_NAME_RE
     if not isinstance(value, str) or len(value) > 500:
         return "Use a string of at most 500 characters."
@@ -185,6 +217,10 @@ def validate_value(option, value, raw) -> str | None:
     if any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value):
         return "Use text without control characters."
     text = value.strip()
+    # New form entries use commas; keep loading existing Phase 4 space-separated lists.
+    if submission and option.key == "CCBOARD_EPIC_AUTHORS" and any(re.search(r"\s", entry.strip()) for entry in text.split(",")):
+        return "Use comma-separated login or login:id entries; a login cannot contain spaces."
+
     if option.key == "NTFY_TOPIC" and not NTFY_TOPIC_RE.fullmatch(value):
         return "Use 1 to 64 letters, digits, - or _."
     if option.key == "CCBOARD_NODE_NAME" and not NODE_NAME_RE.fullmatch(value):
@@ -273,12 +309,13 @@ def listing(settings, page_values=None, db=None):
         row["pending"] = row["key"] in keys
         row["running"] = running[row["key"]]["value"]
         row["edit_value"] = None if row["secret"] else redact(next_start.raw.get(row["key"], row["default"]), settings.raw)
+    result["worker"] = worker_saved(next_start, db)
     result.update(pending=keys, stamp=stamp, audit=sorted(nodes.audit_list(20, db=db, action="settings_set") + nodes.audit_list(20, db=db, action="settings_widen"), key=lambda r: r["id"], reverse=True)[:20],
                   refusals=nodes.audit_list(5, db=db, action="settings_refused"))
     return result
 
 
-def save(settings, changes, stamp=None, *, confirm=None):
+def save(settings, changes, stamp=None, *, confirm=None, db=None):
     from .config import PAGE_FILE_MAX, Settings, page_stamp, read_page_file
     with write_lock:
         path = settings.page_file
@@ -298,8 +335,11 @@ def save(settings, changes, stamp=None, *, confirm=None):
             raise ValueError(f"The page file {info['problem']}. To reset page settings, run: {command}")
         old = Settings({**base.raw, **values, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
         known = {o.key: o for o in registry()}
+        for key in changes:
+            if key in WORKER_KEYS and not old.page_widen:
+                raise ChangeRefused("widen_off", 403, key=key, line="CCBOARD_PAGE_WIDEN=1")
         for key, value in changes.items():
-            reason = validate_value(known[key], value, base.raw) if value is not None else None
+            reason = validate_value(known[key], value, base.raw, submission=True) if value is not None else None
             if reason:
                 raise ChangeRefused(reason, 400, key=key)
             if value is None:
@@ -307,7 +347,7 @@ def save(settings, changes, stamp=None, *, confirm=None):
             else:
                 values[key] = value
         proposed = Settings({**base.raw, **values, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
-        wider = check_changes(old, proposed, changes, confirm)
+        wider = check_changes(old, proposed, changes, confirm, db)
         # Preserve dormant, unconfirmed and unknown entries without activating them.
         confirmed = [key for key in document.get("confirmed", []) if key not in changes]
         for key, value in changes.items():
@@ -340,7 +380,8 @@ def widens(key, old, new):
         return str(old).strip() != "1" and str(new).strip() == "1"
     if key in ("CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_AUTHORS"):
         entries = lambda v: {x.lower() for x in re.split(r"[,\s]+", str(v).strip()) if x}
-        return bool(entries(new) - entries(old))
+        # Clearing the authors list hands trust to the board's gh login, which is a different (wider) set.
+        return bool(entries(new) - entries(old)) or (key == "CCBOARD_EPIC_AUTHORS" and bool(entries(old)) and not entries(new))
     if key == "CCBOARD_NODE_LANES":
         return int(old) != 0 and (int(new) == 0 or int(new) > int(old))
     if key in ("CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY"):
@@ -369,7 +410,7 @@ def live_widening(settings):
             and widens(o.key, effective(base, o), effective(settings, o))]
 
 
-def check_changes(old, new, changes, confirm):
+def check_changes(old, new, changes, confirm, db=None):
     wider = []
     for option in registry():
         if option.key not in changes or option.cls != "confirm":
@@ -389,14 +430,12 @@ def check_changes(old, new, changes, confirm):
                 "CCBOARD_SUBAGENT_MODEL": "Subagents may use a different model, with different capability and cost.",
             }[option.key]
             wider.append({"key": option.key, "from": redact(before, old.raw), "to": redact(after, old.raw), "plain": plain})
-    if "CCBOARD_EPIC_WORKER" in changes and not old.epic_worker and new.epic_worker:
-        missing = []
-        if not new.epic_writes:
-            missing.append("CCBOARD_EPIC_WRITES=1")
-        if not new.epic_repos:
-            missing.append("CCBOARD_EPIC_REPOS")
-        if missing:
-            raise ChangeRefused("Worker requires " + " and ".join(missing) + ".", 400)
+    worker = worker_saved(new, db)
+    # Refuse only a change that turns the worker on, or keeps it on while touching what it needs to start.
+    # Unrelated edits (poll interval, caps) never block: the real worker probes gh at start.
+    gate = new.epic_worker and (not old.epic_worker or {"CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES"}.intersection(changes))
+    if gate and worker["reason"]:
+        raise ChangeRefused(AUTHORS_PENDING if worker["reason"] == "authors_empty" else worker["text"], 400, worker=worker)
     if wider:
         groups = set()
         for row in wider:
@@ -406,7 +445,8 @@ def check_changes(old, new, changes, confirm):
                        "ALLOW SUBAGENT MODEL" if key == "CCBOARD_SUBAGENT_MODEL" else "ALLOW WORKER")
         phrase = " AND ".join(sorted(groups))
         if confirm is None:
-            raise ChangeRefused("needs_confirm", 409, phrase=phrase, widens=wider)
+            raise ChangeRefused("needs_confirm", 409, phrase=phrase, widens=wider,
+                                **({"worker": worker, "safety": WORKER_SAFETY} if WORKER_KEYS.intersection(changes) else {}))
         if confirm != phrase:
             raise ChangeRefused("bad_phrase", 403, key=wider[0]["key"])
     return wider
