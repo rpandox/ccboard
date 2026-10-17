@@ -9,6 +9,14 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.66 - 2026-10-17
+
+### Fixed
+- The test suite's real-home guard (#235) no longer fails a run because the board installed on the same machine synced its hooks while the suite ran (its auto-update restarts it, and the hook installer rewrites `~/.claude/settings.json` and `~/.codex/hooks.json`). `scripts/claude_settings.py` and `scripts/codex_hooks.py` now touch an empty `.ccboard-hook-sync` beside each file they write (best effort; a failed stamp never fails the install). The guard excuses a change to one of those two files only when that stamp moved during the run and the file changed within 15 seconds of it, and prints one warning line saying the install did it.
+- A test that really writes the real home still fails the run, as does any change to the other guarded files, or to a hook file with no fresh stamp. The stamp is written on the next hook sync.
+
+Upgrade: nothing to do.
+
 ## v0.5.65a - 2026-10-17
 
 ### Fixed
