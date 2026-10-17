@@ -1,0 +1,28 @@
+{
+  "candidates": [
+    { "ts_id": "demo-lab-pi", "name": "lab-pi", "dns_name": "lab-pi.example.ts.net", "os": "Linux", "online": true, "same_user": true, "tags": [], "ips": ["100.64.0.21"], "last_seen": null },
+    { "ts_id": "demo-studio-mini", "name": "studio-mini", "dns_name": "studio-mini.example.ts.net", "os": "macOS", "online": true, "same_user": true, "tags": [], "ips": ["100.64.0.22"], "last_seen": null }
+  ],
+  "devices": [
+    {
+      "ts_id": "demo-studio-mini", "name": "studio-mini", "dns_name": "studio-mini.example.ts.net", "os": "macOS", "online": true,
+      "tags": [], "user": "ccagent", "folder": "projects", "owner": "alice@example.com",
+      "check": {
+        "ok": true,
+        "rows": [
+          { "key": "ssh", "ok": true, "message": "SSH works for ccagent on studio-mini.", "fix": "" },
+          { "key": "user", "ok": true, "message": "ccagent is a non-root user on studio-mini.", "fix": "" },
+          { "key": "groups", "ok": true, "message": "ccagent's groups: staff. Not in sudo, wheel or admin.", "fix": "" },
+          { "key": "system", "ok": true, "message": "studio-mini runs Darwin (macOS).", "fix": "" },
+          { "key": "tmux", "ok": true, "message": "tmux 3.4 is installed for ccagent on studio-mini.", "fix": "" },
+          { "key": "claude", "ok": true, "message": "claude is on ccagent's PATH on studio-mini. Sign-in has not been checked.", "fix": "" },
+          { "key": "codex", "ok": false, "message": "codex is not on ccagent's PATH on studio-mini.", "fix": "Install codex for ccagent, then Check again." },
+          { "key": "repos", "ok": true, "message": "Found 2 repositories under ~/projects.", "fix": "" }
+        ],
+        "repos": ["example-api", "example-web"],
+        "login_url": null
+      }
+    }
+  ],
+  "tailscale": { "ok": true, "reason": "" }
+}

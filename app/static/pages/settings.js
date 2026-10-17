@@ -1533,6 +1533,43 @@ function settingsNdUi() {
   return ui;
 }
 
+/* Demo device writes stay in this page's memory, just like demo pairing. Only the static fixture is fetched. */
+let settingsDemoBare = null;
+async function demoBare(method, path, body = {}) {
+  if (!settingsDemoBare) {
+    const r = await fetch('/static/demo/bare.json');
+    if (!r.ok) throw new Error(`demo fixture bare.json: ${r.status} ${r.statusText}`);
+    const data = await r.json();
+    settingsDemoBare = { data, template: JSON.parse(JSON.stringify(data.devices[0])) };
+  }
+  const { data, template } = settingsDemoBare;
+  const route = path.split('?')[0];
+  if (method === 'GET' && route === '/api/bare') return data;
+  const match = /^\/api\/bare\/([^/]+)(?:\/(check|forget-host-key))?$/.exec(route);
+  const id = match ? decodeURIComponent(match[1]) : body.ts_id;
+  const saved = data.devices.find((d) => d.ts_id === id);
+  const candidate = data.candidates.find((d) => d.ts_id === id);
+  if (!candidate) throw demoError(404, 'No such demo device.');
+  if (method === 'DELETE' && match && !match[2]) {
+    data.devices = data.devices.filter((d) => d.ts_id !== id);
+    return { ok: true };
+  }
+  if (method === 'POST' && match && match[2] === 'forget-host-key') {
+    if (saved) saved.check = { ok: false, rows: [{ key: 'ssh', ok: false,
+      message: "Host key forgotten. Check again to pin the device's current key.", fix: 'Check again.' }], repos: [], login_url: null };
+    return { ok: true };
+  }
+  if (method !== 'POST' || (route !== '/api/bare' && (!match || match[2] !== 'check'))) throw demoError(404, 'No such demo action.');
+  const user = saved ? saved.user : body.user || 'ccagent', folder = saved ? saved.folder : body.folder || 'projects';
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user) || user === 'root') throw demoError(400, 'Choose a dedicated non-root user, such as ccagent.');
+  const check = JSON.parse(JSON.stringify(template.check));
+  const wording = (s) => s.replaceAll(template.name, candidate.name).replaceAll(template.user, user).replaceAll('~/projects', `~/${folder}`).replaceAll('Darwin (macOS)', candidate.os === 'Linux' ? 'Linux' : 'Darwin (macOS)');
+  check.rows = check.rows.map((row) => ({ ...row, message: wording(row.message), fix: wording(row.fix) }));
+  const device = { ...candidate, user, folder, owner: template.owner, check };
+  data.devices = [...data.devices.filter((d) => d.ts_id !== id), device];
+  return { added: true, device, check };
+}
+
 /* Bare devices are checked only when asked. Keep the form and results mounted across board polls. */
 const settingsBare = { data: null, busy: false, seq: 0, result: null, err: '', ui: null };
 
