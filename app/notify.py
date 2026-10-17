@@ -376,6 +376,8 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
     cat = category(state, kind, perm)
     pub = (settings.public_url or "").rstrip("/")
     path = f"/#/s/{tmux_name}" if tmux_name else "/"
+    if row.get("bare_device"):
+        path = "/#/inbox"  # A device terminal needs a fresh ticket, issued from its card.
     node = _node_name()
     title = _prefixed(f"{_where(row, agent, tmux_name)}: {TITLES.get(state, state)}", node)
 
@@ -407,6 +409,8 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
         web_actions = [{"action": "terminal", "title": "Terminal"}, {"action": "ack", "title": "Ack"}]
     if pub and tmux_name:
         terminal = {"action": "view", "label": "Terminal", "url": f"{pub}/term/{tmux_name}"}
+        if row.get("bare_device"):
+            terminal = {"action": "view", "label": "Needs you", "url": pub + path}
         if pid is not None:
             http = {"method": "POST", "headers": {"X-CCBoard": "1"}, "clear": True}
             actions = [{"action": "http", "label": "Allow", "url": f"{pub}/api/permission/{pid}/allow", **http},
@@ -415,6 +419,8 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
             actions = [terminal, {"action": "http", "label": "Ack", "url": f"{pub}/api/sessions/{tmux_name}/ack", "method": "POST",
                                   "headers": {"X-CCBoard": "1"}, "clear": True}]
     priority, tags = LOOK.get(cat, (PRIORITY.get(state, 3), TAGS.get(state, [])))
+    if row.get("bare_device"):
+        web_actions = [a if a["action"] != "terminal" else {"action": "open", "title": "Needs you"} for a in web_actions]
     handover = cat == "done" and isinstance(task, dict) and bool(task.get("chain_next"))     # a chain step with another one queued behind it
     if handover:
         priority = 2

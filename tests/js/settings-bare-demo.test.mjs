@@ -91,7 +91,7 @@ test('demo launcher and sidebar have two live device sessions; start/read/stop p
   w.run('Shell.patchTrees = () => {};');
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
   assert.equal(w.get('state.bare_devices.length'), 1);
-  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'alive'], ['shell', 'alive']]);
+  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'dialog'], ['shell', 'waiting']]);
   w.run("Shell.open.add('bare:demo-lab-pi'); globalThis.kit = lxnKit({}, null, 'session'); globalThis.sidebar = el('div'); Shell.bareDevice(sidebar, state.bare_devices[0]);");
   assert.match(text(w.get('kit.pick')), /lab-pi \(no board\)/);
   assert.equal(w.get('sidebar').querySelectorAll('.s-row').length, 2);

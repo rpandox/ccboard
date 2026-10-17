@@ -291,3 +291,21 @@ def test_terminal_scan_reuses_captures_for_scan_ttl_but_answers_reread(lite_clie
     assert main._pending_permissions() == []
     assert main._pending_permissions() == []
     assert captures == [NAME] * 4  # negative captures are cached too
+
+
+def test_local_answered_prompt_stays_gone_after_a_transient_empty_read(lite_client, agent_row, fake_tmux, monkeypatch):
+    """A tmux list error between two reads must not re-show a prompt that was already answered (device polling re-arms; local does not)."""
+    from app import tmux
+    main.db.set_state(NAME, "waiting", "PermissionRequest")
+    fake_tmux["screen"] = DIALOG
+    monkeypatch.setattr(tmux, "capture", lambda *a, **kw: fake_tmux["screen"])
+    t = [100.0]
+    monkeypatch.setattr("time.monotonic", lambda: t[0])
+    p, = main._pending_permissions()
+    assert lite_client.post(f"/api/permission/{p['id']}/allow", headers=H).status_code == 200
+    fake_tmux["screen"] = "idle"
+    t[0] += main.SCAN_TTL
+    assert main._pending_permissions() == []
+    fake_tmux["screen"] = DIALOG
+    t[0] += main.SCAN_TTL
+    assert main._pending_permissions() == []

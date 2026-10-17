@@ -10,7 +10,7 @@ async function demoBare(method, path, body = {}) {
   const { data, template } = demoBareStore;
   const route = path.split('?')[0];
   if (method === 'GET' && route === '/api/bare') return JSON.parse(JSON.stringify(data));
-  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/(stop|attach))?$/.exec(route);
+  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/(stop|attach|allow|deny|reply))?$/.exec(route);
   if (sessionRoute && method === 'POST') {
     const device = data.devices.find((d) => d.ts_id === decodeURIComponent(sessionRoute[1]));
     if (!device || !device.check.ok) throw demoError(400, 'Add and check your device first.');
@@ -22,6 +22,17 @@ async function demoBare(method, path, body = {}) {
     if (sessionRoute[3]) {
       const row = device.sessions.find((s) => s.tmux_name === decodeURIComponent(sessionRoute[3]));
       if (row && sessionRoute[4] === 'attach') return { attach_url: '/term/bare-ticket-' + '0'.repeat(64) };
+      if (row && ['allow', 'deny', 'reply'].includes(sessionRoute[4])) {
+        const verb = sessionRoute[4];
+        if (verb === 'reply') {
+          if (row.state !== 'waiting') throw demoError(409, 'The session is not at its input prompt. Open the terminal; nothing was sent.');
+          if (typeof body.text !== 'string' || !body.text.trim()) throw demoError(400, 'Write a reply first.');
+        } else if (row.state !== 'dialog' || body.pid !== row.prompt_id) {
+          throw demoError(409, 'The terminal prompt changed or is no longer available; nothing was sent.');
+        }
+        row.state = verb === 'deny' ? 'waiting' : 'working';
+        return { ok: true };
+      }
       if (!row || !body.confirm) throw demoError(400, 'Confirm Stop with a second tap.');
       row.state = 'stopping';
       return { status: 'stopping' };
@@ -64,3 +75,11 @@ async function demoBare(method, path, body = {}) {
   return { added: true, device, check };
 }
 
+
+function demoBarePending(devices) {
+  return devices.flatMap((d) => (d.sessions || []).filter((s) => s.state === 'dialog' && s.prompt_id).map((s) => ({
+    id: s.prompt_id, kind: 'terminal_prompt', tmux_name: s.tmux_name, bare_device: d.ts_id,
+    tool_name: 'Bash', summary: 'Bash command: npm test', created_at: new Date().toISOString(),
+    choices: [{ number: '1', label: 'Yes' }, { number: '2', label: 'No' }],
+  })));
+}

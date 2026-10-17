@@ -758,7 +758,7 @@ def test_demo_device_sessions_match_the_checked_device_fixture():
     fixture, = demo_json("bare.json")["devices"]
     assert device["ts_id"] == fixture["ts_id"] and device["check"] == fixture["check"]
     assert device["check"]["ok"] and device["sessions"] == fixture["sessions"]
-    assert [(s["agent"], s["state"]) for s in device["sessions"]] == [("claude", "alive"), ("shell", "alive")]
+    assert [(s["agent"], s["state"]) for s in device["sessions"]] == [("claude", "dialog"), ("shell", "waiting")]
     assert len(fleet_sessions(state)) + len(device["sessions"]) == 10
 
 
