@@ -30,6 +30,18 @@
 #page .nd-pill.none { color:var(--dim); }
 
 #page .nd-inbox, #page .nd-tasks { margin:14px 0 0; }
+#page .nd-others { margin:14px 0 0; }
+#page .nd-others h2.pb-name { margin:0; }
+#page .nd-ngrp .nd-ngn { display:inline-flex; align-items:center; color:var(--fg-2); font-weight:600; }
+#page .nd-ngrp .nd-ngw { font-size:12px; }
+#page .nd-ngrp .nd-ngw.warn { color:var(--warn-fg); }
+#page .nd-ngrp .nd-ngw.bad { color:var(--bad, var(--warn-fg)); }
+#page .nd-ngrp .nd-ngago { font-size:12px; }
+#page .nd-ngrp .nd-list { display:flex; flex-direction:column; padding-left:12px; }
+#page .nd-ngrp.stale .nd-item { opacity:.7; }
+#page .nd-ngrp .nd-ngmore { margin:6px 0 0 12px; }
+@media (pointer:coarse) { #page .nd-ngrp .nd-ngn, #page .nd-ngrp .nd-ngmore { min-height:var(--tap); } }
+html.force-coarse #page .nd-ngrp .nd-ngn, html.force-coarse #page .nd-ngrp .nd-ngmore { min-height:var(--tap); }
 #page .nd-tfilter { margin:0 0 10px; max-width:100%; }
 #page .nd-tfilter .seg-ctl { flex-wrap:nowrap; max-width:100%; }
 #page .nd-tfilter .seg-btn { white-space:nowrap; }

@@ -10,6 +10,21 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.65 - 2026-10-17
+
+### Added
+- Home now lists the sessions of the paired nodes (issue #82): a collapsible "Other nodes" block after the projects, one group per node (the box, a Mac), read only. Each row has the node chip, project and repo, session name, state glyph and age, and a tap opens the node's session page (`#/n/<handle>/s/<name>`). It uses the hub's last reading only, so Home asks no node for it: a stale node shows how old the reading is, an offline node's last reading is dimmed with its age.
+- Sessions that need you stay under "On other nodes" and are not listed twice; the Home state chips narrow the node rows too, and `?demo=1` shows them for build-box, alice-mac and old-laptop.
+
+Upgrade: nothing to do.
+
+## v0.5.64 - 2026-10-17
+
+### Added
+- Settings > Notifications now says that Claude's own apps (the Claude mobile app, Remote Control, Claude's push) can notify you about the same moments, and that if you get two notices you can turn off either the board's notices there or notifications in the Claude app's settings (issue #80). A note only; no notification logic changed.
+
+Upgrade: nothing to do.
+
 ## v0.5.63 - 2026-10-17
 
 ### Added
