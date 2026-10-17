@@ -1854,6 +1854,10 @@ test('node keys show a grouped id, mode and date; Rotate key needs two taps', as
   assert.match(text(panel(w)), /9f2c 41aa 07be d310/);
   assert.match(text(panel(w)), /CCBOARD_NODE_KEYSprefer/);
   assert.match(text(panel(w)), /Key created2026-10-17/);
+  const { w: w2 } = pairWorld({ over: { node: { ...CARD, key_mode: 'prefer', key: { alg: 'ed25519', id: '9f2c41aa07bed310', created_at: '2026-10-17T07:31:49.123456+00:00' } } } });
+  await settle();
+  assert.match(text(panel(w2)), /Key created2026-10-17 07:31(?!:)/);
+  assert.doesNotMatch(text(panel(w2)), /T07:31:49/);
   assert.match(text(panel(w)), /lost or stolen key means Remove/);
   btn(panel(w), 'Rotate key').click();
   assert.equal(writes(w).length, 0);

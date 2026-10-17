@@ -780,7 +780,7 @@ function settingsNdPaintThis(host, st) {
   if (n.key && n.key.id) {
     const id = NodeView.keyId(n.key.id);
     host.append(settingsKv('Ed25519 key', el('span', { class: 'v', text: id }), typeof copyButton === 'function' ? copyButton(id, 'key id') : null));
-    host.append(settingsKv('Key created', el('span', { class: 'v', text: NodeView.str(n.key.created_at, 40) || 'this run only' })));
+    host.append(settingsKv('Key created', el('span', { class: 'v', text: (typeof fmtTs === 'function' ? fmtTs(NodeView.str(n.key.created_at, 40)) : NodeView.str(n.key.created_at, 40)) || 'this run only' })));                  // a date and minute, not the raw ISO stamp
     host.append(confirmButton('node-key-rotate', 'Rotate key', async () => {
       try {
         const result = await api('POST', '/api/nodes/key/rotate', {});
