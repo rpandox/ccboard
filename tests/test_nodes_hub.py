@@ -143,6 +143,8 @@ class Net:
 
 @pytest.fixture
 def net(monkeypatch, clock):
+    # These scripted peers model the older unsigned protocol.
+    monkeypatch.setattr(settings, "node_keys", "prefer")
     return Net(monkeypatch)
 
 
@@ -522,6 +524,23 @@ def test_a_saved_online_status_is_not_carried_through_a_restart(db, net, clock):
     assert '"online"' not in saved and "status" not in saved, "only the times are stored; the status is worked out when it is read"
     clock.t += 1000
     assert nodes_hub.NodeHub(db, interval=INTERVAL).records()[0]["status"] == "offline"
+
+
+def test_a_restored_fresh_card_does_not_let_an_unkeyed_pair_through_under_require(db, net, clock, monkeypatch):
+    _, peer = add(db, net, clock)
+    hub = nodes_hub.NodeHub(db, interval=INTERVAL)
+    assert hub.poll_once()[0]["status"] == "online"
+    hub.persist(force=True)
+    monkeypatch.setattr(settings, "node_keys", "require")          # the upgrade restart: the card read a moment ago is still fresh
+    clock.t += 20
+    seen = len(peer.calls)
+    reborn = nodes_hub.NodeHub(db, interval=INTERVAL)
+    r = reborn.poll_once()[0]
+    assert r["status"] == "unauthorized" and r["error_kind"] == "key_required" and r["card"] is None
+    assert "/api/node" not in [p for p, _ in peer.calls[seen:]], "refused without waiting for a new card"
+    monkeypatch.setattr(settings, "node_keys", "prefer")
+    clock.t += 20
+    assert nodes_hub.NodeHub(db, interval=INTERVAL).poll_once()[0]["status"] == "online", "prefer keeps the unkeyed pair working"
 
 
 def test_node_last_holds_no_token_and_a_forgotten_node_leaves_nothing(db, net, clock):

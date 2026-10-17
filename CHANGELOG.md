@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.89 - 2026-10-17
+
+### Changed
+- Node signing keys default to `require`; unkeyed pairs are refused with `key_required`. An explicit `prefer` keeps automatic upgrades working.
+- Settings > Nodes, Doctor and API errors explain how to repair an unkeyed pair; the demo shows the refusal and Options shows the new default.
+
+- `./install.sh` no longer stores a default for `CCBOARD_NODE_KEYS` (an empty value means `require`), and the first rerun on an install that stored the old `prefer` default turns it into empty and says so. A value you pass on the command line is kept.
+- A pair without a signing key is refused at once under `require`, also when a recent card was restored at startup.
+
+Upgrade: Linux, WSL and Docker: rerun ./install.sh once (it drops the old stored prefer). macOS: nothing. Any pair without a signing key needs pairing again, or set CCBOARD_NODE_KEYS=prefer.
+
 ## v0.5.85 - 2026-10-17
 
 ### Added

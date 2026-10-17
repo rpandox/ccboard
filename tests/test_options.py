@@ -157,6 +157,9 @@ def test_handler_itself_refuses_agent_identities(user):
 def test_fixture_matches_registry():
     fixture = json.loads((Path(__file__).resolve().parents[1] / "app/static/demo/options.json").read_text())
     assert [o["key"] for o in fixture["options"]] == [o.key for o in options.registry()]
+    node_keys = next(o for o in fixture["options"] if o["key"] == "CCBOARD_NODE_KEYS")
+    assert node_keys["default"] == node_keys["value"] == "require"
+    assert node_keys["line"] == "CCBOARD_NODE_KEYS=require"
     assert fixture["groups"] == [{"id": k, "label": v} for k, v in options.GROUPS]
     assert all(o["value"] is None for o in fixture["options"] if o["secret"])
     lanes = next(o for o in fixture["options"] if o["key"] == "CCBOARD_NODE_LANES")
@@ -283,3 +286,13 @@ def test_linux_service_file_problem_is_silent(tmp_path, monkeypatch, caplog, pro
     rows = {o["key"]: o for o in options.view(settings)["options"]}
     assert rows["CCBOARD_EPIC_ALIAS"]["source"] == "default"
     assert rows["CCBOARD_NODE_LANES"]["source"] == "environment"
+
+
+def test_node_keys_default_is_require_on_options_page(endpoint):
+    _, rows = endpoint({})
+    row = rows["CCBOARD_NODE_KEYS"]
+    assert row["default"] == row["value"] == "require"
+    assert row["source"] == "default"
+    assert row["line"] == "CCBOARD_NODE_KEYS=require"
+    _, rows = endpoint({"CCBOARD_NODE_KEYS": "prefer"})
+    assert rows["CCBOARD_NODE_KEYS"]["value"] == "prefer"

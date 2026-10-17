@@ -1,6 +1,7 @@
 {
   "app": "ccboard",
   "api": 1,
+  "key_mode": "require",
   "node_id": "ts:nDEMO1CNTRL",
   "name": "box",
   "url": "https://box.example.ts.net",

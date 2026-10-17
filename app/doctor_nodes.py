@@ -157,6 +157,9 @@ def _health_rows(regs: list[dict], recs: list[dict]) -> list[tuple[int, str, str
                         f"Remove this board's pair on {name} first, then pair again and compare the key ids"))
         elif rec.get("error_kind") == "key_changed" or reg.get("last_error") == "key_changed":
             out.append((0, name, f"{name} has a different signing key", "Remove the pair and pair again with a new code; compare the key ids"))
+        elif rec.get("error_kind") == "key_required" or reg.get("last_error") == "key_required":
+            out.append((0, name, f"{name}: this pair has no signing key and is refused",
+                        "Pair again with signing enabled on both boards, or set CCBOARD_NODE_KEYS=prefer"))
         elif reg.get("needs_repair") or status == "unauthorized":
             out.append((0, name, f"{name} no longer takes this board's token (the pairing was removed there, or a rotation answer was lost)",
                         f"Open Settings > Nodes and press Re-pair on {name} (Remove, then Add node with a new code made on {name})"))

@@ -785,7 +785,7 @@ def test_no_credential_is_403_and_no_csrf_header_is_403(world):
     assert w.up.calls == []
 
 
-def test_a_node_token_at_the_hub_route_is_403_and_the_hook_token_is_403_human_only(world):
+def test_a_node_token_at_the_hub_route_is_403_and_the_hook_token_is_403_human_only(world, unsigned_node_keys):
     w = world
     _, tok = nodes.add_incoming({"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}, list(nodes.SCOPES), db=w.a.db)
 

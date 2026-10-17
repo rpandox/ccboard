@@ -509,7 +509,9 @@ async def _node_auth(request: Request, call_next):
             message += "; this is transient: check the two clocks; they must be within 120 seconds."
         elif reason in ("stale", "replay"):
             message += "; this is transient: the request was refused once, nothing to do."
-        elif reason in ("key_changed", "key_required", "bad_signature", "signature_required"):
+        elif reason == "key_required":
+            message = node_keys.KEY_REQUIRED_MESSAGE
+        elif reason in ("key_changed", "bad_signature", "signature_required"):
             message += "; pair again if the key was lost"
         return JSONResponse({"error": message, "reason": reason}, status_code=401, headers=NODE_SECURITY_HEADERS)
     scope = nodes.route_scope(request.method, request.url.path)

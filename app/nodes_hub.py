@@ -631,6 +631,10 @@ class NodeHub:
         """The card is read on the first good poll and then every CARD_EVERY seconds; a card that fails or does not validate changes nothing."""
         now = self.clock()
         if rec.get("card") is not None and rec.get("card_ts") is not None and now - rec["card_ts"] < CARD_EVERY:
+            # A card restored at startup is fresh for five minutes: under `require` an unkeyed pair is still refused now, not after that wait.
+            if nodes.node_keys.mode() == "require" and not (nodes.peer(row["peer_id"], self.db) or row).get("pubkey"):
+                if nodes.node_keys.check_card(row, {}, self.db) == "key_required":
+                    return {"hard": "unauthorized", "error_kind": "key_required", "card": None, "state": None}
             return {}
         try:
             r = self._fetch(row, "/api/node", None)

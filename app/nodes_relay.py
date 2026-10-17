@@ -1657,6 +1657,8 @@ def _hub_record(hub, handle: str) -> dict | None:
 
 
 def _status_check(reg: dict, rec: dict | None, name: str) -> None:
+    if reg.get("last_error") == "key_required" or (rec or {}).get("error_kind") == "key_required" or (nodes.node_keys.mode() == "require" and not reg.get("pubkey")):
+        raise RelayError(409, "key_required", nodes.node_keys.KEY_REQUIRED_MESSAGE, kind="refused")
     if reg.get("needs_repair") or (rec or {}).get("status") == "unauthorized":
         raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="refused")
     status = (rec or {}).get("status")
@@ -1750,6 +1752,8 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     msg = _cut((r.json or {}).get("error") if isinstance(r.json, dict) else "")
     peer_reason = r.json.get("reason") if isinstance(r.json, dict) else None
     if r.status == 401:
+        if peer_reason == "key_required":
+            raise RelayError(409, peer_reason, nodes.node_keys.KEY_REQUIRED_MESSAGE, kind="failed")
         if peer_reason == "pairing_not_acknowledged":
             raise RelayError(409, peer_reason, nodes.PAIR_PENDING_MESSAGE, kind="failed")
         raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="failed")

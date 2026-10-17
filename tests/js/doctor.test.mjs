@@ -3,6 +3,9 @@
 // the visibilitychange ask and its 5 s guard, the quiet "Doctor: n checks failing" line under the tabs, and that nothing opens Doctor by itself.
 // Real scripts on minidom's DOM through tests/js/world.mjs; api() is the recorder (GET /api/doctor answers `doctor` below).
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { STATIC } from './harness.mjs';
 import { afterEach, test } from 'node:test';
 import { calls, fakeState, homeWorld, page, plain, text, tick } from './world.mjs';
 
@@ -284,4 +287,14 @@ test('Doctor never opens by itself: failing checks do not move the route, raise 
   assert.equal(page(s).querySelectorAll('.tab').filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.getAttribute('data-tab')).includes('doctor'), false);
   assert.equal(toasts(s).length, 0);
   assert.equal(text(line(s)), 'Doctor: 3 checks failing', 'the only trace is the quiet line');
+});
+
+
+test('the demo Doctor explains the refused unkeyed pair and keeps summary counts correct', async () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'doctor.json'), 'utf8'));
+  assert.deepEqual(fixture.summary, tally(fixture.checks));
+  const w = await mount(docWorld({ answer: fixture }));
+  const row = rowOf(w, 'node-keys');
+  assert.match(text(row), /CCBOARD_NODE_KEYS=require.*unkeyed pair is refused/);
+  assert.match(text(row), /Pair again.*CCBOARD_NODE_KEYS=prefer/);
 });

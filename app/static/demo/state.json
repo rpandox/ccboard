@@ -2467,7 +2467,7 @@
       "id": "648aa5c579fb30f3",
       "created_at": "2026-10-17T00:00:00+00:00"
     },
-    "key_mode": "prefer"
+    "key_mode": "require"
   },
   "claude_defaults": {
     "subagent_model": "inherit",

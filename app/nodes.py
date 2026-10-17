@@ -869,7 +869,7 @@ class PairError(Exception):
         "rate_limited": "Too many tries; wait a minute.",
         "bad_request": "The pairing request is not valid.",
         "bad_url": "The address is not one this board may call.",
-        "key_required": "Pairing requires signing keys: both boards need the key update and signing enabled, or use mode prefer.",
+        "key_required": node_keys.KEY_REQUIRED_MESSAGE,
         "key_changed": "This node id is pinned to another key on this board; the pair for it must be removed here first.",
         "callback_unreachable": "The other address did not answer the check in time; nothing was paired. Make a new code and try again.",
         "answer_unverified": "The other board did not prove it holds its signing key; nothing was paired. Make a new code and try again.",

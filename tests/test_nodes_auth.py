@@ -101,8 +101,10 @@ def _fresh_scan():
 
 
 @pytest.fixture
-def board(lite_client):
+def board(lite_client, monkeypatch):
     from app import main
+    # These token/scope tests intentionally exercise the unsigned compatibility mode.
+    monkeypatch.setattr(main.settings, "node_keys", "prefer")
     return lite_client, main.db
 
 

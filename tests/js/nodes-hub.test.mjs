@@ -888,3 +888,15 @@ test('a failed remote task displays its workspace trust reason as text', async (
   w.run("Nodes.get('worker').state.tasks = [__task]");
   assert.ok(text(w.run("nodeTaskPeek(Nodes.get('worker'), 7)")).includes(reason));
 });
+
+
+test('an unkeyed pair refusal explains pairing again and the prefer override', async () => {
+  const { w } = await ready();
+  const row = { status: 'unauthorized', error_kind: 'key_required', scopes: ['tasks'] };
+  const encoded = JSON.stringify(row);
+  const notice = w.run(`Nodes.hardNotice(${encoded})`);
+  assert.match(notice.text, /no signing key.*refused.*Pair again.*CCBOARD_NODE_KEYS=prefer/);
+  assert.equal(notice.repair, true);
+  assert.match(w.run(`Nodes.can(${encoded}, 'tasks')`).why, /CCBOARD_NODE_KEYS=prefer/);
+  assert.equal(w.run(`Nodes.view(${encoded})`).word, 'unkeyed pair refused');
+});

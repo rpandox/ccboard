@@ -3,7 +3,7 @@
   "ok": false,
   "summary": {
     "pass": 17,
-    "warn": 4,
+    "warn": 5,
     "fail": 2,
     "skip": 1
   },
@@ -218,6 +218,16 @@
       "fix": {
         "text": "Start a Codex session, type /hooks (Codex 0.157+ asks at start) and trust the ccboard entries once.",
         "cmd": "python3 scripts/codex_hooks.py trust-help"
+      }
+    },
+    {
+      "id": "node-keys",
+      "group": "box",
+      "label": "Node signing key",
+      "status": "warn",
+      "detail": "CCBOARD_NODE_KEYS=require: an unkeyed pair is refused.",
+      "fix": {
+        "text": "Pair again with signing enabled on both boards, or set CCBOARD_NODE_KEYS=prefer."
       }
     }
   ]

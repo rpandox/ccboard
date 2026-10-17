@@ -52,7 +52,7 @@
       "last_seen": "2026-10-01T18:20:00+00:00",
       "direction": "out",
       "needs_repair": true,
-      "last_error": "the saved token was refused (401)"
+      "last_error": "key_required"
     }
   ],
   "pairs": [

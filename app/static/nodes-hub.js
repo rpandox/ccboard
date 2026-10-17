@@ -60,7 +60,7 @@ Nodes.view = function (rec, nowMs) {
   const since = rec && rec.last_ok_at ? nhClock(rec.last_ok_at, now) : '';
   const other = status === 'unpaired' && rec && rec.error_kind === 'identity_changed';
   const signatureWord = rec && { stale: 'signature too old', replay: 'signature already used', clock: 'clocks differ',
-    bad_signature: 'signature not valid', signature_required: 'signature missing', key_changed: 'peer key changed', own_key_changed: 'own key changed' }[rec.error_kind];
+    key_required: 'unkeyed pair refused', bad_signature: 'signature not valid', signature_required: 'signature missing', key_changed: 'peer key changed', own_key_changed: 'own key changed' }[rec.error_kind];
   const v = {
     online: { glyph: '●', word: 'online', tone: 'ok' },
     stale: { glyph: '◐', word: age === null ? 'stale' : `stale ${nhSpan(age)}`, tone: 'warn' },
@@ -182,7 +182,8 @@ Nodes.unpend = function (p) { Nodes.pending = Nodes.pending.filter((x) => x !== 
 /* Can an action that needs `scope` be sent to this node now? {ok, why}: why is the plain sentence a disabled control shows, in the order the hub refuses (a paired token, the
    pair's scope, the reading: nothing is queued for later). A stale node (its last try failed, the reading is younger than 10 minutes) is still called. */
 Nodes.signatureWords = function (rec) {
-  return { stale: 'The signature is too old. Wait for the next check; check automatic time if it persists.',
+  return { key_required: 'This pair has no signing key and is refused. Pair again or set CCBOARD_NODE_KEYS=prefer.',
+    stale: 'The signature is too old. Wait for the next check; check automatic time if it persists.',
     replay: 'The signature was already used. Wait for the next check.',
     bad_signature: 'The signature is not valid. Check that both boards have the key update and signing enabled.',
     signature_required: 'The signature is missing. Check that both boards have the key update and signing enabled.' }[rec.error_kind] || '';
@@ -230,7 +231,7 @@ Nodes.apiWords = function (rec) {
 Nodes.hardNotice = function (rec) {
   if (!rec) return null;
   const name = nhName(rec);
-  if (Nodes.signatureWords(rec)) return { key: rec.error_kind, cls: 'bad', repair: false, remove: false, text: Nodes.signatureWords(rec) };
+  if (Nodes.signatureWords(rec)) return { key: rec.error_kind, cls: 'bad', repair: rec.error_kind === 'key_required', remove: false, text: Nodes.signatureWords(rec) };
   if (rec.error_kind === 'clock') return { key: 'clock', cls: 'bad', repair: false, remove: false,
     text: 'Fix the clocks on both boards. Signed calls need them within 120 seconds.' };
   if (rec.error_kind === 'own_key_changed') return { key: 'own_key_changed', cls: 'bad', repair: false, remove: false,

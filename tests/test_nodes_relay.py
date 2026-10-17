@@ -106,9 +106,11 @@ def wide(monkeypatch):
 
 
 @pytest.fixture
-def lone(lite_client):
+def lone(lite_client, monkeypatch):
     """One board with its own database and no pair at all."""
     from app import main
+    # This fixture tests token scopes with deliberately unsigned incoming pairs.
+    monkeypatch.setattr(main.settings, "node_keys", "prefer")
     nodes.reset()
     return lite_client, main.db
 
@@ -551,7 +553,7 @@ def test_a_legacy_row_has_no_token_and_is_409_before_any_call(two_nodes):
     assert r.status_code == 409 and r.json()["reason"] == "legacy" and count.seen == 0
 
 
-def test_a_node_token_on_a_hub_relay_route_is_403_there_is_no_chaining(hub, wide):
+def test_a_node_token_on_a_hub_relay_route_is_403_there_is_no_chaining(hub, wide, unsigned_node_keys):
     two, reg, count = hub
     _, tok = nodes.add_incoming(dict(CALLER), list(nodes.SCOPES), db=two.a.db)
     for row in ROWS:
@@ -1263,3 +1265,30 @@ def test_the_hub_relay_routes_are_rate_limited_per_person_and_class_with_retry_a
     bob = two.a.call("GET", path, owner=False, headers={"Tailscale-User-Login": "bob@example.com", "X-CCBoard": "1"})
     assert bob.status_code == 200, "another person has their own bucket"
     assert nodes.relay_write_limiter.limit == nodes.WRITE_RATE == 30 and nr.BY_NAME["card"].rate_class == "read"
+
+
+def test_key_required_survives_peer_reply_and_cached_repair(two_nodes, pair_up):
+    reg = pair_up()
+    reply = Answer(401, b'{"reason":"key_required"}')
+    nodes.peer_transport = reply
+    path = hub_path(BY["task"], reg["handle"])
+    for _ in range(2):
+        r = two_nodes.a.get(path)
+        assert r.status_code == 409 and r.json()["reason"] == "key_required"
+        assert r.json()["error"] == nodes.node_keys.KEY_REQUIRED_MESSAGE
+    assert reply.seen == 1, "the known refusal is explained without another call"
+
+
+def test_an_unkeyed_pair_is_refused_before_any_call_under_require_even_with_a_fresh_card(two_nodes, pair_up, monkeypatch):
+    from app.config import settings
+    reg = pair_up()
+    row = nodes.peer(reg["peer_id"], two_nodes.a.db)
+    nodes.put_peer({**row, "pubkey": None, "key_source": None}, db=two_nodes.a.db)       # a pair without a signing key, the hub's card for it still fresh
+    reply = Answer(200, b"{}")
+    nodes.peer_transport = reply
+    path = hub_path(BY["task"], reg["handle"])
+    monkeypatch.setattr(settings, "node_keys", "require")
+    r = two_nodes.a.get(path)
+    assert r.status_code == 409 and r.json()["reason"] == "key_required", r.text
+    assert r.json()["error"] == nodes.node_keys.KEY_REQUIRED_MESSAGE
+    assert reply.seen == 0, "nothing is sent to the peer"

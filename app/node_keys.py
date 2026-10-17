@@ -20,6 +20,7 @@ from .db import iso
 
 STARTED = int(time.time())
 WINDOW = 120
+KEY_REQUIRED_MESSAGE = "This pair has no signing key and is refused. Pair again with signing enabled on both boards, or set CCBOARD_NODE_KEYS=prefer."
 ROTATION_WINDOW = 30 * 86400
 _lock = threading.RLock()
 _keys = {}
@@ -32,7 +33,7 @@ def _ed():
 
 
 def mode():
-    return getattr(settings, "node_keys", "prefer")
+    return getattr(settings, "node_keys", "require")
 
 
 def _path():
@@ -310,10 +311,10 @@ def verify_request(method, target, body, *, headers, peer, recipient_id, token, 
         current = db.node_pair_get(peer["peer_id"])
         pinned = current.get("peer_pubkey") if current else peer.get("pubkey")
         signature = headers.get("x-ccboard-signature")
-        if not signature:
-            return "signature_required" if pinned or mode() == "require" else None
         if not pinned and mode() == "require":
             return "key_required"
+        if not signature:
+            return "signature_required" if pinned else None
         if not pinned and mode() == "off":
             return None
         try:
@@ -423,7 +424,7 @@ def card():
 
 def doctor(db):
     from . import nodes
-    typed = getattr(settings, "node_keys_input", "prefer")
+    typed = getattr(settings, "node_keys_input", "require")
     if typed.strip().lower() not in ("prefer", "require", "off"):
         return "fail", f"CCBOARD_NODE_KEYS value {typed!r} was invalid; using require. Set prefer, require or off."
     if mode() == "off":
@@ -442,4 +443,7 @@ def doctor(db):
         return "fail", "The node-key file cannot be read; pair again after fixing it"
     unkeyed = [p.get("name") or "a node" for p in nodes.peers(db) if not p.get("legacy") and not p.get("pubkey")]
     detail = f"CCBOARD_NODE_KEYS={mode()}: Ed25519 key present, 0600, cryptography importable"
-    return ("warn", detail + "; unkeyed: " + ", ".join(unkeyed) + "; pair again") if unkeyed else ("pass", detail)
+    if unkeyed:
+        action = KEY_REQUIRED_MESSAGE if mode() == "require" else "These pairs still work and upgrade on first signed use; pair again to bind each key with a code."
+        return "warn", detail + "; unkeyed: " + ", ".join(unkeyed) + ". " + action
+    return "pass", detail

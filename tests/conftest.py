@@ -1103,3 +1103,10 @@ def bare_runner(monkeypatch, projects_dir):
 
     monkeypatch.setattr(bare, "runner", run)
     return fake
+
+
+@pytest.fixture
+def unsigned_node_keys(monkeypatch):
+    """Opt token/scope tests with deliberately unkeyed pairs into compatibility mode."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "node_keys", "prefer")
