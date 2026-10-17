@@ -425,8 +425,8 @@ docker_write_compose() { # the template is variable-driven; the .env carries thi
 }
 
 docker_seed_app() { # once: ttyd and the Claude hooks need valid targets before the first container start
-  mkdir -p "$DOCKER_APP/bin" "$DOCKER_APP/scripts"
-  if [ -x "$DOCKER_APP/bin/ccboard-attach" ] && [ -f "$DOCKER_APP/scripts/claude_settings.py" ]; then
+  mkdir -p "$DOCKER_APP/bin" "$DOCKER_APP/scripts" "$DOCKER_APP/app"
+  if [ -x "$DOCKER_APP/bin/ccboard-attach" ] && [ -x "$DOCKER_APP/bin/ccboard-attach-bare" ] && [ -f "$DOCKER_APP/app/bare.py" ] && [ -f "$DOCKER_APP/scripts/claude_settings.py" ]; then
     note "$DOCKER_APP present (the container refreshes it on every start)"
     return 0
   fi
@@ -437,6 +437,7 @@ docker_seed_app() { # once: ttyd and the Claude hooks need valid targets before 
   for f in "$APP_DIR"/scripts/*; do
     if [ -f "$f" ]; then install -m 0755 "$f" "$DOCKER_APP/scripts/"; fi
   done
+  install -m 0644 "$APP_DIR/app/bare.py" "$DOCKER_APP/app/bare.py"
   install -m 0644 "$APP_DIR/tmux.conf" "$DOCKER_APP/tmux.conf"
   note "seeded $DOCKER_APP from this checkout (bin, scripts, tmux.conf)"
 }
@@ -847,7 +848,7 @@ fi
 log "directories"
 sudo mkdir -p "$PROJECTS_DIR"; sudo chown "$USER_NAME:$(id -gn)" "$PROJECTS_DIR"
 mkdir -p "$CCBOARD_DATA_DIR"
-chmod 0755 "$APP_DIR/bin/ccboard-attach"
+chmod 0755 "$APP_DIR/bin/ccboard-attach" "$APP_DIR/bin/ccboard-attach-bare"
 
 log "python venv"
 cd "$APP_DIR"
