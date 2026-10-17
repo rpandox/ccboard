@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import selectors
 import secrets
@@ -16,6 +17,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
+from weakref import WeakKeyDictionary
 
 # Keep transport and ticket reading stdlib-only: ttyd also runs on the Docker host.
 def _data_dir(value=None):
@@ -25,6 +27,7 @@ def _data_dir(value=None):
     return settings.data_dir
 
 
+log = logging.getLogger(__name__)
 PREFIX = "bare:device:"
 LOCK = threading.Lock()
 
@@ -38,10 +41,10 @@ REPOS = (r'cd "$HOME/$1" || exit 1; find . -maxdepth 4 '
          r'\( -name node_modules -o -name .venv \) -prune -o -name .git -prune -print')
 
 
-def runner(argv: list[str], *, stdin: str | None = None):
+def runner(argv: list[str], *, stdin: str | None = None, stdout_limit: int = 32768):
     """The only process seam. Tests replace it; no shell on the board and no prompts in argv."""
     output = [bytearray(), bytearray()]
-    limits = (32768, 8192)
+    limits = (stdout_limit, 8192)
     deadline = time.monotonic() + 12
     pending = memoryview((stdin or "").encode())
     p = subprocess.Popen(argv, stdin=subprocess.PIPE if pending else subprocess.DEVNULL,
@@ -701,3 +704,226 @@ def read_ticket(name, *, data_dir=None):
         return ticket_argv(ticket, data_dir=data_dir)
     except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         raise ValueError("Terminal ticket is missing or unreadable. Open the terminal again from the board.") from None
+
+
+# Poll output is NUL-framed: tmux's printable capture cannot manufacture a record boundary.
+# Each requested session is passed as a separate validated shell argument, never interpolated.
+POLL = r'''set -f
+sock=$1; shift
+alive=$(tmux -L "$sock" list-sessions -F '#{session_name}') || exit $?
+printf '%s\000' "$alive"
+for name do
+  found=false
+  for live in $alive; do [ "$live" != "$name" ] || found=true; done
+  "$found" || continue
+  cmd=$(tmux -L "$sock" display -p -t "=$name:" '#{pane_current_command}') || exit $?
+  screen=$(tmux -L "$sock" capture-pane -p -S -40 -t "=$name:") || exit $?
+  printf '%s\000%s\000%s\000' "$name" "$cmd" "$screen"
+done
+'''
+
+_prompts = WeakKeyDictionary()
+_prompt_lock = threading.Lock()
+
+
+def _screen_read(row, command, text):
+    from .agents import claude_pane, codex_pane
+    agent = row['agent']
+    parser = (claude_pane if agent == 'claude' and claude_pane.foreground(command) else
+              codex_pane if agent == 'codex' and command == 'codex' else None)
+    if parser is None:
+        return ('waiting' if agent == 'shell' and codex_pane.shell_foreground(command) else 'unknown'), None
+    dialog = parser.approval_dialog(text)
+    fingerprint = hashlib.sha256(json.dumps([row['id'], command, text]).encode()).hexdigest()
+    return parser.screen_state(text), (dialog, fingerprint) if dialog else None
+
+
+def _screens(saved, device, rows):
+    names = list(rows)
+    for name in names:
+        session_command('attach', session=name)  # validate before constructing transport argv
+    remote = shlex.join(['sh', '-c', POLL, 'bare-poll', session_socket(), *names])
+    p = runner(ssh_argv(device, saved['user']) + [remote], stdin=None, stdout_limit=2 * 1024 * 1024)
+    if p.returncode == 1 and not p.stdout and ('no server running on' in p.stderr or 'No such file or directory' in p.stderr):
+        return set(), {}
+    error = 'The device could not be read; its sessions may still run.'
+    if p.returncode or not p.stdout.endswith('\0'):
+        raise ValueError(error)
+    parts = p.stdout[:-1].split('\0')
+    alive = set(parts[0].splitlines())
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', n) for n in alive) or (len(parts) - 1) % 3:
+        raise ValueError(error)
+    screens = {}
+    for i in range(1, len(parts), 3):
+        name, command, text = parts[i:i + 3]
+        if name not in rows or name not in alive or name in screens:
+            raise ValueError(error)
+        screens[name] = _screen_read(rows[name], command, text)
+    if screens.keys() != alive.intersection(rows):
+        raise ValueError(error)
+    return alive, screens
+
+
+def poll_device(db, owner, tid):
+    """One SSH batch; validate the entire reading before changing any row. No per-tick audit."""
+    from . import permissions
+    with LOCK:
+        rows = db.bare_open_rows(tid)
+        if not rows:
+            return
+        saved, device = _ready(db, owner, tid)
+        before = datetime.now(timezone.utc).isoformat()
+        alive, screens = _screens(saved, device, rows)
+        db.bare_reconcile(tid, alive, before)
+        notices = []
+        with _prompt_lock:
+            cache = _prompts.setdefault(db, {})
+            for name, row in rows.items():
+                state, read = screens.get(name, ('unknown', None))
+                if row['state'] == 'stopping':
+                    read = None
+                elif name in alive and row['state'] != state:
+                    db.bare_set_state(tid, name, state, 'bare_screen')
+                key = (tid, name)
+                old_id = cache.get(key, {}).get('public', {}).get('id')
+                public = permissions.terminal_observe(cache, key, name, read, rearm=True, bare_device=tid)
+                if public and public['id'] != old_id:
+                    notices.append((public, row))
+    for public, row in notices:
+        permissions.push_request(public['id'], row['tmux_name'], public['summary'],
+                                 context_row={**row, 'project': saved['name'], 'bare_device': tid})
+
+
+def pending(db, owner):
+    """Cached screen requests for this person only; never part of the node relay's permissions."""
+    with _prompt_lock:
+        out = []
+        cache = _prompts.get(db, {})
+        for key in list(cache):
+            tid, name = key
+            saved = db.kv_get(PREFIX + tid)
+            if not saved or name not in db.bare_open_rows(tid):
+                del cache[key]
+                continue
+            old = cache[key]
+            if saved['value'].get('owner') == owner and old['active'] and not old['answered']:
+                out.append(dict(old['public']))
+        return out
+
+
+def prompt_get(db, pid):
+    with _prompt_lock:
+        return next((dict(p['public']) for p in _prompts.get(db, {}).values() if p['public']['id'] == pid), None)
+
+
+def answer(db, owner, tid, session, decision, *, pid=None, text=None):
+    from . import nodes, nodes_relay, permissions, projects
+    status = 'failed'
+    with LOCK:
+        try:
+            if decision not in ('allow', 'deny', 'reply'):
+                raise ValueError('Choose Allow, Deny or Reply.')
+            if decision == 'reply':
+                text = nodes_relay.free_text(text, 16000)
+                if not text.strip():
+                    raise ValueError('Write a reply first.')
+            saved, device = _ready(db, owner, tid)
+            row = db.bare_open_rows(tid).get(session)
+            if not row or row['state'] == 'stopping':
+                raise ValueError('Choose an open session on this device.')
+            _, screens = _screens(saved, device, {session: row})
+            state, read = screens.get(session, ('unknown', None))
+            prefix = session_command('attach', session=session)[:3]
+            target = '=' + session + ':'
+            if decision == 'reply':
+                if state != 'waiting' or read:
+                    raise projects.Conflict('The session is not at its input prompt. Open the terminal; nothing was sent.')
+                # A named buffer avoids another person's paste buffer. Enter only after a good paste; the buffer is deleted
+                # whatever happens (a failed paste would leave the reply in the device's tmux server) and the chain's status is kept.
+                buffer = 'bare-' + secrets.token_hex(16)
+                commands = [prefix + ['load-buffer', '-b', buffer, '-'],
+                            prefix + ['paste-buffer', '-d', '-p', '-b', buffer, '-t', target],
+                            prefix + ['send-keys', '-t', target, 'Enter']]
+                cleanup = shlex.join(prefix + ['delete-buffer', '-b', buffer])
+            else:
+                with _prompt_lock:
+                    old = _prompts.get(db, {}).get((tid, session))
+                    if not old or old['public']['id'] != pid:
+                        raise projects.Conflict(permissions.TERMINAL_CHANGED)
+                    dialog = permissions.terminal_consume(old, read)
+                commands = [prefix + ['send-keys', '-t', target, '-l', dialog[decision]]]
+                if dialog.get('enter'):
+                    commands.append(prefix + ['send-keys', '-t', target, 'Enter'])
+            remote = ' && '.join(shlex.join(c) for c in commands)
+            if decision == 'reply':
+                remote = shlex.join(['sh', '-c', f'{remote}; rc=$?; {cleanup} 2>/dev/null; exit $rc'])
+            try:
+                p = runner(ssh_argv(device, saved['user']) + [remote], stdin=text if decision == 'reply' else None)
+            except subprocess.TimeoutExpired:
+                status = 'unconfirmed'
+                raise ValueError('The answer is unconfirmed. Open the terminal before trying again.') from None
+            if p.returncode:
+                status = 'unconfirmed'
+                raise ValueError('The answer is unconfirmed. Open the terminal before trying again.')
+            status = 'ok'
+            db.bare_set_state(tid, session, 'working', 'bare_answer')
+            return {'ok': True, 'status': status}
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError('The device did not answer; nothing more was sent. Open the terminal before trying again.') from None
+        finally:
+            nodes.audit('out', tid, 'bare_answer', status == 'ok', decision if decision in ('allow', 'deny', 'reply') else None,
+                        user=owner, target=session, status=status, db=db)
+
+
+class Poller:
+    """One worker, one batch per due device. Empty devices never reach discovery or SSH."""
+    DELAYS = (10, 30, 60, 120, 300)
+
+    def __init__(self, db):
+        self.db = db
+        self.due = {}
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='bare-poll', daemon=True)
+
+    def tick(self, now=None):
+        from .auth import normalize
+        from .config import settings
+        real_clock = now is None
+        now = time.monotonic() if real_clock else now
+        active = set()
+        for _, saved, _ in self.db.kv_list_prefix(PREFIX):
+            try:
+                tid, owner = saved['ts_id'], saved['owner']
+            except (KeyError, TypeError) as e:       # a malformed saved record must not stop the other devices
+                log.warning('bare poll skipped a malformed device record: %r', e)
+                continue
+            try:
+                if normalize(owner) not in {normalize(u) for u in settings.allowed_users} or not self.db.bare_open_rows(tid):
+                    continue
+                active.add(tid)
+                due, failures = self.due.get(tid, (0, 0))
+                if now < due or self.stop.is_set():
+                    continue
+                try:
+                    poll_device(self.db, owner, tid)
+                except (ValueError, OSError, subprocess.TimeoutExpired):
+                    delay = self.DELAYS[min(failures, len(self.DELAYS) - 1)]
+                    failures += 1
+                else:
+                    delay, failures = 10, 0
+            except Exception as e:                   # never die: a locked database or bad record only backs this device off
+                log.warning('bare poll of %s failed: %s: %s', tid, type(e).__name__, e)
+                active.add(tid)
+                due, failures = self.due.get(tid, (0, 0))
+                delay = self.DELAYS[min(failures, len(self.DELAYS) - 1)]
+                failures += 1
+            self.due[tid] = ((time.monotonic() if real_clock else now) + delay, failures)
+        self.due = {k: v for k, v in self.due.items() if k in active}
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                self.tick()
+            except Exception as e:                   # the listing itself can fail (locked database); keep the thread alive
+                log.warning('bare poll tick failed: %s: %s', type(e).__name__, e)
+            self.stop.wait(1)

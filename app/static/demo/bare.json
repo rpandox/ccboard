@@ -102,14 +102,15 @@
           "host": "demo-lab-pi",
           "repo": "example-api",
           "agent": "claude",
-          "state": "alive"
+          "state": "dialog",
+          "prompt_id": 276000000001
         },
         {
           "tmux_name": "bare-demo-shell",
           "host": "demo-lab-pi",
           "repo": "example-web",
           "agent": "shell",
-          "state": "alive"
+          "state": "waiting"
         }
       ]
     }

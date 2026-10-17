@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.87 - 2026-10-17
+
+### Added
+- Read open device sessions every ten seconds in one SSH batch per device, with backoff after failed reads and no per-tick audit.
+- Show screen states in the sidebar and Claude or Codex terminal prompts in Needs you, with one-time Allow and Deny after a fresh fingerprint check.
+- Reply through stdin paste; audit the person, device, session and action without prompt or reply text.
+- Try lab-pi's permission dialog and replies in the in-memory demo.
+
+Upgrade: nothing to do.
+
 ## v0.5.86 - 2026-10-17
 
 ### Added

@@ -510,7 +510,8 @@ function sessionMetaText(s, st) {
 
 /* #84: auto-continue means something for an agent session that is still open (a shell has no turn to continue, an ended row no prompt) */
 function autoContinueApplies(s) { return sessionAgent(s) !== 'shell' && s.state !== 'ended'; }
-function sessionNudgeable(s) { return sessionAgent(s) !== 'shell' && SESSION_NUDGE_STATES.includes(s.state); }
+/* A device session takes a typed reply only at its input prompt: the server refuses one in any other state. */
+function sessionNudgeable(s) { if (s.bare_device) return s.state === 'waiting'; return sessionAgent(s) !== 'shell' && SESSION_NUDGE_STATES.includes(s.state); }
 
 /* The active rate-limit episode of a state payload, or null. state.rate_limited is the kv record, {value: {session, message, kind, resets_at}, at}
    as the poll serves it, or the bare {session, message, kind, resets_at}: both shapes read the same. An episode is over once resets_at has passed
@@ -568,7 +569,7 @@ async function sessionNudge(s, text, btn) {
   if (!s || (btn && btn.disabled)) return;
   if (btn) btn.disabled = true;
   try {
-    await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, { text, enter: true });
+    await api('POST', s.bare_device ? `/api/bare/${encodeURIComponent(s.bare_device)}/sessions/${encodeURIComponent(s.tmux)}/reply` : `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, s.bare_device ? { text } : { text, enter: true });
     pageToast(`sent "${text}" to ${s.name || s.tmux}`, 'ok');
     sessionEcho(btn, text);
   } catch (e) { pageToast(e.message, 'bad'); }
@@ -582,7 +583,7 @@ async function sessionSend(s, ta) {
   if (!s || !text.trim()) return;
   ta.disabled = true;
   try {
-    await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, { text, enter: true });
+    await api('POST', s.bare_device ? `/api/bare/${encodeURIComponent(s.bare_device)}/sessions/${encodeURIComponent(s.tmux)}/reply` : `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, s.bare_device ? { text } : { text, enter: true });
     ta.value = '';
     rowCleared(ta);
     pageToast(`sent to ${s.name || s.tmux}`, 'ok');
@@ -1003,4 +1004,11 @@ function agentsGroups(list) {
     groups.push({ key: name, name, items, rank: SESSION_RANK[sessionStateKey(items[0])], at: Math.max(...items.map(sessionActivity)) });
   }
   return groups.sort((a, b) => a.rank - b.rank || b.at - a.at || a.name.localeCompare(b.name));
+}
+
+async function bareTerminal(s) {
+  try {
+    const r = await api('POST', `/api/bare/${encodeURIComponent(s.bare_device)}/sessions/${encodeURIComponent(s.tmux)}/attach`, {});
+    location.assign(r.attach_url + (demoOn() ? '?demo=1' : ''));
+  } catch (e) { pageToast(e.message, 'bad'); }
 }
