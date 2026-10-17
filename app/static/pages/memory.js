@@ -4,7 +4,7 @@
    Timeline row's "Send to session..." menu (after a confirm step; nothing is sent when a session is picked).
 
    Header: a project select, the worker pill (from state.memory, the 3 s poll, and the health route), a search box (300 ms debounce, kept in ?q=), the
-   optional "Open claude-mem viewer" link (state.config.mem_viewer_url, hidden with an install hint when null), the health tile, then the four tabs
+   optional "Open claude-mem viewer" link (state.config.mem_viewer_url, hidden when null), the health tile, then the four tabs
    (Palace by default, Timeline, Summaries, Search) as tabs() and a filter bar. Filters (type, repo, agent, session, range) live in
    localStorage ccboard:memory:<project> (inside try/catch) and are mirrored in the hash query, so a link reproduces the view.
 
@@ -26,7 +26,6 @@ const MEM_DEBOUNCE = 300;
 const MEM_STORE = (project) => `ccboard:memory:${project}`;
 const MEM_LAST = 'ccboard:memory-last';               // the project the page opened with last
 const MEM_PROMPT_MAX = 4000;                          // chars of a note pasted into a session
-const MEM_VIEWER_WARNING = 'every device on your tailnet can open and change the claude-mem worker';
 
 const Memory = { cur: null, ids: 0 };
 
@@ -737,14 +736,25 @@ MemoryPage.paintHead = function (P) {
     if (tile) P.tileHost.append(tile);
     P.tileHost.classList.toggle('hidden', !tile);
   }
-  const url = st && st.config && typeof st.config.mem_viewer_url === 'string' && /^https:\/\//.test(st.config.mem_viewer_url) ? st.config.mem_viewer_url : '';
-  const vsig = url;
+  let url = '';
+  const viewer = st && st.config && st.config.mem_viewer_url;
+  if (typeof viewer === 'string' && !/[\s\\\x00-\x1f\x7f]/.test(viewer)) {
+    try {
+      const parsed = new URL(viewer);
+      const loopback = parsed.hostname === 'localhost' || parsed.hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(parsed.hostname);
+      if (!parsed.username && !parsed.password && !/^\w+:\/\/[^/]*@/.test(viewer) &&
+          (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && loopback))) url = viewer;
+    } catch (_) { /* An invalid state URL never becomes a link. */ }
+  }
+  const vsig = url + '|' + String(!!(st && st.config && st.config.mem_viewer_local));
   if (vsig !== P.viewerSig) {
     P.viewerSig = vsig;
     P.viewer.textContent = '';
     if (url) {
       P.viewer.append(el('a', { class: 'btn small mem-viewer-link', href: url, target: '_blank', rel: 'noopener', text: 'Open claude-mem viewer' }),
-        el('span', { class: 'mem-viewer-cap dim', text: `Opens claude-mem's own viewer, outside the board's sign-in: ${MEM_VIEWER_WARNING}.` }));
+        el('span', { class: 'mem-viewer-cap dim', text: st.config.mem_viewer_local === true
+          ? "Opens claude-mem's own viewer, outside the board's sign-in: every device on your tailnet can open and change the claude-mem worker."
+          : "Opens claude-mem's own viewer, outside the board's sign-in. Access is controlled by that viewer." }));
     }
     P.viewer.classList.toggle('hidden', !url);
   }

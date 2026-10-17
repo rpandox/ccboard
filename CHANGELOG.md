@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.80 - 2026-10-17
+
+### Added
+- Settings > Options can save a claude-mem dashboard URL for the Memory page link, taking precedence over the local viewer port.
+- Viewer URLs require HTTPS or loopback HTTP without credentials; invalid values are ignored and reported in Options and Doctor.
+
+Upgrade: nothing to do.
+
 ## v0.5.77 - 2026-10-17
 
 ### Fixed
