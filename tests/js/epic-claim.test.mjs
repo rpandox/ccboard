@@ -42,6 +42,52 @@ const withNodes = (nodes) => detail({ nodes });
 const NODE_A = { handle: 'local', name: 'node-a', status: 'online', age_s: 0 };
 const NODE_B = { handle: 'node-b', name: 'node-b', status: 'online', age_s: 4, tasks: true };
 
+test('an unconfirmed claim is read on the next poll and shown as won without a second write', async () => {
+  let ready = false;
+  const w = await epicWorld({ data: () => detail(), claim: (req) => {
+    if (req.method === 'POST') return refusal(504, { reason: 'unconfirmed' })();
+    assert.match(req.path, /\/epics\/claim\/status\?repo=example%2Fwebsite&issue=205$/);
+    return { data: ready ? { claimed: true, reason: 'won', winner: 'node-b', attempt: 1 } : { claimed: false, reason: 'pending' } };
+  } });
+  claimBtn(w, 205).click();
+  await settle();
+  assert.notEqual(claimBtn(w, 205).getAttribute('disabled'), null);
+  claimBtn(w, 205).click();
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.match(text(rowOf(w, 205)), /Outcome unknown/);
+  ready = true;
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.match(text(rowOf(w, 205)), /Claimed by node-b/);
+  assert.doesNotMatch(text(rowOf(w, 205)), /Outcome unknown/);
+  assert.equal(posts(w).length, 1);
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.equal(w.run('epicPage.cur.claimChecks.size'), 0, 'a recovered result is final');
+  assert.equal(claimBtn(w, 205).getAttribute('disabled'), null, 'later GitHub reads are authoritative');
+});
+
+test('a follow-up refusal replaces unknown, and a failed read never repeats a claim', async () => {
+  let ready = false;
+  const w = await epicWorld({ claim: (req) => {
+    if (req.method === 'POST') return refusal(504, { reason: 'unconfirmed' })();
+    if (!ready) return refusal(503, { reason: 'offline' })();
+    return { data: { claimed: false, reason: 'lost', winner: 'node-a' } };
+  } });
+  claimBtn(w, 205).click();
+  await settle();
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.match(text(rowOf(w, 205)), /Outcome unknown/);
+  ready = true;
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.match(text(rowOf(w, 205)), /node-a was first/);
+  assert.doesNotMatch(text(rowOf(w, 205)), /Outcome unknown/);
+  assert.equal(posts(w).length, 1);
+});
+
 // ---------------------------------------------------------------- the fixture
 
 test('the demo fixture shows writes on, a held claim of this board, a lost one, and a node that can take a claim; the writes-off, offline and no-scope variants exist', () => {
@@ -277,8 +323,8 @@ for (const [status, body, sentence] of REFUSALS) {
     assert.equal(note.getAttribute('role'), 'status');
     assert.equal(!!note.querySelector('a.ep-check'), body.reason === 'unconfirmed', 'only an unknown outcome has the link to the node');
     assert.deepEqual(toasts(w).filter((x) => x.kind === 'bad').map((x) => x.text).filter((t) => !/Lost the claim/.test(t)), [sentence]);
-    assert.ok(claimBtn(w, 205), 'the action is back so it can be tried again');
-    assert.equal(text(claimBtn(w, 205)).trim(), 'Claim on node-b');
+    assert.ok(claimBtn(w, 205));
+    assert.equal(text(claimBtn(w, 205)).trim(), body.reason === 'unconfirmed' ? 'Claiming on node-b…' : 'Claim on node-b');
     assert.equal(rowOf(w, 205).getAttribute('data-state'), 'open', 'the row is as it was');
   });
 }
@@ -434,4 +480,98 @@ test('the demo page end to end: Claim on node-b paints the claim and a played re
   assert.equal(rowOf(w, 205).getAttribute('data-state'), 'queued');
   assert.match(text(rowOf(w, 205).querySelector('.ep-claim')), /node-b/);
   assert.equal(claimBtn(w, 205), undefined);
+});
+
+for (const reason of ['unknown', 'pending']) {
+  test(`a ${reason} follow-up clears an abandoned check and directs the person to the issue`, async () => {
+    const w = await epicWorld({ claim: { data: { claimed: false, reason } } });
+    w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, startedAt: Date.now() - ${reason === 'pending' ? 121000 : 0}})`);
+    await w.run('epFetch(epicPage.cur)');
+    await settle();
+    assert.equal(w.run('epicPage.cur.claimChecks.size'), 0);
+    assert.match(text(rowOf(w, 205)), /Look at the issue on GitHub/);
+    assert.equal(claimBtn(w, 205).getAttribute('disabled'), null);
+    assert.equal(posts(w).length, 0);
+  });
+}
+
+test('an unknown claim keeps its hub attempt id and ignores another attempt status', async () => {
+  const w = await epicWorld({ claim: (req) => req.method === 'POST'
+    ? refusal(504, { reason: 'unconfirmed', claim_id: 'a'.repeat(32) })()
+    : { data: { claimed: false, reason: 'lost', claim_id: 'b'.repeat(32) } } });
+  claimBtn(w, 205).click();
+  await settle();
+  assert.equal(w.run("epicPage.cur.claimChecks.get('example/website#205').claimId"), 'a'.repeat(32));
+  await w.run('epFetch(epicPage.cur)');
+  await settle();
+  assert.equal(w.run('epicPage.cur.claimChecks.size'), 1);
+  assert.match(text(rowOf(w, 205)), /Outcome unknown/);
+  assert.equal(posts(w).length, 1);
+});
+
+for (const state of ['open', 'closed', 'other-node', 'same-node']) {
+  test(`a won follow-up respects the fresh issue (${state}) and removes its check`, async () => {
+    const d = detail();
+    const child = d.children.find((c) => c.number === 205);
+    if (state === 'closed') child.state = 'closed';
+    if (state.endsWith('-node')) {
+      child.claim = { alias: state, node: state === 'same-node' ? 'node-b' : 'node-c', status: 'running', live: true };
+      child.claim_state = 'claimed';
+    }
+    const expected = clone(child);
+    const w = await epicWorld({ data: d, claim: { data: { claimed: true, reason: 'won', winner: 'node-b', claim_id: 'a'.repeat(32) } } });
+    w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, claimId: '${'a'.repeat(32)}', startedAt: Date.now()})`);
+    await w.run('epCheckClaims(epicPage.cur)');
+    const actual = plain(w.run('epicPage.cur.data.children.find(c => c.number === 205)'));
+    if (state === 'open') assert.equal(actual.claim.node, 'node-b');
+    else assert.deepEqual(actual, expected);
+    assert.equal(w.run('epicPage.cur.claimChecks.size'), 0);
+  });
+}
+
+test('epic fetch paints and schedules the next poll before a status read finishes', async () => {
+  const gate = defer();
+  const w = await epicWorld({ claim: () => gate.p });
+  w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, startedAt: Date.now()})`);
+  const next = detail();
+  next.children.find(c => c.number === 205).title = 'Fresh issue title';
+  w.ctx.__detail = next;
+  const fetching = w.run('epFetch(epicPage.cur)');
+  try {
+    await settle();
+    assert.match(text(rowOf(w, 205)), /Fresh issue title/);
+    assert.equal(w.run('epicPage.cur.busy'), null);
+    assert.ok(w.run('epicPage.cur.timer'));
+  } finally {
+    gate.resolve({ data: { claimed: true, reason: 'won', winner: 'node-b' } });
+    await fetching;
+    await settle();
+  }
+  assert.match(text(rowOf(w, 205)), /Claimed by node-b/);
+});
+
+for (const response of ['other-attempt', 'offline']) {
+  test(`an over-age check expires even when status is ${response}`, async () => {
+    const w = await epicWorld({ claim: () => response === 'offline'
+      ? refusal(503, { reason: 'offline' })()
+      : { data: { claimed: false, reason: 'pending', claim_id: 'b'.repeat(32) } } });
+    w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, claimId: '${'a'.repeat(32)}', startedAt: Date.now() - 121000})`);
+    await w.run('epCheckClaims(epicPage.cur);');
+    assert.equal(w.run('epicPage.cur.claimChecks.size'), 0);
+    assert.match(w.run("epicPage.cur.notes.get('example/website#205').text"), /Look at the issue on GitHub/);
+    assert.equal(posts(w).length, 0);
+  });
+}
+
+test('a late status answer cannot consume a replacement check for the same issue', async () => {
+  const gate = defer();
+  const w = await epicWorld({ claim: () => gate.p });
+  w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, claimId: '${'a'.repeat(32)}', startedAt: Date.now()})`);
+  const checking = w.run('epCheckClaims(epicPage.cur)');
+  w.run(`epicPage.cur.claimChecks.set('example/website#205', {repo: 'example/website', issue: 205, node: {handle: 'node-b', name: 'node-b'}, pending: true, claimId: '${'b'.repeat(32)}', startedAt: Date.now()})`);
+  gate.resolve({ data: { claimed: true, reason: 'won', claim_id: 'a'.repeat(32) } });
+  await checking;
+  assert.equal(w.run("epicPage.cur.claimChecks.get('example/website#205').claimId"), 'b'.repeat(32));
+  assert.equal(w.run('epicPage.cur.data.children.find(c => c.number === 205).claim'), null);
+  assert.equal(posts(w).length, 0);
 });

@@ -12,6 +12,17 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.69 - 2026-10-17
+
+### Fixed
+- Slow relayed claims get more time, and the epic page reads the node’s result after an unknown answer without claiming again.
+- Busy claim refusals say how many claims are ahead; `wait_s` is an upper bound, not a measured queue time. Run respects the wait.
+- The relay gained one read-only GET row, `epic_claim_status` (scope `tasks`), on purpose to recover unknown claims from local state without another GitHub write.
+- Claim recovery uses attempt tokens, expires abandoned pending results, records exceptions and released wins, and prunes results older than a day. The page paints before status reads finish and preserves the fresh GitHub owner or closed state.
+- Claim steps log their duration so queue delays can be measured.
+
+Upgrade: nothing to do.
+
 ## v0.5.68 - 2026-10-17
 
 ### Fixed
