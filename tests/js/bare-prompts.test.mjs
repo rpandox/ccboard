@@ -55,9 +55,11 @@ test('sidebar shows needs you, preserves reply drafts across state updates, and 
   w.load('bare.js');
   w.run(`Shell.open.add('bare:device-1'); globalThis.tree = el('div'); Shell.bareDevice(tree, state.bare_devices[0]);`);
   assert.match(text(w.get('tree')), /needs you/);
+  assert.ok(!w.get('tree').querySelector('textarea'), 'a dialog row has no reply box');
+  w.run(`state.bare_devices[0].sessions[0].state = 'waiting'; Shell.bareDevice(tree, state.bare_devices[0]);`);
   let input = w.get('tree').querySelector('textarea');
   input.value = 'A draft'; input.dispatchEvent({type:'input'});
-  w.run(`state.bare_devices[0].sessions[0].state = 'waiting'; Shell.bareDevice(tree, state.bare_devices[0]);`);
+  w.run(`Shell.bareDevice(tree, state.bare_devices[0]);`);
   input = w.get('tree').querySelector('textarea');
   assert.equal(input.value, 'A draft');
   w.get('tree').querySelector('form').dispatchEvent({type:'submit', preventDefault(){}}); await tick();
@@ -71,29 +73,52 @@ test('only a waiting device session offers Reply and quick replies', () => {
   }
 });
 
-function sidebar() {
+function sidebar(state = 'dialog') {
   const w = world();
   w.run('Shell.open = new Set(); Shell.patchTrees = () => {};');
   w.load('bare.js');
-  w.run(`Shell.open.add('bare:device-1'); globalThis.tree = el('div'); Shell.bareDevice(tree, state.bare_devices[0]);`);
+  w.run(`state.bare_devices[0].sessions[0].state = '${state}'; Shell.open.add('bare:device-1'); globalThis.tree = el('div'); Shell.bareDevice(tree, state.bare_devices[0]);`);
   return w;
 }
 
 test('a state change while typing a reply keeps the focus, caret and text', () => {
-  const w = sidebar();
+  const w = sidebar('waiting');
   const input = w.get('tree').querySelector('textarea');
-  w.get('tree').querySelectorAll('button').find((b) => text(b) === 'Reply').click();
+  w.get('tree').querySelectorAll('button').find((b) => /^Reply to /.test(b.getAttribute('aria-label') || '')).click();
   input.value = 'Half a reply'; input.dispatchEvent({type:'input'}); input.focus();
-  w.run(`state.bare_devices[0].sessions[0].state = 'waiting'; Shell.bareDevice(tree, state.bare_devices[0]);`);
+  w.run(`state.bare_devices[0].sessions[0].state = 'working'; Shell.bareDevice(tree, state.bare_devices[0]);`);
   const after = w.get('tree').querySelector('textarea');
   assert.equal(after, input, 'the same textarea element survives');
   assert.equal(w.get('document.activeElement'), input);
   assert.equal(after.value, 'Half a reply');
-  assert.match(text(w.get('tree')), /needs you/, 'the stale row is repainted once the focus leaves');
+  assert.match(text(w.get('tree')), /waiting/, 'the stale row is repainted once the focus leaves');
   w.run('globalThis.other = el("button"); document.body.append(other); other.focus()');
   w.run(`Shell.bareDevice(tree, state.bare_devices[0]);`);
-  assert.match(text(w.get('tree')), /waiting/);
+  assert.match(text(w.get('tree')), /working/);
+  assert.ok(!w.get('tree').querySelector('textarea'), 'a row that no longer waits has no reply box');
+  w.run(`state.bare_devices[0].sessions[0].state = 'waiting'; Shell.bareDevice(tree, state.bare_devices[0]);`);
   assert.equal(w.get('tree').querySelector('textarea').value, 'Half a reply', 'the draft still survives the repaint');
+});
+
+test('the sidebar offers Reply, as a compact named icon button, on waiting rows only', () => {
+  for (const [state, want] of [['waiting', true], ['dialog', false], ['working', false], ['unconfirmed', false], ['stopping', false], ['unknown', false]]) {
+    const w = sidebar(state);
+    const reply = w.get('tree').querySelectorAll('button').filter((b) => /^Reply to /.test(b.getAttribute('aria-label') || ''));
+    assert.equal(reply.length, want ? 1 : 0, state);
+    assert.equal(w.get('tree').querySelectorAll('textarea').length, want ? 1 : 0, state + ' reply box');
+    assert.ok(!w.get('tree').querySelectorAll('button').some((b) => text(b) === 'Reply'), state + ': no text Reply button');
+    if (!want) continue;
+    const b = reply[0];
+    assert.equal(b.getAttribute('aria-label'), 'Reply to claude repo on Device');
+    assert.equal(b.getAttribute('title'), 'Reply to claude repo on Device');
+    assert.ok(b.classList.contains('icon') && b.classList.contains('tn-add'), 'same compact class as terminal and stop');
+    assert.ok(b.querySelector('.bp5-icon-comment'));
+    assert.equal(text(b), '');
+    assert.equal(b.getAttribute('aria-expanded'), 'false');
+    b.click();
+    assert.equal(b.getAttribute('aria-expanded'), 'true');
+    assert.ok(!w.get('tree').querySelector('form').classList.contains('hidden'), 'it opens the reply box');
+  }
 });
 
 test('an armed Stop stays armed across a state refresh and is rebuilt once cancelled', () => {

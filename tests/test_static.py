@@ -758,8 +758,9 @@ def test_demo_device_sessions_match_the_checked_device_fixture():
     fixture, = demo_json("bare.json")["devices"]
     assert device["ts_id"] == fixture["ts_id"] and device["check"] == fixture["check"]
     assert device["check"]["ok"] and device["sessions"] == fixture["sessions"]
-    assert [(s["agent"], s["state"]) for s in device["sessions"]] == [("claude", "dialog"), ("shell", "waiting")]
-    assert len(fleet_sessions(state)) + len(device["sessions"]) == 10
+    assert [(s["agent"], s["state"]) for s in device["sessions"]] == [
+        ("claude", "dialog"), ("shell", "waiting"), ("claude", "working"), ("shell", "unconfirmed"), ("shell", "stopping")]
+    assert len(fleet_sessions(state)) + len(device["sessions"]) == 13
 
 
 def test_demo_state_session_ages_spread_from_hours_to_nine_days():

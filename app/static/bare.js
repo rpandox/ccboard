@@ -70,8 +70,11 @@ Shell.bareDevice = function (node, device) {
       } catch (e) { status.textContent = e.message; }
       finally { send.disabled = false; }
     });
-    const reply = el('button', { type: 'button', class: 'minimal small', text: 'Reply', 'aria-expanded': String(draft.open) });
-    reply.addEventListener('click', () => {
+    /* The server takes a reply only at the input prompt, so only a waiting row gets the button and the box; a draft is kept for when it waits again. */
+    const waiting = row.state === 'waiting';
+    const replyLabel = 'Reply to ' + row.agent + ' ' + row.repo + ' on ' + device.name;
+    const reply = waiting ? el('button', { type: 'button', class: 'icon minimal small tn-add bare-replybtn', 'aria-label': replyLabel, title: replyLabel, 'aria-expanded': String(draft.open) }, ic('comment')) : null;
+    if (reply) reply.addEventListener('click', () => {
       draft.open = !draft.open; form.classList.toggle('hidden', !draft.open);
       reply.setAttribute('aria-expanded', String(draft.open)); if (draft.open) input.focus();
     });
@@ -99,6 +102,6 @@ Shell.bareDevice = function (node, device) {
     kids.append(el('div', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' },
       el('span', { class: 'tn-name', text: row.agent + ' · ' + row.repo, title: row.agent + ' · ' + row.repo }),
       el('span', { class: 'tn-sub', text: row.state === 'dialog' ? 'needs you' : row.state || 'unknown', title: row.last_event === 'bare_log' ? 'State from the device state log' : 'State read from the screen' }), controls));
-    kids.append(form);
+    if (waiting) kids.append(form);
   }
 };

@@ -85,27 +85,29 @@ test('demo check, forget host key, remove and add stay local and retain their re
 });
 
 
-test('demo launcher and sidebar have two live device sessions; start/read/stop persist across state reads', async () => {
+test('demo launcher and sidebar have a device session in each state; start/read/stop persist across state reads', async () => {
   const { w, requests } = await demoWorld();
   for (const file of ['nodes.js', 'shell.js', 'launcher.js', 'bare.js']) w.load(file);
   w.run('Shell.patchTrees = () => {};');
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
   assert.equal(w.get('state.bare_devices.length'), 1);
-  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'dialog'], ['shell', 'waiting']]);
+  assert.deepEqual(plain(w.get('state.bare_devices[0].sessions.map((s) => [s.agent, s.state])')), [['claude', 'dialog'], ['shell', 'waiting'], ['claude', 'working'], ['shell', 'unconfirmed'], ['shell', 'stopping']]);
   w.run("Shell.open.add('bare:demo-lab-pi'); globalThis.kit = lxnKit({}, null, 'session'); globalThis.sidebar = el('div'); Shell.bareDevice(sidebar, state.bare_devices[0]);");
   assert.match(text(w.get('kit.pick')), /lab-pi \(no board\)/);
-  assert.equal(w.get('sidebar').querySelectorAll('.s-row').length, 2);
+  const rows = w.get('sidebar').querySelectorAll('.s-row');
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((r) => text(r.querySelector('.tn-sub'))), ['needs you', 'waiting', 'working', 'unconfirmed', 'stopping']);
   const selects = w.get('kit.ctl.form').querySelectorAll('select');
   selects[0].value = w.get('state.bare_devices[0].check.repos[0]');
   selects[1].value = 'claude'; selects[1].dispatchEvent({type:'change'});
   await w.run('kit.ctl.submit()');
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
-  assert.equal(w.get('state.bare_devices[0].sessions.length'), 3);
+  assert.equal(w.get('state.bare_devices[0].sessions.length'), 6);
   w.run("globalThis.started = state.bare_devices[0].sessions.at(-1).tmux_name");
   await w.run("api('POST', '/api/bare/demo-lab-pi/sessions/' + started + '/stop', {confirm:true})");
   await w.run("api('POST', '/api/bare/demo-lab-pi/sessions/read', {})");
   await w.run("api('GET', '/api/state').then((s) => { state = s; })");
-  assert.equal(w.get('state.bare_devices[0].sessions.length'), 2);
+  assert.equal(w.get('state.bare_devices[0].sessions.length'), 4);   // Read drops both stopping rows: the seeded one and the one just stopped
   assert.ok(requests.every((url) => url.startsWith('/static/demo/')));
 });
 
