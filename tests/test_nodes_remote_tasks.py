@@ -1230,3 +1230,30 @@ def test_a_new_tasks_prompt_with_those_characters_later_or_an_at_mention_passes_
         assert r.status_code == 200, (prompt, r.text)
         assert task_on_b(w, r.json()["data"]["id"])["prompt"] == prompt
     assert '"--", prompt' in inspect.getsource(tasks.build_command) and '"--", prompt' in inspect.getsource(tasks.build_command_inplace)
+
+
+def test_remote_trust_failure_is_visible_in_hub_task_read(world):
+    from app import main
+    from tests.test_workspace_trust import REASON, TRUST_ERROR, age_session
+
+    w = world
+    r = hub_post(w, "/tasks", {**SHOP, "when": "now"})
+    assert r.status_code == 200, r.text
+    task = r.json()["data"]
+    name = task["tmux"]
+    with w.b.enter():
+        age_session(w.b.db, name)
+        w.two.tmux_b["sessions"][name]["command"] = "zsh"
+        w.two.tmux_b["screen"] = TRUST_ERROR
+        w.two.tmux_b["sent"].clear()
+        main._invalidate_scan()
+    for _ in range(2):
+        response = w.a.get(f"/api/nodes/{w.h}/tasks/{task['id']}")
+        assert response.status_code == 200, response.text
+        detail = response.json()["data"]
+        assert detail["phase"] == "failed" and detail["failure_reason"] == REASON
+        assert "result" not in detail and "prompt" not in detail
+    row = w.b.db.open_row(name)
+    assert row["state"] == "errored" and row["last_message"] == REASON
+    assert len([e for e in w.b.db.recent_events() if e["event"] == "AgentExited"]) == 1
+    assert not any(w.two.tmux_b[k] for k in ("sent", "keys", "texts", "pasted"))

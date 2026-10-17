@@ -55,6 +55,7 @@ EXPECTED_NODE_ROUTES = {
     ("DELETE", "/api/node/sessions/{name}"): "sessions",
     ("GET", "/api/node/permissions"): "permissions",             # what the agent wants to do (tool and a summary): never `read`
     ("POST", "/api/node/permissions/{pid}/{decision}"): "permissions",      # allow or deny, once; the hub route is a signed-in person only
+    ("GET", "/api/node/epics/claim/status"): "tasks",            # reads the local outcome only; the same person and scope as Claim
     ("POST", "/api/node/epics/work"): "tasks",                   # run a claimed issue as a task on this board and report on it (issue #149): the claim, the author check, a task with the issue's own model line; an acting user is required
     ("POST", "/api/node/epics/claim"): "tasks",                  # claim one issue of an epic on this board (issue #148): a write to GitHub made by this board, only with CCBOARD_EPIC_WRITES=1; an acting user is required
 }
@@ -63,7 +64,7 @@ LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessi
                  ("POST", "/api/node/tasks/{tid}/dispatch"): 404, ("GET", "/api/node/stream"): 400,       # a write with no body says what is missing; no such task; a stream with no names is a 400 before it streams
                  ("POST", "/api/node/sessions/{name}/prompt"): 422, ("POST", "/api/node/sessions/{name}/keys"): 422, ("POST", "/api/node/sessions/{name}/ack"): 404,
                  ("DELETE", "/api/node/sessions/{name}"): 404, ("POST", "/api/node/permissions/{pid}/{decision}"): 404,      # no text, no key; no such session; no such request
-                 ("POST", "/api/node/epics/claim"): 422, ("POST", "/api/node/epics/work"): 422}      # no repo, no issue
+                 ("GET", "/api/node/epics/claim/status"): 422, ("POST", "/api/node/epics/claim"): 422, ("POST", "/api/node/epics/work"): 422}      # no repo, no issue
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 
 
@@ -629,7 +630,7 @@ def test_remove_revokes_an_incoming_pair_and_404s_an_unknown_one(board):
     assert c.delete("/api/nodes/p_ffffffffffffffff", headers=H).status_code == 404
     assert c.delete("/api/nodes/not-a-peer", headers=H).status_code == 404
     r = c.delete(f"/api/nodes/{row['peer_id']}", headers=H)
-    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": None, "also_revoked": [], "other_pairs": []}
+    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": None, "auto_revoked": [], "also_revoked": [], "other_pairs": []}
     assert c.get("/api/node", headers=bearer(tok)).status_code == 401
     assert c.get("/api/nodes/pairs", headers=H).json()["pairs"] == [], "a revoked pair is no longer listed"
     assert c.delete(f"/api/nodes/{row['peer_id']}", headers=H).status_code == 404
@@ -760,7 +761,7 @@ def test_rotate_from_the_calling_board_and_remove_with_the_other_offline(two_nod
         assert new and new != old and nodes.PeerClient(row, db=a.db).get("/api/node").ok
     two_nodes.offline.add("node-b")
     r = a.delete(f"/api/nodes/{row['peer_id']}")
-    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": False, "also_revoked": [], "other_pairs": []}, "removal never fails because the other board is off"
+    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": False, "auto_revoked": [], "also_revoked": [], "other_pairs": []}, "removal never fails because the other board is off"
     assert a.get("/api/nodes").json()["nodes"] == []
     with a.enter():
         assert nodes._load_outgoing(row["peer_id"]) is None
@@ -771,11 +772,18 @@ def test_rotate_from_the_calling_board_and_remove_with_the_other_offline(two_nod
     assert b.get("/api/nodes/pairs").json()["pairs"] == []
 
 
-def test_removal_tells_the_other_board_when_it_is_up(two_nodes):
+@pytest.mark.parametrize("both_ways", [False, True])
+def test_removal_tells_the_other_board_when_it_is_up(two_nodes, both_ways):
     a, b = two_nodes.a, two_nodes.b
-    row, _ = pair_boards(two_nodes)
+    row, _ = pair_boards(two_nodes, both_ways=both_ways)
+    preview = a.post(f"/api/nodes/{row['peer_id']}/remove-preview").json()
+    expected = [{"peer_id": p["peer_id"], "name": p["name"]} for p in preview["auto"]]
+    assert len(expected) == int(both_ways)
     r = a.delete(f"/api/nodes/{row['peer_id']}")
-    assert r.json() == {"removed": True, "peer_notified": True, "also_revoked": [], "other_pairs": []}
+    assert r.json() == {"removed": True, "peer_notified": True, "auto_revoked": expected, "also_revoked": [], "other_pairs": []}
+    assert a.get("/api/nodes").json()["nodes"] == []
+    assert a.get("/api/nodes/pairs").json()["pairs"] == []
+    assert b.get("/api/nodes").json()["nodes"] == []
     assert b.get("/api/nodes/pairs").json()["pairs"] == [], "B revoked the pair when A said it was leaving"
 
 
@@ -950,7 +958,7 @@ def test_delete_with_also_revoke_cuts_exactly_the_listed_pairs_and_answers_with_
     claim, claim_tok = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
     r = c.request("DELETE", f"/api/nodes/{out['peer_id']}", headers=H, json={"also_revoke": [moved["peer_id"]]})
     assert r.status_code == 200
-    assert r.json() == {"removed": True, "peer_notified": True, "also_revoked": [moved["peer_id"]],
+    assert r.json() == {"removed": True, "peer_notified": True, "auto_revoked": [{"peer_id": auto["peer_id"], "name": "node-c"}], "also_revoked": [moved["peer_id"]],
                         "other_pairs": [{"peer_id": claim["peer_id"], "name": "claim", "url": "https://100.64.0.66", "verified": False}]}
     assert c.get("/api/node", headers=bearer(auto_tok)).status_code == 401 and c.get("/api/node", headers=bearer(moved_tok)).status_code == 401
     assert c.get("/api/node", headers=bearer(claim_tok)).status_code == 200

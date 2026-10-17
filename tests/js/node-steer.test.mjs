@@ -1172,3 +1172,34 @@ test('the audit-friendly cadence: a list already held is read again only when th
   await flush(4);
   assert.equal(h.calls(/permissions$/).length, 4, 'a failed read is not repeated on the next beat');
 });
+
+test('terminal prompt cards preserve choices and answer only through permission_answer', async () => {
+  const p = { ...PERMS()[0], kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] };
+  const h = await steerWorld({ perms: [p], alone: true });
+  const { w } = h;
+  await go(w, '#/');
+  w.run('updateCurrentPage(state)');
+  await tick();
+  const card = cardOf(w, p.id);
+  assert.match(text(card), /terminal prompt/);
+  assert.ok(text(card).includes(p.summary));
+  assert.match(text(card), /2\. Yes · 4\. No/);
+  btn(card, 'Deny').click();
+  await flush();
+  assert.deepEqual(h.writes().map((c) => c.path), [`/api/nodes/build-box/permissions/${p.id}/deny`]);
+});
+
+test('an epic on a hub uses the same permission card for its task on that node', async () => {
+  const p = { ...PERMS()[0], kind: 'terminal_prompt', summary: 'Bash command: git add src && git commit -m fix', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] };
+  const h = await steerWorld({ perms: [p], alone: true });
+  const { w } = h;
+  w.load('pages/epic.js');
+  w.run(`Nodes.M.recs[0].state.tasks = [{ id: 71, tmux: 'shop--api--s1' }];
+    globalThis.__epChild = { task: { ref: 'build-box:71', node: 'build-box' } };
+    globalThis.__epPhase = epWorkPhaseNode(__epChild);
+    globalThis.__epPerm = epPermissionNode(epPermission(__epChild));`);
+  assert.match(text(w.get('__epPhase')), /waiting for a person/);
+  btn(w.get('__epPerm'), 'Allow').click();
+  await flush();
+  assert.deepEqual(h.writes().map((c) => c.path), [`/api/nodes/build-box/permissions/${p.id}/allow`]);
+});

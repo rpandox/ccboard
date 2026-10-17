@@ -45,3 +45,60 @@ def interrupted_at_prompt(text: str) -> bool:
     if not rule or j >= len(lines) or not PROMPT_RE.match(lines[j].strip()):
         return False
     return not any(AFTER_RE.search(ln) for ln in lines[j + 1:])
+
+
+APPROVAL_HEADINGS = {"Bash command": "Bash", "Edit file": "Edit", "Write file": "Write", "Create file": "Write", "Read file": "Read"}
+CHOICE_RE = re.compile(r"^\s*(?:❯\s*)?([1-9])\. (.+)$")
+
+
+def foreground(command: str | None) -> bool:
+    """Claude's native executable reports its version as the process name."""
+    return command == "claude" or bool(re.fullmatch(r"\d+\.\d+\.\d+", command or ""))
+
+
+def approval_dialog(text: str) -> dict | None:
+    """Only Claude's tool approval menu, ending at its cancel hint. Exact one-time labels; never infer a choice from its position."""
+    # Keep frame boundaries until the heading/body association is established. A heading in
+    # scrollback must never lend its tool type to a later, unsupported dialog.
+    raw = [s for s in (text or "").splitlines() if s.strip()]
+    lines = [s.strip().strip("│┃").strip() for s in raw]
+    if not lines or not re.fullmatch(r"Esc to cancel(?:\s*[·•].*)?", lines[-1], re.I):
+        return None
+    question = next((i for i in range(len(lines) - 1, -1, -1) if re.fullmatch(r"Do you want to .+\?", lines[i])), None)
+    if question is None:
+        return None
+    border = next((i for i in range(question - 1, -1, -1) if _box_only(raw[i]) and RULE_RE.search(raw[i])), None)
+    if border is None or any(c in raw[border] for c in "╰╯└┘"):
+        return None
+    start = border + 1
+    if start >= question or lines[start] not in APPROVAL_HEADINGS:
+        return None
+    def indent(line):
+        content = line.lstrip().lstrip("│┃") if line.lstrip().startswith(("│", "┃")) else line
+        return len(content) - len(content.lstrip())
+    for i in range(start + 1, question):
+        if not lines[i]:
+            continue
+        if (_box_only(raw[i]) or lines[i] in APPROVAL_HEADINGS or re.search(r"Do you want to", lines[i], re.I)
+                or re.match(r"(?:❯\s*)?\d+[.)]\s*", lines[i]) or indent(raw[i]) <= indent(raw[start])):
+            return None
+    tail = [lines[i] for i in range(question + 1, len(lines) - 1) if lines[i] and not _box_only(raw[i])]
+    choices = []
+    for line in tail:
+        m = CHOICE_RE.fullmatch(line)
+        if m:
+            choices.append({"number": m[1], "label": m[2]})
+        elif choices:
+            choices[-1]["label"] += " " + line       # a wrapped option is one label, never a bare Yes followed by a hidden qualifier
+        else:
+            return None
+    if len(choices) < 2 or len({c["number"] for c in choices}) != len(choices):
+        return None
+    yes = [c for c in choices if c["label"] == "Yes"]
+    no = [c for c in choices if c["label"] in ("No", "No, and tell Claude what to do differently", "No, and tell Claude what to do differently (esc)")]
+    if len(yes) != 1 or len(no) != 1:
+        return None
+    body = " ".join(" ".join(lines[start + 1:question]).split())
+    # The public permission boundary scrubs secrets before applying its 300-character cap.
+    return {"tool_name": APPROVAL_HEADINGS[lines[start]], "summary": lines[start] + (": " + body if body else ""), "choices": choices,
+            "allow": yes[0]["number"], "deny": no[0]["number"]}

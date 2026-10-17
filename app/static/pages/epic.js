@@ -191,6 +191,7 @@ function epClaimSentence(e, name, n, work) {
     writes_off: `GitHub writes are off on ${name} (CCBOARD_EPIC_WRITES). Nothing was claimed.`,
     closed: `${issue} is closed. Nothing was claimed.`,
     done: `${issue} is already done. Nothing was claimed.`,
+    released: `${name} no longer holds ${issue}. Look at the issue on GitHub.`,
     attempts_exhausted: `Three attempts on ${issue} ended without a result. ${name} asked for a person and stopped.`,
     not_epic_child: `${name} does not take ${issue} as an issue of this epic. Nothing was claimed.`,
     other_repo: `${name} does not have this repository as one of its projects. Nothing was claimed.`,
@@ -198,7 +199,7 @@ function epClaimSentence(e, name, n, work) {
     login_not_allowed: `The gh login of ${name} is not one whose claims count. Nothing was claimed.`,
     no_login: `gh is not logged in on ${name}. Nothing was claimed.`,
     no_access: `The gh login of ${name} cannot push to that repository, so a claim from it would not count. Nothing was claimed.`,
-    busy: `${name} is busy with other claims right now. Try ${issue} again in a moment. Nothing was claimed.`,
+    busy: `${name} is busy with other claims right now.${Number.isInteger(b.claims_ahead) ? ` ${b.claims_ahead} claims ahead.` : ''} Try ${issue} again${Number.isInteger(b.wait_s) ? ` in about ${b.wait_s} s` : ' in a moment'}. Nothing was claimed.`,
     too_many_claims: `${name} already holds as many claims as it keeps.`,
     rate_limited: `GitHub asked ${name} to wait${typeof b.wait_s === 'number' ? ` ${b.wait_s} s` : ''}. Try ${issue} again then.`,
     outcome_unknown: `GitHub did not say whether the claim on ${issue} was written. ${name} looks before it writes again; check the issue.`,
@@ -269,7 +270,7 @@ function epClaimBits(P, c) {
   const note = P.notes.get(key);
   if (epClaimable(d, c)) {
     const node = epClaimNode(d, c);
-    const busy = P.claiming.get(key);
+    const busy = P.claiming.get(key) || (P.claimChecks.get(key) || {}).pending;
     if (d.writes === false && node) out.push(el('span', { class: 'ep-claimhint warn', 'data-claim-off': 'writes', text: EP_WRITES_OFF }));
     else if (d.writes === true && !node && (d.nodes || []).some((x) => x.handle !== 'local')) out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'pin', text: 'Pin this issue to a paired node to claim it there.' }));
     else if (d.writes === true && node && node.status !== 'online') out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'offline', text: `${node.name} is ${node.status}: it cannot claim.` }));
@@ -288,8 +289,10 @@ function epClaimBits(P, c) {
    the row back as it was. The next poll only confirms. */
 function epClaim(P, c, node) {
   const key = `${c.repo}#${c.number}`;
-  if (P.claiming.has(key) || epicPage.cur !== P) return null;
+  if (P.claiming.has(key) || (P.claimChecks.get(key) || {}).pending || epicPage.cur !== P) return null;
+  const startedAt = Date.now();
   P.claiming.set(key, node.handle);
+  P.claimChecks.delete(key);
   P.notes.delete(key);
   epPaint(P);
   const body = { repo: c.repo, issue: c.number, epic: epRef(P.owner, P.repo, P.n) };
@@ -315,11 +318,47 @@ function epClaim(P, c, node) {
     if (epicPage.cur !== P) return;
     const text = epClaimSentence(e, node.name, c.number);
     P.notes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text, check: epUnknown(e, node), name: node.name });
+    if (epUnknown(e, node)) P.claimChecks.set(key, { repo: c.repo, issue: c.number, node, pending: true, claimId: e.body.claim_id, startedAt });
     toast(text, { kind: 'bad' });
     epPaint(P);
     const b = e && e.body;
     if (b && b.reason === 'claim_refused' && (b.why === 'taken' || b.why === 'lost' || b.why === 'done' || b.why === 'closed')) epFetch(P);       // the thread changed: read it again
   });
+}
+
+function epClaimUnconfirmed(P, key, check) {
+  P.claimChecks.delete(key);
+  P.notes.set(key, { why: 'unknown', text: `The claim on #${check.issue} could not be confirmed. Look at the issue on GitHub before trying again.` });
+}
+
+async function epCheckClaims(P) {
+  await Promise.all([...P.claimChecks].map(async ([key, check]) => {
+    if (Date.now() - check.startedAt > 120000) { epClaimUnconfirmed(P, key, check); return; }
+    if (check.reading) return;
+    check.reading = true;
+    try {
+      const r = await api('GET', `/api/nodes/${encodeURIComponent(check.node.handle)}/epics/claim/status?repo=${encodeURIComponent(check.repo)}&issue=${check.issue}`);
+      if (epicPage.cur !== P || P.claimChecks.get(key) !== check || !r || !r.data) return;
+      const d = r.data;
+      if (d.claim_id !== check.claimId) return;
+      if (d.reason === 'unknown') { epClaimUnconfirmed(P, key, check); return; }
+      if (d.reason === 'pending') return;
+      if (d.claimed === true) {
+        const c = (P.data.children || []).find((x) => x.repo === check.repo && x.number === check.issue);
+        P.claimChecks.delete(key);
+        P.notes.delete(key);
+        if (c && c.state === 'open' && !c.claim) {
+          const alias = d.winner || check.node.name;
+          c.claim = { alias, node: check.node.handle, status: 'claimed', live: true, attempt: d.attempt || 1 };
+          c.claim_state = 'claimed'; c.bucket = { node: alias, state: 'queued' };
+        }
+      } else {
+        P.claimChecks.delete(key);
+        P.notes.set(key, { why: d.reason, text: epClaimSentence({ body: { ...d, reason: 'claim_refused', why: d.reason } }, check.node.name, check.issue) });
+      }
+    } catch (_) { /* keep reading until expiry; a failed read never retries the write */ }
+    finally { check.reading = false; }
+  }));
 }
 
 /* ---------- Work: claim an issue, run it as a task on the node and report on the issue (issue #149) ---------- */
@@ -345,6 +384,7 @@ function epEditText(c) {
 function epWorkOffer(P, c) {
   const d = P.data;
   if (!d || c.state !== 'open' || typeof d.writes !== 'boolean') return null;
+  if ((P.claimChecks.get(`${c.repo}#${c.number}`) || {}).pending) return null;
   const node = epWorkNode(d, c);
   if (!node) return null;
   const a = d.authors && typeof d.authors === 'object' ? d.authors : null;
@@ -494,18 +534,45 @@ function epTaskHash(c) {
   try { return buildHash('node-task', { node: handle, id }); } catch (_) { return null; }
 }
 
+/* Match the issue to its task on the same node, then use that session's permission entry. */
+function epPermission(c) {
+  const t = c.task;
+  const w = c.work;
+  const match = t && typeof t.ref === 'string' ? /^(?:[a-z0-9-]+:)?([0-9]{1,12})$/.exec(t.ref) : null;
+  const id = match ? Number(match[1]) : w && w.task_id;
+  const node = t && t.node ? t.node : w ? 'local' : null;
+  if (!id || !node) return null;
+  if (node === 'local') {
+    const st = typeof state !== 'undefined' && state;
+    const task = st && (st.tasks || []).find((x) => x.id === id);
+    return task ? (st.pending_permissions || []).find((p) => p.tmux_name === task.tmux_name) || null : null;
+  }
+  if (typeof Nodes === 'undefined' || !Nodes.ready) return null;
+  const task = Nodes.tasks(node).find((x) => Number(x.id) === id);
+  return task ? Nodes.permFor(node, task.tmux) : null;
+}
+
+function epPermissionNode(p) {
+  if (!p) return null;
+  if (p.node) return nsPermNode(p);
+  return el('div', { class: 'ep-permission' }, el('p', { text: p.summary }),
+    el('p', { class: 'dim', text: (p.choices || []).map((c) => `${c.number}. ${c.label}`).join(' · ') }),
+    el('button', { class: 'primary small', text: 'Allow', onclick: () => decide(p.id, 'allow') }),
+    el('button', { class: 'small', text: 'Deny', onclick: () => decide(p.id, 'deny') }));
+}
+
 /* The phase of the work on one issue, from this board's own work record: a glyph and words, never colour alone. Null when this board holds no record (a remote node's task shows
    as "Task running on <node>"). */
 function epWorkPhaseNode(c) {
   const w = c.work;
-  if (!w || typeof w !== 'object') return null;
-  const p = ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
+  if ((!w || typeof w !== 'object') && !epPermission(c)) return null;
+  const p = epPermission(c) ? 'waiting' : ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
   const [g, words] = EP_WORK_PHASE[p];
   const attn = p === 'waiting' || p === 'lost' || p === 'failed';
   const more = [];
-  if (w.attempt > 1) more.push(`attempt ${w.attempt}`);
-  if (typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
-  if (p === 'pr' && w.pr_number) more.push(`PR #${w.pr_number}`);
+  if (w && w.attempt > 1) more.push(`attempt ${w.attempt}`);
+  if (w && typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
+  if (p === 'pr' && w && w.pr_number) more.push(`PR #${w.pr_number}`);
   return el('span', { class: 'ep-phase' + (attn ? ' warn' : ''), 'data-phase': p, title: p === 'lost' ? 'This board lost the claim. It writes nothing more for it. The task is parked and its worktree is kept.' : null },
     el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: g + ' ' }), `Work ${words}${more.length ? ' (' + more.join(', ') + ')' : ''}`);
 }
@@ -981,7 +1048,7 @@ function epClaimParts(c, nowIso) {
 function epRowSig(P, c) {
   const key = `${c.repo}#${c.number}`;
   const rt = epRoute(P.data);
-  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
+  return JSON.stringify([epPermission(c), c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
     rt ? [rt.can_run, rt.blocked && rt.blocked.code] : null, P.runon.has(key), P.rnotes.get(key) || null]);
 }
 
@@ -1054,6 +1121,8 @@ function epFillRow(P, li, c) {
   const when = epSince(c.updated_at, data.server_now);
   if (when) meta.append(el('span', { class: 'dim ep-age', title: 'GitHub time of the last change', text: `updated ${when}` }));
   li.append(main, meta, epPinBox(P, c));
+  const permission = epPermissionNode(epPermission(c));
+  if (permission) li.append(permission);
 }
 
 /* ---------- the page ---------- */
@@ -1256,6 +1325,7 @@ function epFetch(P) {
       if (P.pausing !== null && P.pausing !== undefined) { P.data.paused = P.pausing; if (P.data.route) P.data.route = { ...P.data.route, paused: P.pausing }; }
     }
     epPaint(P);
+    epCheckClaims(P).then(() => { if (epicPage.cur === P) epPaint(P); });
   }, (e) => {
     if (epicPage.cur !== P) return;
     P.failed = { message: e && e.status === 400 ? 'that is not a GitHub epic address' : (e && e.message) || '' };
@@ -1273,7 +1343,7 @@ function epBlank(P) {
 
 function epMount(root, route) {
   const q = route.params || {};
-  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), working: new Map(), worked: new Map(), wnotes: new Map(), toasted: new Set(),
+  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), claimChecks: new Map(), notes: new Map(), working: new Map(), worked: new Map(), wnotes: new Map(), toasted: new Set(),
     runBusy: false, runOpt: null, runNote: null, pausing: null, runon: new Map(), rnotes: new Map(), winErr: '', groupErr: '', groupDraft: null, groupSig: null, groupBoxes: new Map() };
   P.title = el('h1', { class: 'ep-h1', text: `Epic #${P.n}` });
   P.name = el('span', { class: 'ep-name mono' });
@@ -1317,6 +1387,8 @@ function epMount(root, route) {
   };
   document.addEventListener('visibilitychange', P.onVis);
   epicPage.cur = P;
+  P.onNodes = () => epPaint(P);
+  if (typeof Nodes !== 'undefined') Nodes.use(() => { if (epicPage.cur === P) { Nodes.M.subs.add(P.onNodes); epPaint(P); } });
   epFetch(P);
 }
 
@@ -1327,12 +1399,13 @@ function epUnmount() {
   if (P.timer) clearTimeout(P.timer);
   P.timer = null;
   document.removeEventListener('visibilitychange', P.onVis);
+  if (typeof Nodes !== 'undefined' && Nodes.M) Nodes.M.subs.delete(P.onNodes);
 }
 
 registerPage('epic', {
   title(route) { const q = (route && route.params) || {}; return q.owner ? `${epRef(q.owner, q.repo, q.n)} · epic` : 'Epic'; },
   mount: epMount,
-  update() {},
+  update() { if (epicPage.cur) epPaint(epicPage.cur); },
   unmount: epUnmount,
 });
 
