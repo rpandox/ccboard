@@ -589,7 +589,7 @@ test('Send to session with no idle session says so and offers nothing to pick', 
 
 // ---------------------------------------------------------------- viewer link
 
-test('the viewer link is hidden with an install hint while mem_viewer_url is null; set, it opens in a new tab with the exposure caption', async () => {
+test('the viewer link is hidden while mem_viewer_url is null; set, it opens in a new tab with a dashboard caption', async () => {
   const m = memWorld({ answers: withAnswers() });
   await go(m);
   assert.equal(qa(m.w, '.mem-viewer-link').length, 0);
@@ -602,12 +602,38 @@ test('the viewer link is hidden with an install hint while mem_viewer_url is nul
   assert.equal(a.getAttribute('href'), 'https://box.example.ts.net:10443/');
   assert.equal(a.getAttribute('target'), '_blank');
   assert.equal(a.getAttribute('rel'), 'noopener');
-  assert.match(text(q(m2.w, '.mem-viewer')), /outside the board's sign-in: every device on your tailnet can open and change the claude-mem worker/);
+  assert.match(text(q(m2.w, '.mem-viewer')), /outside the board's sign-in/);
+  assert.doesNotMatch(text(q(m2.w, '.mem-viewer')), /every device on your tailnet/);
+  const local = STATE();
+  local.config.mem_viewer_url = 'https://box.example.ts.net:8447/';
+  local.config.mem_viewer_local = true;                                  // the local worker mapped with CCBOARD_MEM_HTTPS_PORT has no sign-in of its own
+  const m4 = memWorld({ st: local, answers: withAnswers() });
+  await go(m4);
+  assert.match(text(q(m4.w, '.mem-viewer')), /every device on your tailnet can open and change the claude-mem worker/);
   const bad = STATE();
   bad.config.mem_viewer_url = 'javascript:alert(1)';
   const m3 = memWorld({ st: bad, answers: withAnswers() });
   await go(m3);
-  assert.equal(qa(m3.w, '.mem-viewer-link').length, 0, 'only an https address is ever linked');
+  assert.equal(qa(m3.w, '.mem-viewer-link').length, 0, 'a script URL is never linked');
+});
+
+test('a loopback dashboard opens with target and rel; unsafe viewer URLs never become links', async () => {
+  for (const url of ['http://localhost:37700/', 'http://127.0.0.1:37700/', 'http://[::1]:37700/']) {
+    const st = STATE({ config: { mem_viewer_url: url } });
+    const m = memWorld({ st, answers: withAnswers() });
+    await go(m);
+    const a = q(m.w, '.mem-viewer-link');
+    assert.ok(a, url);
+    assert.equal(a.getAttribute('href'), url);
+    assert.equal(a.getAttribute('target'), '_blank');
+    assert.equal(a.getAttribute('rel'), 'noopener');
+    assert.equal(text(a), 'Open claude-mem viewer');
+  }
+  for (const url of ['http://example.ts.net/', 'https://user:secret@example.ts.net/', 'https://', 'javascript:alert(1)']) {
+    const m = memWorld({ st: STATE({ config: { mem_viewer_url: url } }), answers: withAnswers() });
+    await go(m);
+    assert.equal(qa(m.w, '.mem-viewer-link').length, 0, url);
+  }
 });
 
 // ---------------------------------------------------------------- health tile
@@ -789,11 +815,11 @@ test('gotchas mount: fills the host once, and a stopped worker, a slow one or a 
 
 // ---------------------------------------------------------------- static scans
 
-test('memory.js writes no style, no innerHTML, names no worker address and uses no em dash in its text', () => {
+test('memory.js writes no style, no innerHTML, names no worker URL and uses no em dash in its text', () => {
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'memory.js'), 'utf8');
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.doesNotMatch(code, /\.innerHTML|innerHTML\s*=|outerHTML|insertAdjacentHTML|cssText|setAttribute\(\s*['"`]style|\.style\b|\bstyle\s*:/);
-  assert.doesNotMatch(src, /(?<![0-9])377[0-9]{2}(?![0-9])|127\.0\.0\.1|localhost/, 'the browser never names the worker');
+  assert.doesNotMatch(src, /(?<![0-9])377[0-9]{2}(?![0-9])|https?:\/\/(?:127\.0\.0\.1|localhost)/, 'no hardcoded worker URL; loopback host names only validate configured viewer links');
   assert.doesNotMatch(code, /—/, 'no em dashes in UI text');
   assert.doesNotMatch(code, /\bfetch\(/, 'every call goes through api()');
   assert.doesNotMatch(code, /['"`]\/api\/memory\/(?!health|\$\{)/, 'only the proxy routes');

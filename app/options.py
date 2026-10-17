@@ -68,7 +68,8 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_AUTO_CONTINUE", "agents", "Auto-continue", "Type continue once when a limit resets or a working session recovers.", "bool", "1", "confirm", attr="auto_continue"),
         Option("CCBOARD_CLAUDE_MEM", "memory", "Memory worker monitoring", "Install the memory plugin and monitor its worker when enabled.", "bool", "1", "installer", attr="claude_mem"),
         Option("CCBOARD_MEM_PORT", "memory", "Memory worker port", "Empty discovers the memory worker port automatically.", "int", "", "file", attr="mem_port", bounds=(1, 65535)),
-        Option("CCBOARD_MEM_HTTPS_PORT", "memory", "Memory viewer HTTPS port", "Empty hides the viewer and a port exposes its writable API on the tailnet.", "int", "", "installer", attr="mem_https_port", bounds=(1, 65535)),
+        Option("CCBOARD_MEM_HTTPS_PORT", "memory", "Memory viewer HTTPS port", "A port exposes the local worker's writable API on the tailnet; empty leaves it unmapped.", "int", "", "installer", attr="mem_https_port", bounds=(1, 65535)),
+        Option("CCBOARD_MEM_VIEWER_URL", "memory", "Memory viewer URL", "An existing dashboard URL, HTTPS or HTTP on loopback, without credentials; takes precedence over the viewer port.", "url", "", "page", attr="mem_viewer_url_override", bad="mem_viewer_url_bad"),
         Option("CCBOARD_MEM_SERVICE", "memory", "Memory service", "Run the memory worker as a managed service.", "bool", "0", "installer", applies="installer"),
         Option("CCBOARD_CODEX_HOOK_TRUST", "safety", "Codex hook trust", "Review trusts hooks once in Codex and bypass also trusts repository hooks.", "choice", "review", "confirm", attr="codex_hook_trust", choices=("review", "bypass")),
         Option("CCBOARD_CLONE_ALLOWED_HOSTS", "safety", "Private clone hosts", "Comma-separated private hosts or wildcard domains that clones may reach.", "list", "", "confirm", attr="clone_allowed_hosts"),
@@ -209,6 +210,7 @@ def validate_value(option, value, raw) -> str | None:
     dry = Settings({**raw, option.key: value, "CCBOARD_ENV_FILE": "", "CCBOARD_PAGE_FILE": ""}, _quiet=True)
     if option.bad and getattr(dry, option.bad):
         rules = {"CCBOARD_NODE_PORTS": "Use ports from 1 to 65535, at most eight.",
+                 "CCBOARD_MEM_VIEWER_URL": "Use HTTPS, or HTTP on loopback, without credentials; leave empty for the viewer port fallback.",
                  "CCBOARD_NODE_TAGS": "Use up to eight tag:name entries, or none.",
                  "CCBOARD_SUBAGENT_MODEL": "Use inherit, a model alias or a model id of at most 80 characters.",
                  "CCBOARD_AUTOCLOSE_GRACE": "Use 0 to less than 86400."}

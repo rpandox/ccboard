@@ -50,6 +50,28 @@ def row(response, key=KEY):
     return next(r for r in response.json()['options'] if r['key'] == key)
 
 
+def test_memory_viewer_page_save_restart_and_reset(board):
+    key = 'CCBOARD_MEM_VIEWER_URL'
+    value = 'https://memory.example.ts.net:8446/'
+    saved = put(board, {key: value})
+    assert saved.status_code == 200, saved.text
+    entry = row(saved, key)
+    assert entry['group'] == 'memory' and entry['cls'] == 'page'
+    assert entry['value'] == value and entry['pending'] and entry['source'] == 'page'
+    assert board[1].mem_viewer_url() is None
+    assert config.Settings(board[2]).mem_viewer_url() == value
+    assert put(board, {key: None}).status_code == 200
+    assert config.Settings(board[2]).mem_viewer_url() is None
+
+
+@pytest.mark.parametrize('value', ['http://example.ts.net/', 'https://user:secret@example.ts.net/', 'junk'])
+def test_memory_viewer_page_rejects_invalid_url(board, value):
+    answer = put(board, {'CCBOARD_MEM_VIEWER_URL': value})
+    assert answer.status_code == 400
+    assert 'HTTPS' in answer.text or 'credentials' in answer.text
+    assert not board[1].page_file.exists()
+
+
 @pytest.mark.parametrize('value', ['0.5', '0', '-1', '1e20', '10000', 'nan', 'inf'])
 def test_approval_timeout_range(board, value):
     option = next(o for o in options.registry() if o.key == 'CCBOARD_APPROVE_TIMEOUT')

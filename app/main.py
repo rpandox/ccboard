@@ -933,7 +933,7 @@ def build_state(user: str) -> dict:
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime, "auto_continue": settings.auto_continue,
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
-                    "public_url": settings.public_url, "mem_viewer_url": settings.mem_viewer_url(),
+                    "public_url": settings.public_url, "mem_viewer_url": settings.mem_viewer_url(), "mem_viewer_local": bool(settings.mem_viewer_url()) and not settings.mem_viewer_url_override,
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
                                "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push, "ns": backup.backup_ns()}}
     st["claude"] = claude_auth.status()
