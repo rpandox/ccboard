@@ -2678,8 +2678,33 @@ function settingsOpenShortcuts() {
   if (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function') Palette.openHelp();
 }
 
+/* Session metadata only. Fetch on opening App; demo mode never contacts the board. */
+async function settingsLocalSessions(panel) {
+  if (typeof demoOn === 'function' && demoOn()) return;
+  try {
+    const data = await api('GET', '/api/auth/local/sessions');
+    if (!data.enabled) return;
+    panel.append(settingsHead('Local sign-in'));
+    const rows = el('div');
+    for (const row of data.sessions) {
+      rows.append(settingsKv('Browser', el('span', { text: `Created ${new Date(row.created * 1000).toLocaleString()}; last seen ${new Date(row.last_seen * 1000).toLocaleString()}` })));
+    }
+    if (!data.sessions.length) rows.append(el('p', { class: 'dim', text: 'No active local sessions. Run bin/ccboard-open on this machine to sign in.' }));
+    const signout = confirmButton('local-signout', 'Sign out all local sessions', async () => {
+      await api('DELETE', '/api/auth/local/sessions');
+      rows.textContent = 'All local sessions and pending links signed out. Run bin/ccboard-open to sign in again.';
+      signout.remove();
+      pageToast('All local sessions signed out', 'ok');
+    }, false);
+    panel.append(rows, settingsKv('Sign out', signout));
+  } catch (e) { panel.append(el('p', { class: 'dim', text: 'Could not load local sessions. Reopen App to retry.' })); }
+}
+
 function settingsApp(p) {
   p.textContent = '';
+  const localPanel = el('section', { 'aria-label': 'Local sign-in' });
+  settingsLocalSessions(localPanel);
+  p.append(localPanel);
   const mode = settingsAppMode();
   p.append(settingsHead('Install'));
   p.append(settingsKv('Mode', el('span', { class: 'v', text: mode.id }), el('span', { class: 'dim', text: mode.note })));
@@ -2738,7 +2763,7 @@ function settingsSig(id, st) {
       cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null,
       (acctProblem(st) || {}).account || (acctProblem(st) ? '*' : null)]);                  // the amber chip and the lead action follow the problem at once
   }
-  if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
+  if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable(), ui.confirm === 'local-signout', minute]);
   if (id === 'doctor') return JSON.stringify(doctorSig());
   const mcpArmed = /^mcp-revoke:/.test(String(ui.confirm || '')) ? ui.confirm : null;                // the two-tap Revoke of a device token (the block itself repaints in place)
   return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', ui.confirm === 'cx-logout', mcpArmed, cxFlow.err, doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card

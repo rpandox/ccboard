@@ -43,6 +43,7 @@ from . import issues as issues_mod
 from . import platform as plat
 from . import mcp, mcp_remote, mcp_tokens
 from .auth import csrf_ok, identify
+from . import local_signin
 from .config import settings
 from .staticgz import GzipStaticFiles
 from .devguard import require_real_launch_ok
@@ -268,6 +269,9 @@ async def lifespan(app: FastAPI):
     claims_task = None
     if github_write.writes_enabled() and nodes_epics.has_records(db):          # claims of an epic (issue #148): only a board that may write and keeps a claim record does anything here
         claims_task = asyncio.ensure_future(asyncio.to_thread(_recover_claims))      # takes back an unconfirmed claim, restarts the renew timer for a held one
+    local_signin.clear()
+    if settings.local_signin:
+        log.warning("local browser sign-in enabled (CCBOARD_LOCAL_SIGNIN=1)")
     log.info("%s", startup_line())
     threading.Thread(target=static_mount.warm, name="static-gzip", daemon=True).start()          # the gzip of every script and style, before the first page load asks for it
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
@@ -298,6 +302,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.get("/auth/local")(local_signin.page)
+app.get("/auth/local/script.js")(local_signin.script)
+app.post("/auth/local/token")(local_signin.mint)
+app.post("/auth/local/redeem")(local_signin.redeem)
+app.get("/api/auth/local/sessions")(local_signin.sessions)
+app.delete("/api/auth/local/sessions")(local_signin.revoke)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
@@ -478,6 +488,8 @@ async def _node_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
+    if request.url.path in {"/auth/local", "/auth/local/script.js", "/auth/local/token", "/auth/local/redeem"}:
+        return await call_next(request)  # each handler enforces the direct-loopback gate
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
     if request.url.path == mcp_remote.PATH and mcp_tokens.enabled() and _node_bearer(request):
@@ -522,7 +534,7 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "bad token"}, status_code=403)
         request.state.user = "local-token"
         return await call_next(request)
-    user = identify(request.headers, settings)
+    user = identify(request.headers, settings, request)
     if user is None:
         return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
     if not csrf_ok(request.method, request.headers):
