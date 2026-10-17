@@ -152,7 +152,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": true,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -163,7 +164,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -178,7 +180,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -189,7 +192,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -204,7 +208,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": true,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -215,7 +220,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -230,7 +236,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -241,7 +248,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -256,7 +264,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -267,7 +276,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -475,7 +485,8 @@
           "devcontainer": false,
           "branch": "feature/devices-pagination",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -486,7 +497,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -568,7 +580,8 @@
           "devcontainer": true,
           "branch": "develop",
           "dirty": true,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         },
         {
           "name": "website",
@@ -644,7 +657,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -717,7 +731,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -732,7 +747,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -743,7 +759,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     },
@@ -758,7 +775,8 @@
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
-          "state": "ok"
+          "state": "ok",
+          "claude_trust_warning": null
         }
       ],
       "root": {
@@ -769,7 +787,8 @@
         "state": "project",
         "branch": null,
         "dirty": null,
-        "devcontainer": false
+        "devcontainer": false,
+        "claude_trust_warning": null
       },
       "orphan_sessions": []
     }

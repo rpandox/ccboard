@@ -140,9 +140,10 @@ function pjHeader(P) {
   const stats = el('div', { class: 'pj-stats mono' });
   const actions = el('div', { class: 'pj-actions' });                 // pjPatchActions fills it: the filled primary follows the tab
   const manage = el('div', { class: 'pj-manage hidden', role: 'region', 'aria-label': 'Repos and danger zone' });
+  const trust = el('div', { class: 'pj-trust' });
   const gotchas = el('div', { class: 'pj-gotchas hidden' });           // the newest claude-mem gotchas (pjGotchas fills it; it stays hidden unless there are some)
-  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), epics, quad, more), repos, stats, gotchas, actions, manage);
-  return { node, name, path, quad, repos, stats, gotchas, actions, manage, sig: { repos: null, tab: null, manage: null } };
+  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), epics, quad, more), repos, stats, gotchas, trust, actions, manage);
+  return { node, name, path, quad, repos, stats, gotchas, trust, actions, manage, sig: { repos: null, tab: null, manage: null } };
 }
 
 /* + session / + task / + schedule, built per tab (v0.5.6d): the Sessions tab's primary is + session; on Tasks and Schedules the tab's own button is the one
@@ -201,7 +202,11 @@ function pjPatchHeader(P, st, p) {
     for (const r of (p.repos || [])) h.repos.append(pjRepoChip(st, p, r));
     if (!(p.repos || []).length) h.repos.append(el('span', { class: 'dim', text: 'no repos yet: ... > Add repo, or start a session in the project folder' }));
   }
-  pjPatchActions(P, pjParse(P.route, st).tab);
+  const cur = pjParse(P.route, st);
+  const warnings = [p.root, ...(p.repos || [])].filter((r) => r && (!cur.repo || r.name === cur.repo) && r.claude_trust_warning);
+  h.trust.textContent = '';
+  for (const r of warnings) h.trust.append(el('p', { class: 'callout warn', text: r.claude_trust_warning }));
+  pjPatchActions(P, cur.tab);
   const cost = typeof costText === 'function' ? costText(p) : '';
   const hrs = pjHours(P, p.name);
   setText(h.stats, [cost, hrs].filter(Boolean).join(' · '));

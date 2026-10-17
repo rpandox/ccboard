@@ -637,15 +637,15 @@ def _hooks_missing(row: dict) -> str | None:
         return None
 
 
-def _codex_launch_view(name: str, row: dict, command: str | None, view: dict) -> None:
-    """A Codex row that has sent no hook yet (Codex's first hook comes with its first turn) is either still starting, waiting behind a
+def _agent_launch_view(name: str, row: dict, command: str | None, view: dict) -> None:
+    """An agent row that has sent no hook yet (Codex's first hook comes with its first turn) is either still starting, waiting behind a
     dialog nobody answered (update, trust: view.pane_dialog, shown as needing a person, never answered by the board), or gone back to its
     login shell (LAUNCH_GRACE s after the row was made: the row becomes errored with the reason, once). Never raises into the 3 s poll."""
     try:
         made = _parse_at(row.get("created_at"))
         if made is not None and (datetime.now(timezone.utc) - made).total_seconds() < LAUNCH_GRACE:
             return
-        block = _pane_block(name, row, command, invalidate=False)
+        block = _pane_block(name, row, command, invalidate=False, claude_trust=True)
         if block is None:
             return
         if block[0] == "agent_exited":
@@ -655,7 +655,7 @@ def _codex_launch_view(name: str, row: dict, command: str | None, view: dict) ->
         else:
             view.update(pane_dialog=block[1], needs_attention=True, last_message=block[1])
     except Exception as e:
-        log.debug("codex launch check failed for %s: %s", name, e.__class__.__name__)
+        log.debug("agent launch check failed for %s: %s", name, e.__class__.__name__)
 
 
 def _esc_dismissed_permissions(live: dict, rows: dict[str, dict]) -> bool:
@@ -738,8 +738,9 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             out[name]["queued_prompts"] = queued.get(row.get("row_id"), 0)
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
             out[name]["wait_kind"] = waits[name]
-        if rich and row.get("agent") == "codex" and not row.get("state"):
-            _codex_launch_view(name, row, s["command"], out[name])
+        if not row.get("state") and ((row.get("agent") == "claude" and row.get("launcher") == "task")
+                                     or (rich and row.get("agent") == "codex")):
+            _agent_launch_view(name, row, s["command"], out[name])
     if rich and out:
         try:                                         # #71: a session parked on a rate limit says when it continues (display only; never breaks the poll)
             for name, p in autoresume.parked_view(db, {n: rows.get(n, {}) for n in out}, time.time()).items():
@@ -816,6 +817,12 @@ def _scan_entry() -> dict:
         slow = health.under_load()
         st = {"tmux_down": down, "projects": projects.scan(sessions, git_max_age=projects.GIT_TTL_LOADED if slow else 0.0),
               "scan_slow": slow}
+        opened = db.claude_session_repos()
+        for p in st["projects"]:
+            for r in [p.get("root"), *p.get("repos", [])]:
+                if r is not None:
+                    r["claude_trust_warning"] = (tasks.workspace_trust_warning(p["name"], r["name"])
+                                                  if r.get("state") == "ok" and (p["name"], r["name"]) not in opened else None)
         _scan_cache = (time.monotonic(), st)
         return dict(st)
 
@@ -3766,25 +3773,43 @@ def _agent_row(name: str) -> tuple[dict | None, object | None, JSONResponse | No
         return None, None, _terminal_refusal("not_an_agent", "this is a shell, not an agent session", row, None)
 
 
+_agent_exit_lock = threading.Lock()
 LAUNCH_GRACE = 20                                # s after a session row is made in which a login shell in its pane is the launch line being typed
 
 
-def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True) -> tuple[str, str] | None:
-    """(code, message) when the board must not type into a Claude approval or Codex dialog, else None. `agent_exited`: the pane's
-    foreground process is the login shell (codex quit; a prompt typed now would run as a shell command); the row is marked errored with
-    the reason. `dialog`: the screen shows Codex's update dialog (its default, Update now, runs npm install -g) or its trust dialog; the
-    board never answers one. Box checks 86 and 92. A tmux hiccup is no evidence: None. `invalidate` is off inside the state builder,
-    which holds the scan lock."""
-    if (row or {}).get("agent") == "claude":
+def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True,
+                claude_trust: bool = False) -> tuple[str, str] | None:
+    """(code, message) when the board must not type into a Claude approval or Codex dialog, or a Claude task was refused for workspace
+    trust, else None. `agent_exited`: the pane's foreground process is the login shell (codex quit; a prompt typed now would run as a
+    shell command); the row is marked errored with the reason. `dialog`: the screen shows Claude's approval dialog, Codex's update dialog
+    (its default, Update now, runs npm install -g) or its trust dialog; the board never answers one. Box checks 86 and 92. A tmux hiccup
+    is no evidence: None. `invalidate` is off inside the state builder, which holds the scan lock. Claude trust detection is opt-in for
+    launch polling only; typing callers never act on it."""
+    agent = (row or {}).get("agent") or "claude"
+    if row and agent == "claude":
         try:
-            dialog = claude_pane.approval_dialog(tmux.capture(name, lines=0))
-            return ("dialog", "Claude is asking for a permission") if dialog else None
+            if claude_pane.approval_dialog(tmux.capture(name, lines=0)):
+                return "dialog", "Claude is asking for a permission"
         except (tmux.TmuxError, tmux.TmuxDown, OSError):
             return None
-    if (row or {}).get("agent") != "codex":
+    if agent != "codex" and not (agent == "claude" and (row or {}).get("launcher") == "task"):
         return None
+    if agent == "claude":
+        made = _parse_at(row.get("created_at"))
+        if (not claude_trust or row.get("state") or made is None
+                or not LAUNCH_GRACE <= (datetime.now(timezone.utc) - made).total_seconds() <= 60
+                or not db.active_tasks_by_session(("running",)).get(row.get("row_id"))):
+            return None
     try:
         cmd = command if command is not None else tmux.pane_info(name).get("cmd")
+        if agent == "claude":
+            if shell and codex_pane.shell_foreground(cmd):
+                lines = tmux.capture(name, lines=claude_pane.TAIL_LINES).splitlines()
+                if any(line.lstrip().startswith("Error creating worktree: Workspace trust not yet accepted.") for line in lines):
+                    reason = tasks.workspace_trust_reason(row["project"], row["repo"])
+                    _mark_exited(name, row, reason, invalidate)
+                    return "agent_exited", reason
+            return None
         if shell and codex_pane.shell_foreground(cmd):
             reason = codex_pane.exit_reason(tmux.capture(name, lines=codex_pane.TAIL_LINES))
             _mark_exited(name, row, reason, invalidate)
@@ -3796,15 +3821,21 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
 
 
 def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> None:
-    """The row of a Codex whose pane went back to the login shell becomes errored, once, with the reason (and a notice)."""
-    if row.get("state") in ("ended", "errored") and row.get("last_message") == reason:
-        return
+    """An agent that failed to start becomes errored, once, with the reason (and a notice)."""
     try:
-        db.set_state(name, "errored", "AgentExited", message=reason, attention=True)
-        db.add_event(name, "AgentExited", None, reason, {}, agent="codex")
+        with _agent_exit_lock:
+            fresh = db.open_row(name)
+            if not fresh or fresh.get("row_id") != row.get("row_id"):
+                return
+            if fresh.get("state") in ("ended", "errored") and fresh.get("last_message") == reason:
+                return
+            db.set_state(name, "errored", "AgentExited", message=reason, attention=True)
+            db.add_event(name, "AgentExited", None, reason, {}, agent=row.get("agent") or "claude")
+        if (row.get("agent") or "claude") == "claude":
+            _taskflow().on_turn_end(name, row, None, failed=True, message=reason)
         notify.notify_session(name, "errored", reason, "agent_exited")
     except Exception as e:
-        log.warning("marking %s errored after codex left its pane failed: %s", name, e)
+        log.warning("marking %s errored after the agent left its pane failed: %s", name, e)
     if invalidate:
         _invalidate_scan()
 
@@ -5750,7 +5781,8 @@ def api_nodes_remove(peer: str, request: Request, body: NodeRemoveIn | None = No
     """Remove a node this board calls, or revoke a pair that calls this board (it fails on its next request). Never fails because the other board is
     offline: a node this board calls is asked to unpair (best effort) and {peer_notified} says whether it was told. An optional body
     {also_revoke: [peer_id, ...]} also revokes exactly those incoming pairs; each must be an active pair with the removed node's node id (400
-    otherwise, and nothing happens). The answer lists the other pairs that name the same node id and are still active (`other_pairs`). 404 no such node."""
+    otherwise, and nothing happens). The answer names incoming pairs revoked automatically (`auto_revoked`: [{peer_id, name}]) and lists the other
+    pairs that name the same node id and are still active (`other_pairs`). 404 no such node."""
     _node_manager(request)
     rec = nodes.peer(peer, db=db)
     if rec is None:
@@ -5763,7 +5795,7 @@ def api_nodes_remove(peer: str, request: Request, body: NodeRemoveIn | None = No
         raise projects.BadRequest(str(e)) from None
     doctor.invalidate()
     return JSONResponse({"removed": True, "peer_notified": bool(done["peer_told"]) if rec.get("direction") != "in" and not rec.get("legacy") else None,
-                         "also_revoked": done["also_revoked"], "other_pairs": done["other_pairs"]}, headers={"Cache-Control": "no-store"})
+                         "auto_revoked": done["auto_revoked"], "also_revoked": done["also_revoked"], "other_pairs": done["other_pairs"]}, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/node/rotate")
@@ -5997,6 +6029,8 @@ async def api_permission(request: Request):
 
 @app.post("/api/permission/{pid}/{decision}")
 def api_permission_decide(pid: int, decision: str, request: Request):
+    # A person's answer only: the hook token is held by every agent session on this board, so an agent could otherwise approve its own request
+    # (the hub's relayed answer goes through peer_permission_answer, not this route).
     _epic_person(request, "only a signed-in person can answer a permission request")
     if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
         raise projects.BadRequest("decision must be allow, deny or tui")
