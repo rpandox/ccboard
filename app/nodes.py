@@ -855,7 +855,7 @@ def _db(db=None):
 class PairError(Exception):
     """A pairing that did not happen. `reason` is one word the page can switch on; str() is the sentence for a person; `status` the HTTP code."""
     STATUS = {"none": 403, "wrong": 403, "expired": 403, "burned": 403, "rate_limited": 429, "bad_request": 400, "bad_url": 400,
-              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500, "registry_full": 409,
+              "key_required": 409, "key_changed": 409, "callback_unreachable": 502, "answer_unverified": 409, "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500, "registry_full": 409,
               "tailscale_unavailable": 503, "device_refused": 403}
     MESSAGES = {
         "none": "There is no active pairing code on that node. Make a new one there.",
@@ -865,6 +865,10 @@ class PairError(Exception):
         "rate_limited": "Too many tries; wait a minute.",
         "bad_request": "The pairing request is not valid.",
         "bad_url": "The address is not one this board may call.",
+        "key_required": "Pairing requires signing keys: both boards need the key update and signing enabled, or use mode prefer.",
+        "key_changed": "This node id is pinned to another key on this board; the pair for it must be removed here first.",
+        "callback_unreachable": "The other address did not answer the check in time; nothing was paired. Make a new code and try again.",
+        "answer_unverified": "The other board did not prove it holds its signing key; nothing was paired. Make a new code and try again.",
         "callback_mismatch": "The address does not belong to the node that asked to pair.",
         "refused": "The other node refused the pairing.",
         "unreachable": "The other node could not be reached.",
@@ -874,8 +878,9 @@ class PairError(Exception):
         "device_refused": "That node's device check refused this device; nothing was paired.",
     }
 
-    def __init__(self, reason: str, retry_after: int = 0, message: str | None = None):
+    def __init__(self, reason: str, retry_after: int = 0, message: str | None = None, *, pinned_on: str | None = None):
         self.reason = reason if reason in self.STATUS else "refused"
+        self.pinned_on = "acceptor" if self.reason == "key_changed" and pinned_on == "acceptor" else None
         self.retry_after = int(retry_after or 0)
         self.message = message or self.MESSAGES[self.reason]
         super().__init__(self.message)
@@ -886,7 +891,10 @@ class PairError(Exception):
 
     def payload(self) -> dict:
         """The JSON body of the error answer; the route adds Retry-After when `retry_after` is set."""
-        return {"error": self.message, "reason": self.reason}
+        result = {"error": self.message, "reason": self.reason}
+        if self.pinned_on:
+            result["pinned_on"] = self.pinned_on
+        return result
 
 
 class PeerError(Exception):
@@ -1729,7 +1737,7 @@ def peer_call(url: str, method: str, path: str, *, headers: dict | None = None, 
 
 class PeerClient:
     """Calls another board as a paired node: `PeerClient(record).get("/api/node")`. `record` is a registry view (peer_id and url). The token is read
-    from the 0600 file at each call and goes only into the Authorization header. The address rule runs at each call. A 401 marks the pair
+    from the 0600 file at each call and goes only into the Authorization header. The address rule runs at each call. A non-transient 401 marks the pair
     `needs_repair`; an answer clears it. Never follows a redirect, never sends an identity header."""
 
     def __init__(self, record: dict, *, db=None):
@@ -1759,7 +1767,7 @@ class PeerClient:
         if r.ok or r.status == 304:                                   # a 304 to a conditional read is an answer, not a failure (issue #228)
             _note(d, self.peer_id, ok=True)
         else:
-            _note(d, self.peer_id, ok=False, error=(r.json.get("reason") if isinstance(r.json, dict) and r.json.get("reason") in ("clock", "replay", "stale", "key_changed", "signature_required", "key_required", "bad_signature") else f"the peer answered {r.status}"), repair=True if r.status == 401 else None)
+            self._refused(r, d)
         return r
 
     def open_stream(self, path: str, *, acting_user: str | None = None, timeout: float = CALL_TIMEOUT) -> PeerStreamReply:
@@ -1783,8 +1791,15 @@ class PeerClient:
         if r.ok or r.status == 304:                                   # a 304 to a conditional read is an answer, not a failure (issue #228)
             _note(d, self.peer_id, ok=True)
         else:
-            _note(d, self.peer_id, ok=False, error=(r.json.get("reason") if isinstance(r.json, dict) and r.json.get("reason") in ("clock", "replay", "stale", "key_changed", "signature_required", "key_required", "bad_signature") else f"the peer answered {r.status}"), repair=True if r.status == 401 else None)
+            self._refused(r, d)
         return r
+
+    def _refused(self, reply, db):
+        reason = reply.json.get("reason") if isinstance(reply.json, dict) else None
+        known = ("clock", "replay", "stale", "key_changed", "signature_required", "key_required", "bad_signature")
+        error = "own_key_changed" if reason == "key_changed" else reason if reason in known else f"the peer answered {reply.status}"
+        repair = True if reply.status == 401 and reason not in ("stale", "replay", "clock") else None
+        _note(db, self.peer_id, ok=False, error=error, repair=repair)
 
     def _sign(self, method, path, body, token, who, db):
         if not isinstance(path, str) or not _PATH_RE.fullmatch(path) or ".." in path or "//" in path:
@@ -2096,11 +2111,14 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
     norm = normalize_code(code)
     if node_keys.conflict(node["id"], node.get("pubkey"), d):
         audit("in", "", "pair_refused", False, "key_changed", db=d)
-        raise PairError("callback_mismatch")
+        raise PairError("key_changed", pinned_on="acceptor")
     keyed = bool(node.get("pubkey") and node_keys.available())
+    if node_keys.mode() == "require" and not keyed:
+        raise PairError("key_required")
     r = redeem_code(code, caller, node=node, bind=bind, db=d)
     pid = r["peer_id"]
     unverified = True
+    callback_unreachable = False
     try:
         # The target in the proof is THIS board's own address, never one taken from the request: a body that a third board relayed here was typed by
         # the person at that board's address, so the caller's proof for it does not match and the caller answers 404.
@@ -2124,10 +2142,14 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
             audit("in", pid, "pair_refused", False, "the address breaks the rule", node_name=node["name"], status="refused", db=d)
             raise PairError("bad_url") from None
         unverified = True
+        callback_unreachable = True
     if keyed and unverified:
-        revoke(pid, db=d, why="callback_mismatch")
-        audit("in", pid, "pair_refused", False, "callback_mismatch", db=d)
-        raise PairError("callback_mismatch")
+        reason = "callback_unreachable" if callback_unreachable else "callback_mismatch"
+        revoke(pid, db=d, why=reason)
+        audit("in", pid, "pair_refused", False, reason, db=d)
+        if callback_unreachable:
+            raise PairError(reason, message=f"{node['url']} did not answer the check in time; nothing was paired. Make a new code and try again.")
+        raise PairError(reason)
     reverse_reason = None
     if unverified:
         audit("in", pid, "callback_unverified", False, "the caller's address did not confirm this pairing", node_name=node["name"], db=d)
@@ -2165,6 +2187,8 @@ def handle_pair(body, caller: str, db=None, bind=None) -> dict:
            "reverse": reverse_saved}
     if not keyed or unverified:
         out["node"].pop("pubkey", None)
+    if keyed and not unverified:
+        out["sig"] = node_keys.sign_pair_answer(proof, r["token"], node["id"], out["node"]["id"])
     if reverse_reason:
         out["reverse_reason"] = reverse_reason
     return out
@@ -2218,6 +2242,8 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         audit("out", "", "pair_refused", False, f"pairs full ({MAX_PEERS} nodes)", status="refused", db=d)
         raise PairError("registry_full")
     me = own_claim()
+    if node_keys.mode() == "require" and not me.get("pubkey"):
+        raise PairError("key_required")
     if not me["url"]:
         raise ValueError("this node does not know its own address, so the other node could not call back; set CCBOARD_PUBLIC_URL")
     nonce = secrets.token_urlsafe(16)
@@ -2232,6 +2258,8 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         try:
             reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
             if reply.status == 400 and isinstance(reply.json, dict) and reply.json.get("reason") == "bad_request" and "pubkey" in me:
+                if node_keys.mode() == "require":
+                    raise PairError("key_required")
                 end_confirm(pending)
                 me.pop("pubkey")
                 pending = begin_confirm(norm, nonce, target.url)
@@ -2242,14 +2270,29 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         if not reply.ok:
             j = reply.json if isinstance(reply.json, dict) else {}
             reason = j.get("reason") if j.get("reason") in PairError.STATUS else ("rate_limited" if reply.status == 429 else "refused")
-            raise PairError(reason, retry_after=int(reply.headers.get("retry-after", 0) or 0) if reply.status == 429 else 0)
+            message = None
+            if reason == "key_changed" and j.get("pinned_on") == "acceptor":
+                message = (f"{target.url} already has this node id pinned to another key; "
+                           "remove the pair for this board there first, then pair again.")
+            elif reason == "callback_unreachable":
+                message = f"{me['url']} did not answer the check in time; nothing was paired. Make a new code and try again."
+            raise PairError(reason, retry_after=int(reply.headers.get("retry-after", 0) or 0) if reply.status == 429 else 0,
+                            message=message, pinned_on=j.get("pinned_on"))
         j = reply.json if isinstance(reply.json, dict) else {}
         token, theirs = j.get("token"), j.get("node") if isinstance(j.get("node"), dict) else {}
         if not isinstance(token, str) or not TOKEN_RE.fullmatch(token) or not isinstance(theirs.get("id"), str) or not ID_RE.fullmatch(theirs["id"]):
             raise PairError("refused", message="The other node's answer was not a pairing answer.")
-        pub = theirs.get("pubkey") if me.get("pubkey") and not j.get("callback_unverified") else None
-        if (pub is not None and not node_keys.valid_public(pub)) or node_keys.conflict(theirs["id"], pub, d):
-            raise PairError("callback_mismatch")
+        pub = theirs.get("pubkey")
+        if "pubkey" in theirs and (not me.get("pubkey") or j.get("callback_unverified") or not node_keys.valid_public(pub)):
+            raise PairError("answer_unverified")
+        if node_keys.conflict(theirs["id"], pub, d):
+            raise PairError("key_changed")
+        if node_keys.mode() == "require" and not pub:
+            raise PairError("key_required")
+        if pub:
+            proof = confirm_proof(norm, nonce, me["id"], me["url"], target.url, me["pubkey"])
+            if not node_keys.verify_pair_answer(pub, j.get("sig"), proof, token, me["id"], theirs["id"]):
+                raise PairError("answer_unverified")
         pin = {"pubkey": pub, "key_source": "pairing" if pub else None, "key_at": iso(_now()) if pub else None}
         scopes = [x for x in SCOPES if x in (j.get("scopes") or [])] or list(DEFAULT_SCOPES)
         name = _sanitize_name(theirs.get("name")) or "node"

@@ -146,6 +146,15 @@ def _health_rows(regs: list[dict], recs: list[dict]) -> list[tuple[int, str, str
         status = rec.get("status")
         if rec.get("error_kind") == "clock" or reg.get("last_error") == "clock":
             out.append((0, name, f"{name} refused the signature because the clocks differ by more than 120 seconds", SKEW_TEXT))
+        elif (rec.get("error_kind") or reg.get("last_error")) in ("stale", "replay", "bad_signature", "signature_required"):
+            reason = rec.get("error_kind") or reg.get("last_error")
+            words = {"stale": "the signature is too old", "replay": "the signature was already used",
+                     "bad_signature": "the signature is not valid", "signature_required": "the signature is missing"}
+            fix = "Wait for the next check; if it persists, check automatic time on both boards" if reason in ("stale", "replay") else "Check that both boards have the key update and signing enabled"
+            out.append((0, name, f"{name} refused the call: {words[reason]}", fix))
+        elif rec.get("error_kind") == "own_key_changed" or reg.get("last_error") == "own_key_changed":
+            out.append((0, name, f"{name} refused this board's signing key: it differs from the key pinned there",
+                        f"Remove this board's pair on {name} first, then pair again and compare the key ids"))
         elif rec.get("error_kind") == "key_changed" or reg.get("last_error") == "key_changed":
             out.append((0, name, f"{name} has a different signing key", "Remove the pair and pair again with a new code; compare the key ids"))
         elif reg.get("needs_repair") or status == "unauthorized":

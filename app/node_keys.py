@@ -13,7 +13,6 @@ import re
 import secrets
 import threading
 import time
-from collections import OrderedDict
 from pathlib import Path
 
 from .config import settings
@@ -25,7 +24,6 @@ ROTATION_WINDOW = 30 * 86400
 _lock = threading.RLock()
 _keys = {}
 _reports = {}
-_nonces = {}
 
 
 def _ed():
@@ -70,7 +68,6 @@ def reset():
     with _lock:
         _keys.clear()
         _reports.clear()
-        _nonces.clear()
 
 
 def load_or_create() -> bool:
@@ -160,6 +157,18 @@ def sign_confirm(proof):
 def verify_confirm(answer, proof, nid, pub):
     return (isinstance(answer, dict) and answer.get("node_id") == nid and answer.get("pubkey") == pub
             and _verify(pub, answer.get("sig"), _lines("ccboard-pair-confirm-answer/1", proof, nid)))
+
+
+def _pair_answer_message(proof, token, caller_id, acceptor_id):
+    return _lines("ccboard-pair-answer/1", proof, hashlib.sha256(token.encode()).hexdigest(), caller_id, acceptor_id)
+
+
+def sign_pair_answer(proof, token, caller_id, acceptor_id):
+    return _sign(_pair_answer_message(proof, token, caller_id, acceptor_id))
+
+
+def verify_pair_answer(pub, sig, proof, token, caller_id, acceptor_id):
+    return _verify(pub, sig, _pair_answer_message(proof, token, caller_id, acceptor_id))
 
 
 def body_bytes(body):
@@ -295,7 +304,7 @@ def pin_in(peer, pub, source, db):
 
 
 def verify_request(method, target, body, *, headers, peer, recipient_id, token, db, defer_pin=False):
-    """Return a fixed refusal word or None. Nonces and pin changes commit together after verification."""
+    """Return a fixed refusal word or None. Persist verified nonces before granting the call."""
     from . import nodes
     with _lock:
         current = db.node_pair_get(peer["peer_id"])
@@ -335,21 +344,18 @@ def verify_request(method, target, body, *, headers, peer, recipient_id, token, 
         now = nodes._now()
         if abs(now - int(timestamp)) > WINDOW:
             return "clock"
-        cache = _nonces.setdefault((str(_path()), peer["peer_id"]), OrderedDict())
-        while cache and next(iter(cache.values())) < now - 300:
-            cache.popitem(last=False)
-        if nonce in cache:
-            return "replay"
-        if int(timestamp) < STARTED:
+        # Keep the floor at start minus WINDOW so a slightly slow peer is not refused
+        # after restart. The timestamp window and persisted sender/nonce check reject
+        # replays, including requests accepted by a previous process.
+        if int(timestamp) < STARTED - WINDOW:
             return "stale"
+        if not db.node_nonce_accept(sender, nonce, int(timestamp) + WINDOW, now):
+            return "replay"
         if source:
             if defer_pin:
                 peer["_key_pin"] = (pinned, pub, source)
             else:
                 pin_in(peer, pub, source, db)
-        cache[nonce] = now
-        if len(cache) > 4096:
-            cache.popitem(last=False)
         peer.update(key_verified=True, pubkey=pub)
         return None
 
@@ -415,13 +421,16 @@ def card():
 
 def doctor(db):
     from . import nodes
+    typed = getattr(settings, "node_keys_input", "prefer")
+    if typed.strip().lower() not in ("prefer", "require", "off"):
+        return "fail", f"CCBOARD_NODE_KEYS value {typed!r} was invalid; using require. Set prefer, require or off."
     if mode() == "off":
         return "warn", "CCBOARD_NODE_KEYS=off: no key is made or sent; existing pins still require signatures"
     if not available():
         return "fail", "Node key unavailable: check that cryptography is installed; pair again after fixing it"
     report = _reports[_path()]
     if report["corrupt"]:
-        return "fail", "The node key file was corrupt; every pair must be made again"
+        return "fail", "The node key file was corrupt; every pair must be made again, then delete node-key.bad in the data directory and restart to clear this warning"
     if not report["persistent"]:
         return "fail", "The data directory cannot save the node key; it lives for this run only; pair again after fixing it"
     try:

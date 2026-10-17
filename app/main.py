@@ -484,7 +484,13 @@ async def _node_auth(request: Request, call_next):
         nodes.audit("in", pid, "signature_refused", False, reason + " " + kid, db=db)
         if reason == "key_changed":
             nodes.audit("in", pid, "key_changed", False, reason + " " + kid, db=db)
-        message = "Fix the node clock; it must be within 120 seconds" if reason == "clock" else "Node signature refused: " + reason + "; pair again if the key was lost"
+        message = "Node signature refused: " + reason
+        if reason == "clock":
+            message += "; this is transient: check the two clocks; they must be within 120 seconds."
+        elif reason in ("stale", "replay"):
+            message += "; this is transient: the request was refused once, nothing to do."
+        elif reason in ("key_changed", "key_required", "bad_signature", "signature_required"):
+            message += "; pair again if the key was lost"
         return JSONResponse({"error": message, "reason": reason}, status_code=401, headers=NODE_SECURITY_HEADERS)
     scope = nodes.route_scope(request.method, request.url.path)
     note = ("verified " if peer.get("key_verified") else "") + _node_note(request)

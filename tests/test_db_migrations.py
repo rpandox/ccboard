@@ -204,6 +204,30 @@ def test_old_db_is_upgraded_in_place(tmp_path, with_migrations):
         db.conn.close()
 
 
+@pytest.mark.parametrize("old", [False, True], ids=["fresh", "upgrade"])
+def test_node_nonces_migration_and_restart(tmp_path, old):
+    path = tmp_path / "nonces.db"
+    if old:
+        make_old_db(path)
+    db = DB(path)
+    try:
+        assert columns(db.conn, "node_nonces") == {
+            "sender_node_id": ("TEXT", 1, None), "nonce": ("TEXT", 1, None), "expires_at": ("INTEGER", 1, None)}
+        assert [r[2] for r in db.conn.execute("PRAGMA index_info(node_nonces_expiry)")] == ["expires_at"]
+        db.conn.execute("INSERT INTO node_nonces VALUES ('sender', 'nonce', 1800000120)")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.conn.execute("INSERT INTO node_nonces VALUES ('sender', 'nonce', 1800000121)")
+        db.conn.execute("INSERT INTO node_nonces VALUES ('other-sender', 'nonce', 1800000120)")
+        before = dump(db)
+    finally:
+        db.conn.close()
+    reopened = DB(path)
+    try:
+        assert dump(reopened) == before
+    finally:
+        reopened.conn.close()
+
+
 def test_second_open_changes_nothing(tmp_path):
     path = tmp_path / "old.db"
     make_old_db(path)

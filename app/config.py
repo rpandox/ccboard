@@ -451,7 +451,8 @@ class Settings:
         self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
         self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
         # Issue #136: the optional device binding and app capability for calls from paired nodes (app/nodes_whois.py). Off (`token`) by default.
-        self.node_keys = str(env.get("CCBOARD_NODE_KEYS") or "prefer").strip().lower()
+        self.node_keys_input = str(env.get("CCBOARD_NODE_KEYS") or "prefer")
+        self.node_keys = self.node_keys_input.strip().lower()
         if self.node_keys not in ("prefer", "require", "off"):
             self.node_keys = "require"
         self.node_auth, self.node_auth_bad = parse_node_auth(env.get("CCBOARD_NODE_AUTH"))

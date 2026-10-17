@@ -55,7 +55,7 @@ function nodeHeader(rec) {
   const v = Nodes.view(rec);
   const card = rec.card && typeof rec.card === 'object' ? rec.card : {};
   const keyId = typeof rec.key_id === 'string' && /^[0-9a-f]{16}$/.test(rec.key_id) ? rec.key_id.match(/.{4}/g).join(' ') : '';
-  const keyState = rec.error_kind === 'key_changed' ? '✕ key changed, pair again' : rec.pubkey ? `✓ keyed (${['pairing', 'upgrade', 'rotation'].includes(rec.key_source) ? rec.key_source : 'upgrade'})` : '○ unkeyed, pair again';
+  const keyState = NodeView.keyState(rec);
   const os = NodeView.osName(card.os && (card.os.tailscale_os || card.os.system));
   const ver = (rec.state && rec.state.node && rec.state.node.version) || card.version;
   const facts = [os, ver ? `v${String(ver).replace(/^v/, '')}` : '', card.runtime || '', `handle ${rec.handle}`].filter(Boolean);

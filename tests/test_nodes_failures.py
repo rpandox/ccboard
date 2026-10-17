@@ -281,7 +281,7 @@ def test_identity_changed_merges_nothing_and_refuses_with_its_own_reason(fx):
     assert calls_to_b(fx, "/probe") == before and fx.probe.calls == []
     with fx.a.enter():
         out = dn._c_nodes_health(fx.a.db)
-    assert out.status == "warn" and "token" in out.detail and "Re-pair" in out.fix["text"]
+    assert out.status == "warn" and "signature is not valid" in out.detail and "key update" in out.fix["text"]
 
 
 # ================================================================ address changed

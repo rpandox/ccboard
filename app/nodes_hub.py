@@ -70,7 +70,7 @@ SKEW_WARN_MS = 5000
 STATE_MAX = node_state.BODY_MAX
 CARD_MAX = 64 * 1024
 STATES = ("online", "stale", "offline", "unauthorized", "unpaired", "incompatible")
-ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed", "api_version", "key_changed", "key_required", "clock")
+ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed", "api_version", "key_changed", "own_key_changed", "key_required", "clock", "stale", "replay", "bad_signature", "signature_required")
 HARD = ("unauthorized", "unpaired", "incompatible")          # statuses a poll sets by itself; the next good poll clears them
 SUPPORTED_API = (nodes.API_VERSION,)                        # the node API numbers this board speaks (issue #153); any other is `incompatible`
 ETAG_RE = re.compile(r'W/"[0-9a-f]{8,64}"')
@@ -575,7 +575,8 @@ class NodeHub:
         rt = max(0.0, self.mono() - m0)
         st = r.status
         if st in (401, 403):
-            return {"hard": "unauthorized", "error_kind": r.json.get("reason") if isinstance(r.json, dict) and r.json.get("reason") in ERROR_KINDS else None}
+            reason = r.json.get("reason") if isinstance(r.json, dict) else None
+            return {"hard": "unauthorized", "error_kind": "own_key_changed" if reason == "key_changed" else reason if reason in ERROR_KINDS else None}
         if st == 404:
             return {"hard": "unpaired", "error_kind": None}
         if st == 304:

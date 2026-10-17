@@ -1870,5 +1870,6 @@ test('pair key states use glyphs and words, and upgrade pins offer Pair again', 
   const view = w.get('NodeView');
   assert.equal(view.keyState({ pubkey: 'A'.repeat(43), key_source: 'pairing' }), '✓ keyed (pairing)');
   assert.equal(view.keyState({}), '○ unkeyed, pair again');
-  assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ key changed, pair again');
+  assert.equal(view.keyState({ last_error: 'key_changed' }), '✕ peer signing key changed; remove its pair here first');
+  assert.match(view.keyState({ last_error: 'own_key_changed' }), /this board.*signing key changed/);
 });

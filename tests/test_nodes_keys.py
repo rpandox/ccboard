@@ -236,9 +236,11 @@ def test_replay_and_restart(keyed, clock, monkeypatch):
     assert two.b.get("/api/node", owner=False, headers=h).status_code == 200
     r = two.b.get("/api/node", owner=False, headers=h)
     assert r.json()["reason"] == "replay"
-    keys._nonces.clear()
-    monkeypatch.setattr(keys, "STARTED", int(clock.t) + 1)
-    assert two.b.get("/api/node", owner=False, headers=h).json()["reason"] == "stale"
+    keys.reset()
+    clock.t += 30
+    monkeypatch.setattr(keys, "STARTED", int(clock.t))
+    r = two.b.get("/api/node", owner=False, headers=h)
+    assert r.status_code == 401 and r.json()["reason"] == "replay"
 
 
 @pytest.mark.parametrize("delta", [-121, 121])
@@ -263,7 +265,7 @@ def test_new_key_without_rotation_and_id_claim_at_another_address_refused(keyed)
             code = nodes.create_code()["code"]
             with pytest.raises(nodes.PairError) as e:
                 nodes.handle_pair({"code": code, "node": {**claim, "url": url}}, "100.64.0.9")
-            assert e.value.reason == "callback_mismatch"
+            assert e.value.reason == "key_changed"
 
 
 def test_rotation_offline_catchup_acknowledgement_and_restart(keyed, clock):
@@ -483,15 +485,40 @@ def test_verified_calls_say_so_in_audit_and_never_store_signature(keyed):
     assert h["X-CCBoard-Signature"] not in text and h["Authorization"][7:] not in text
 
 
-def test_nonce_cache_drops_oldest_and_is_bounded(keyed, clock):
-    from collections import OrderedDict
+def test_concurrent_identical_requests_record_exactly_one_nonce(keyed, clock):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
     two, row = keyed
+    h = {k.lower(): v for k, v in headers(two, row).items()}
+    barrier = Barrier(2)
     with two.b.enter():
-        peer = next(p for p in nodes.peers() if p["direction"] == "in")
-        cache_key = (str(keys._path()), peer["peer_id"])
-    keys._nonces[cache_key] = OrderedDict((str(i), clock.t) for i in range(4096))
+        peer = nodes.verify_token(h["authorization"][7:])
+        recipient = nodes.node_id()
+        def verify():
+            barrier.wait(timeout=5)
+            return keys.verify_request("GET", "/api/node", b"", headers=h, peer=dict(peer),
+                                       recipient_id=recipient, token=h["authorization"][7:], db=two.b.db)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: verify(), range(2)))
+    assert results.count(None) == 1 and results.count("replay") == 1
+    nonce = h["x-ccboard-signature"].split(".")[3]
+    saved = two.b.db.conn.execute(
+        "SELECT sender_node_id, nonce, expires_at FROM node_nonces WHERE nonce=?", (nonce,)).fetchall()
+    assert [tuple(r) for r in saved] == [(h["x-ccboard-node"], nonce, int(clock.t) + keys.WINDOW)]
+
+
+def test_nonce_insert_prunes_expired_rows_in_bounded_batches(keyed, clock):
+    two, row = keyed
+    conn = two.b.db.conn
+    conn.executemany("INSERT INTO node_nonces(sender_node_id, nonce, expires_at) VALUES (?,?,?)",
+                     [("expired", str(i), clock.t - 1) for i in range(300)] +
+                     [("boundary", "keep", clock.t), ("future", "keep", clock.t + keys.WINDOW)])
     assert two.b.get("/api/node", owner=False, headers=headers(two, row)).status_code == 200
-    assert len(keys._nonces[cache_key]) == 4096 and "0" not in keys._nonces[cache_key]
+    assert conn.execute("SELECT count(*) FROM node_nonces WHERE sender_node_id='expired'").fetchone()[0] == 44
+    assert conn.execute("SELECT count(*) FROM node_nonces WHERE nonce='keep'").fetchone()[0] == 2
+    assert two.b.get("/api/node", owner=False, headers=headers(two, row)).status_code == 200
+    assert conn.execute("SELECT count(*) FROM node_nonces WHERE sender_node_id='expired'").fetchone()[0] == 0
 
 
 def test_stream_and_remote_unpair_use_the_shared_signer(keyed, monkeypatch):
@@ -512,3 +539,211 @@ def test_stream_and_remote_unpair_use_the_shared_signer(keyed, monkeypatch):
         token = nodes._load_outgoing(row["peer_id"])
         assert nodes._remote_unpair(row["url"], token)
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("change", ["missing", "forged", "token", "id", "proof", "unverified_flag"])
+def test_pair_answer_requires_acceptor_possession(two_nodes, monkeypatch, change):
+    inner = nodes.peer_transport
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+        stolen_card = nodes.own_claim()
+    def fake(target, method, path, h, body, timeout):
+        if path != "/api/nodes/pair":
+            return inner(target, method, path, h, body, timeout)
+        if change in ("missing", "forged", "unverified_flag"):
+            answer = {"token": nodes._new_token(), "node": stolen_card}
+            if change == "unverified_flag":
+                answer["callback_unverified"] = True
+            if change == "forged":
+                answer["sig"] = "A" * 86
+        else:
+            status, rh, data = inner(target, method, path, h, body, timeout)
+            assert status == 200
+            answer = json.loads(data)
+            if change == "token":
+                answer["token"] = nodes._new_token()
+            elif change == "id":
+                answer["node"]["id"] = "n_" + "c" * 16
+            else:
+                with two_nodes.b.enter():
+                    answer["sig"] = keys.sign_pair_answer("wrong proof", answer["token"], json.loads(body)["node"]["id"], answer["node"]["id"])
+        return 200, {}, json.dumps(answer).encode()
+    monkeypatch.setattr(nodes, "peer_transport", fake)
+    with two_nodes.a.enter():
+        with pytest.raises(nodes.PairError) as e:
+            nodes.add_node(two_nodes.b.url, code)
+        assert e.value.reason == "answer_unverified"
+        assert not nodes.peers() and not nodes.tokens_path().exists()
+
+
+def test_restart_allows_peer_clock_thirty_seconds_behind(keyed, clock, monkeypatch):
+    two, row = keyed
+    h = headers(two, row)
+    clock.t += 30
+    monkeypatch.setattr(keys, "STARTED", int(clock.t))
+    assert two.b.get("/api/node", owner=False, headers=h).status_code == 200
+    assert two.b.get("/api/node", owner=False, headers=h).json()["reason"] == "replay"
+
+
+@pytest.mark.parametrize("reason", ["stale", "replay", "clock", "bad_signature", "signature_required"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_signature_refusal_names_reason_without_transient_repair(keyed, monkeypatch, reason, stream):
+    from app.nodes_hub import NodeHub
+    from app.doctor_nodes import _health_rows
+    two, row = keyed
+    data = json.dumps({"reason": reason}).encode()
+    monkeypatch.setattr(nodes, "peer_transport", lambda *a: (401, {}, data))
+    monkeypatch.setattr(nodes, "peer_stream_transport", lambda *a: (401, {}, nodes._Closed(data)))
+    with two.a.enter():
+        client = nodes.PeerClient(row)
+        (client.open_stream("/api/node/stream") if stream else client.get("/api/node"))
+        saved = nodes.peer(row["peer_id"])
+        if reason in ("stale", "replay", "clock"):
+            assert not saved["needs_repair"]
+        assert saved["last_error"] == reason
+        hub = NodeHub(two.a.db)
+        result = hub._poll_peer(row, {}, hub.clock(), hub.mono())
+        assert result["error_kind"] == reason
+        problem = _health_rows([saved], [{"peer_id": row["peer_id"], "status": "unauthorized", **result}])[0][2]
+        assert "token" not in problem and "signature" in problem
+
+
+def test_callback_timeout_has_own_reason_and_new_code_instruction(two_nodes, monkeypatch):
+    inner = nodes.peer_transport
+    def timeout(target, method, path, hdr, body, wait):
+        if path == "/api/nodes/pair/confirm":
+            raise TimeoutError()
+        return inner(target, method, path, hdr, body, wait)
+    monkeypatch.setattr(nodes, "peer_transport", timeout)
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+    with two_nodes.a.enter():
+        with pytest.raises(nodes.PairError) as e:
+            nodes.add_node(two_nodes.b.url, code)
+        assert e.value.reason == "callback_unreachable"
+        assert two_nodes.a.url in str(e.value) and "did not answer the check in time" in str(e.value)
+        assert "new code" in str(e.value) and not nodes.peers()
+    with two_nodes.b.enter():
+        assert not nodes.code_status()["active"] and not nodes.peers()
+        assert all(not p["peer_pubkey"] for p in two_nodes.b.db.node_pairs(True))
+
+
+@pytest.mark.parametrize("side", ["caller", "acceptor"])
+def test_pair_conflict_says_remove_local_pin_first(keyed, monkeypatch, side):
+    two, row = keyed
+    transport, refusals = nodes.peer_transport, []
+    def capture(target, method, path, hdr, body, timeout):
+        status, rh, data = transport(target, method, path, hdr, body, timeout)
+        if path == "/api/nodes/pair" and status == 409:
+            refusals.append(json.loads(data))
+        return status, rh, data
+    monkeypatch.setattr(nodes, "peer_transport", capture)
+    with two.b.enter():
+        code = nodes.create_code()["code"]
+    original = keys.conflict
+    with (two.a if side == "caller" else two.b).enter():
+        conflicting_path = keys._path()
+    monkeypatch.setattr(keys, "conflict", lambda *a: keys._path() == conflicting_path or original(*a))
+    with two.a.enter(), pytest.raises(nodes.PairError) as e:
+        nodes.add_node(two.b.url, code)
+    assert e.value.reason == "key_changed"
+    if side == "caller":
+        assert "pinned to another key on this board" in str(e.value) and "removed here first" in str(e.value)
+        assert "there first" not in str(e.value) and not refusals
+    else:
+        assert str(e.value) == (f"{two.b.url} already has this node id pinned to another key; "
+                                "remove the pair for this board there first, then pair again.")
+        assert " here first" not in str(e.value)
+        assert refusals == [{"error": nodes.PairError.MESSAGES["key_changed"], "reason": "key_changed", "pinned_on": "acceptor"}]
+
+
+@pytest.mark.parametrize("reason", ["stale", "replay", "clock", "key_changed", "key_required", "bad_signature", "signature_required"])
+def test_signature_refusal_text_per_reason(keyed, monkeypatch, reason):
+    two, row = keyed
+    monkeypatch.setattr(keys, "verify_request", lambda *a, **kw: reason)
+    response = two.b.get("/api/node", owner=False, headers=headers(two, row))
+    assert response.status_code == 401 and response.json()["reason"] == reason
+    message = response.json()["error"]
+    if reason in ("stale", "replay"):
+        assert message == f"Node signature refused: {reason}; this is transient: the request was refused once, nothing to do."
+    elif reason == "clock":
+        assert message == "Node signature refused: clock; this is transient: check the two clocks; they must be within 120 seconds."
+    else:
+        assert message == f"Node signature refused: {reason}; pair again if the key was lost"
+    assert ("pair again" in message) == (reason not in ("stale", "replay", "clock"))
+
+
+@pytest.mark.parametrize("mode", ["prefer", "require"])
+def test_require_refuses_unkeyed_pair_before_issuing_token(two_nodes, monkeypatch, mode):
+    with two_nodes.a.enter():
+        claim = nodes.own_claim()
+        claim.pop("pubkey")
+    monkeypatch.setattr(settings, "node_keys", mode)
+    with two_nodes.b.enter():
+        code = nodes.create_code()["code"]
+        body = {"code": code, "node": claim}
+        if mode == "prefer":
+            assert "pubkey" not in nodes.handle_pair(body, "100.64.0.1")["node"]
+        else:
+            with pytest.raises(nodes.PairError) as e:
+                nodes.handle_pair(body, "100.64.0.1")
+            assert e.value.reason == "key_required"
+            assert "both boards" in str(e.value) and "prefer" in str(e.value)
+            assert not two_nodes.b.db.node_pairs(True) and nodes.code_status()["active"]
+
+
+@pytest.mark.parametrize("mode", ["prefer", "require"])
+def test_unkeyed_answer_obeys_pairing_mode(two_nodes, monkeypatch, mode):
+    inner = nodes.peer_transport
+    def old(target, method, path, hdr, body, timeout):
+        if path == "/api/nodes/pair":
+            with two_nodes.b.enter():
+                claim = nodes.own_claim()
+                claim.pop("pubkey")
+            return 200, {}, json.dumps({"node": claim, "token": nodes._new_token()}).encode()
+        return inner(target, method, path, hdr, body, timeout)
+    monkeypatch.setattr(nodes, "peer_transport", old)
+    monkeypatch.setattr(settings, "node_keys", mode)
+    with two_nodes.a.enter():
+        if mode == "prefer":
+            assert nodes.add_node(two_nodes.b.url, "ABCDE12345")["pubkey"] is None
+        else:
+            with pytest.raises(nodes.PairError) as e:
+                nodes.add_node(two_nodes.b.url, "ABCDE12345")
+            assert e.value.reason == "key_required"
+            assert not nodes.peers() and not nodes.tokens_path().exists()
+
+
+def test_corrupt_key_doctor_explains_how_to_clear_marker(db):
+    (settings.data_dir / "node-key").write_bytes(b"bad")
+    assert "delete node-key.bad" in keys.doctor(db)[1]
+    (settings.data_dir / "node-key.bad").unlink()
+    keys.reset()
+    assert keys.doctor(db)[0] == "pass"
+
+
+def test_invalid_key_mode_doctor_names_invalid_value(db, monkeypatch):
+    from app.config import Settings
+    configured = Settings({"CCBOARD_NODE_KEYS": "requrie"})
+    assert configured.node_keys == "require"
+    monkeypatch.setattr(keys, "settings", configured)
+    status, detail = keys.doctor(db)
+    assert status == "fail" and "requrie" in detail and "invalid" in detail and "require" in detail
+
+
+def test_key_change_wording_distinguishes_our_key_from_peer_key(keyed, monkeypatch):
+    from app.nodes_hub import NodeHub
+    from app.doctor_nodes import _health_rows
+    two, row = keyed
+    monkeypatch.setattr(nodes, "peer_transport", lambda *a: (401, {}, b'{"reason":"key_changed"}'))
+    with two.a.enter():
+        nodes.PeerClient(row).get("/api/node")
+        saved = nodes.peer(row["peer_id"])
+        assert saved["last_error"] == "own_key_changed"
+        hub = NodeHub(two.a.db)
+        result = hub._poll_peer(row, {}, hub.clock(), hub.mono())
+        assert result["error_kind"] == "own_key_changed"
+        problem = _health_rows([saved], [{"peer_id": row["peer_id"], **result}])[0][2]
+        assert "this board's signing key" in problem
+        problem = _health_rows([row], [{"peer_id": row["peer_id"], "error_kind": "key_changed"}])[0][2]
+        assert row["name"] + " has a different signing key" in problem

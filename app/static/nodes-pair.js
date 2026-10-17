@@ -76,7 +76,7 @@ NodeView.countdown = function (ms) {
 /* Which field of the Add node sheet an error belongs to: 'handle', 'address', 'code', or '' (it belongs to no field). The board's one-word `reason` (app/nodes.py PairError) is
    read first, then the status (a 429 counts the tries of a code), then the board's own words. */
 NodeView.REASON_FIELD = {
-  none: 'code', wrong: 'code', expired: 'code', burned: 'code', rate_limited: 'code', bad_url: 'address', callback_mismatch: 'address', unreachable: 'address',
+  none: 'code', wrong: 'code', expired: 'code', burned: 'code', rate_limited: 'code', bad_url: 'address', callback_mismatch: 'address', unreachable: 'address', callback_unreachable: 'address', answer_unverified: '', key_changed: '', key_required: '',
   bad_request: '', refused: '', store: '', registry_full: '',
 };
 NodeView.errField = function (status, message, reason) {
@@ -105,7 +105,8 @@ NodeView.keyId = function (id) {
   return typeof id === 'string' && /^[0-9a-f]{16}$/.test(id) ? id.match(/.{4}/g).join(' ') : '';
 };
 NodeView.keyState = function (rec) {
-  if (rec.last_error === 'key_changed' || rec.error_kind === 'key_changed') return '✕ key changed, pair again';
+  if (rec.last_error === 'own_key_changed' || rec.error_kind === 'own_key_changed') return '✕ this board’s signing key changed; remove its pair on the peer first';
+  if (rec.last_error === 'key_changed' || rec.error_kind === 'key_changed') return '✕ peer signing key changed; remove its pair here first';
   const source = ['pairing', 'upgrade', 'rotation'].includes(rec.key_source) ? rec.key_source : 'upgrade';
   return rec.pubkey ? `✓ keyed (${source})` : '○ unkeyed, pair again';
 };
