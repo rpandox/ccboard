@@ -5157,6 +5157,17 @@ def _epic_canon(owner: str, repo: str) -> tuple[str, str]:
     return owner, repo
 
 
+@app.get("/api/settings/options")
+def api_settings_options(request: Request):
+    """The option registry and startup values, read only and redacted for a signed-in person."""
+    from .options import view
+    _epic_person(request, "settings options are for a signed-in person")
+    rec = db.kv_get(mcp_tokens.KV_REMOTE) if db is not None else None
+    saved = rec.get("value") if isinstance(rec, dict) else None
+    page_values = {"CCBOARD_MCP_REMOTE": saved["enabled"]} if isinstance(saved, dict) and isinstance(saved.get("enabled"), bool) else {}
+    return JSONResponse(view(settings, page_values), headers={"Cache-Control": "no-store"})
+
+
 @app.put("/api/epics/{owner}/{repo}/{n}/settings")
 def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, request: Request):
     """Pins and pause for one epic, kept on this board only (kv `epic:<owner/repo#n>`); only the keys sent change. `pins` merges per issue number (a node handle

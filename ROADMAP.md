@@ -2,6 +2,13 @@
 
 Working rules: one phase at a time; each item is one commit; tick items as they land.
 
+## v0.5.71 - Settings option registry (P1)
+
+- [x] One registry for all 59 remembered options and the recovery, socket and settings-file extras.
+- [x] Read-only Settings > Options and person-only API, grouped values, defaults, sources, restart hints, filtering and demo coverage.
+- [x] Secret redaction, URL credential masking and provenance tests; no write route or settings file is created.
+- [ ] To verify on the box: readability of `/etc/ccboard/env` by the board user inside the container.
+
 ## v0.1 — skeleton ✅
 
 - [x] Projects: list with branch / dirty / session count; create blank (git init); clone from URL; delete (kills its sessions, removes folder)

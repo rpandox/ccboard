@@ -139,6 +139,7 @@ EXPECTED = {
     ("PUT", "/api/notify/prefs"): "identity+csrf",
     ("POST", "/api/notify/test"): "identity+csrf",
     ("POST", "/mcp"): "identity+device-token",
+    ("GET", "/api/settings/options"): "identity",    # signed-in person only; agents get 403
     ("GET", "/api/mcp/nodes"): "identity",              # issue #152: the node list an agent may see (tool list_nodes); a person or the hook token, never a node token
     ("GET", "/api/mcp/tokens"): "identity",
     ("POST", "/api/mcp/tokens"): "identity+csrf",
