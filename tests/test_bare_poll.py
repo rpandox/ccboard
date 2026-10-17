@@ -30,8 +30,8 @@ def seed(agent='claude', count=1, host='device-1'):
     return names
 
 
-def capture(names, text=CLAUDE, command='claude', alive=None):
-    return (0, '\n'.join(names if alive is None else alive) + '\0' +
+def capture(names, text=CLAUDE, command='claude', alive=None, now='', log=''):
+    return (0, '\n'.join(names if alive is None else alive) + '\0' + now + '\0' + log + '\0' +
             ''.join(name + '\0' + command + '\0' + text + '\0' for name in names), '')
 
 
@@ -70,7 +70,7 @@ def test_one_batch_socket_and_pending_path(lite_client, bare_runner, device, pus
     poll(bare_runner, device[0], names)
     assert len(bare_runner.calls) == 1
     words = shlex.split(bare_runner.calls[0][0][-1])
-    assert words == ['sh', '-c', bare.POLL, 'bare-poll', bare.session_socket(), *names]
+    assert words == ['sh', '-c', bare.POLL, 'bare-poll', bare.session_socket(), '0', *names]
     assert 'list-sessions' in words[2] and "'#{pane_current_command}'" in words[2] and 'capture-pane -p -S -40' in words[2]
     assert bare_runner.calls[0][1] is None
     ids = [p['id'] for p in bare.pending(main.db, device[0]['Tailscale-User-Login'])]
@@ -193,7 +193,7 @@ def test_poll_lifecycle_backoff_reconcile(lite_client, bare_runner, device):
     assert not main.db.node_audit_list()
 
 
-@pytest.mark.parametrize('answer', [(0, 'truncated', ''), (0, '\0bad\0cmd\0screen\0', ''), (255, '', '')])
+@pytest.mark.parametrize('answer', [(0, 'truncated', ''), (0, '\0bad\0cmd\0screen\0', ''), (0, '\0\0\0bad\0cmd\0', ''), (255, '', '')])
 def test_partial_poll_preserves_all_rows(lite_client, bare_runner, device, answer):
     seed(count=2)
     before = main.db.bare_open_rows('device-1')
@@ -305,11 +305,11 @@ def test_poll_batch_script_with_shell_function_fake_only(tmp_path):
       esac
     }
     ''' + bare.POLL
-    result = subprocess.run(['/bin/sh', '-c', script, 'fake-poll', 'ccboard-bare-00000000', name],
+    result = subprocess.run(['/bin/sh', '-c', script, 'fake-poll', 'ccboard-bare-00000000', '0', name],
                             cwd=tmp_path, env={'HOME': str(tmp_path), 'PATH': '', 'SESSION': name, 'SCREEN': CLAUDE},
                             capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
-    assert result.stdout == name + '\nunrelated\0' + name + '\0claude\0' + CLAUDE.rstrip('\n') + '\0'
+    assert result.stdout == name + '\nunrelated\0\0\0' + name + '\0claude\0' + CLAUDE.rstrip('\n') + '\0'
 
 
 def test_device_notification_links_to_its_card_not_a_host_or_local_terminal(lite_client, device, monkeypatch):

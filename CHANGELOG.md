@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.88 - 2026-10-17
+
+### Added
+- Optional state log for a device without a board: **Install state log** and **Remove state log** (two taps) in the device check add four small hooks to that user's Claude and Codex settings.
+- The hooks append `{state, session, time}` lines, never prompt text, to `~/.ccboard-bare/state.log` (64 KB cap, one `.1` backup); the ten-second poll reads the tail in its one SSH call and prefers a new line to the screen read, which stays the fallback.
+- Settings merge on the board: your own hooks are kept, ours are added once, malformed or linked files are refused with nothing written, and each write is checksum-guarded, backed up and atomic. `bare_hook_install` and `bare_hook_remove` are audited with the person and the outcome; lab-pi in the demo shows the log installed.
+- A dialog line in the log never overrides a screen without a dialog, so an answered permission does not come back; a settings write checks the byte count it sent, so a stream that ended early leaves the original untouched and the board says the device received only part of it.
+- The state log control stays (with Remove) after a failing check while the log is installed; re-adding a device with a different user drops the saved log; the Install confirm and installed text say to review the hooks once with `/hooks` in Codex when Codex was found.
+
+Upgrade: nothing to do; the hooks are installed on a device only when you press Install state log.
+
 ## v0.5.87 - 2026-10-17
 
 ### Added

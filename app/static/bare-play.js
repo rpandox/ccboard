@@ -47,6 +47,15 @@ async function demoBare(method, path, body = {}) {
     device.sessions.push(row);
     return { session: { ...row }, status: 'alive' };
   }
+  const hookRoute = /^\/api\/bare\/([^/]+)\/state-log\/(install|remove)$/.exec(route);
+  if (hookRoute && method === 'POST') {
+    const device = data.devices.find((d) => d.ts_id === decodeURIComponent(hookRoute[1]));
+    if (!device || !device.check.ok) throw demoError(400, 'Add and check your device first.');
+    if (body.confirm !== true) throw demoError(400, 'Confirm ' + (hookRoute[2] === 'install' ? 'installing' : 'removing') + ' the state log with a second tap.');
+    if (hookRoute[2] === 'install') device.state_log = { installed: true, agents: ['claude'], at: new Date().toISOString() };
+    else delete device.state_log;
+    return { ok: true, state_log: device.state_log || null, changed: [] };
+  }
   const match = /^\/api\/bare\/([^/]+)(?:\/(check|forget-host-key))?$/.exec(route);
   const id = match ? decodeURIComponent(match[1]) : body.ts_id;
   const saved = data.devices.find((d) => d.ts_id === id);
@@ -70,7 +79,7 @@ async function demoBare(method, path, body = {}) {
   const check = JSON.parse(JSON.stringify(template.check));
   const wording = (s) => s.replaceAll(template.name, candidate.name).replaceAll(template.user, user).replaceAll('~/projects', `~/${folder}`).replaceAll(template.os === 'Linux' ? 'Linux' : 'Darwin (macOS)', candidate.os === 'Linux' ? 'Linux' : 'Darwin (macOS)');
   check.rows = check.rows.map((row) => ({ ...row, message: wording(row.message), fix: wording(row.fix) }));
-  const device = { ...candidate, user, folder, owner: template.owner, check, sessions: saved ? saved.sessions || [] : [] };
+  const device = { ...candidate, user, folder, owner: template.owner, check, sessions: saved ? saved.sessions || [] : [], ...(saved && saved.state_log ? { state_log: saved.state_log } : {}) };
   data.devices = [...data.devices.filter((d) => d.ts_id !== id), device];
   return { added: true, device, check };
 }

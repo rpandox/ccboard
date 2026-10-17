@@ -55,6 +55,8 @@ EXPECTED = {
     ("POST", "/api/bare/{tid}/sessions/{session}/reply"): "identity+csrf",
     ("POST", "/api/bare/{tid}/check"): "identity+csrf",
     ("POST", "/api/bare/{tid}/forget-host-key"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/state-log/install"): "identity+csrf",
+    ("POST", "/api/bare/{tid}/state-log/remove"): "identity+csrf",
     ("DELETE", "/api/bare/{tid}"): "identity+csrf",
     ("GET", "/auth/local"): "local-gate",
     ("GET", "/auth/local/script.js"): "local-gate",

@@ -98,7 +98,7 @@ Shell.bareDevice = function (node, device) {
     });
     kids.append(el('div', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' },
       el('span', { class: 'tn-name', text: row.agent + ' · ' + row.repo, title: row.agent + ' · ' + row.repo }),
-      el('span', { class: 'tn-sub', text: row.state === 'dialog' ? 'needs you' : row.state || 'unknown', title: 'State read from the screen' }), controls));
+      el('span', { class: 'tn-sub', text: row.state === 'dialog' ? 'needs you' : row.state || 'unknown', title: row.last_event === 'bare_log' ? 'State from the device state log' : 'State read from the screen' }), controls));
     kids.append(form);
   }
 };
