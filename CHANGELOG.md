@@ -9,6 +9,21 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.65a - 2026-10-17
+
+### Fixed
+- Allow, Deny and In terminal for a permission request (`POST /api/permission/<id>/<decision>`) now answer only for a signed-in person, like the other routes that change what an agent may do. The local hook token, the hub, node tokens and MCP device tokens get `403`, and the request stays undecided. The phone notification buttons and the board's pages are unchanged (they act as the signed-in person); a hub's relayed answer keeps its own path and scope rules. Found in a review of #249.
+
+Upgrade: nothing to do.
+
+## v0.5.65 - 2026-10-17
+
+### Added
+- Home now lists the sessions of the paired nodes (issue #82): a collapsible "Other nodes" block after the projects, one group per node (the box, a Mac), read only. Each row has the node chip, project and repo, session name, state glyph and age, and a tap opens the node's session page (`#/n/<handle>/s/<name>`). It uses the hub's last reading only, so Home asks no node for it: a stale node shows how old the reading is, an offline node's last reading is dimmed with its age.
+- Sessions that need you stay under "On other nodes" and are not listed twice; the Home state chips narrow the node rows too, and `?demo=1` shows them for build-box, alice-mac and old-laptop.
+
+Upgrade: nothing to do.
+
 ## v0.5.64 - 2026-10-17
 
 ### Added

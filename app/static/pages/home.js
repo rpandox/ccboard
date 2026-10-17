@@ -975,6 +975,7 @@ function homeRender(st) {
   const noProjects = !(s.projects || []).length;
   r.empty.classList.toggle('hidden', !noProjects);
   r.blocksHost.classList.toggle('hidden', noProjects);
+  Nodes.use(() => Nodes.slot('sessions', r.empty, { filter: model.filter, collapsed: homeCollapsedSet().has('x:nodes'), toggle: () => homeToggleCollapsed('x:nodes') }));   // #82
   if (r.scanSlow) r.scanSlow.classList.toggle('hidden', !(s.scan_slow === true && !noProjects && !ui.offline));   // offline cached values have their own banner
   // Nothing live and no filter: say so and offer the next step. Idle projects fold into 'older', which is still a block, so this
   // cannot hang off "no blocks" (that left Home with only zero chips and a closed 'older' line).
