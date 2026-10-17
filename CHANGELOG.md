@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.74 - 2026-10-17
+
+### Changed
+- The macOS installer now builds missing tools from source with CCBOARD_MACOS_INSTALL_TOOLS=1 alone, after warning which formulas need building, how long it may take and that existing packages may be upgraded.
+- CCBOARD_MACOS_ALLOW_SOURCE_BUILD=0 forbids source builds, including after a terminal yes. The Command Line Tools stop and measured Intel ttyd finding are unchanged.
+
+Upgrade: CCBOARD_MACOS_INSTALL_TOOLS=1 now includes source builds; leave CCBOARD_MACOS_ALLOW_SOURCE_BUILD unset or set it to 1 to allow them, or set it to 0 to forbid them. No installer rerun is needed for existing tools.
+
 ## v0.5.66 - 2026-10-17
 
 ### Fixed
