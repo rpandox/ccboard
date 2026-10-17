@@ -855,3 +855,5 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .nchip-g { font-family:var(--font-mono); }
 #page .task .meta .nchip { margin-left:4px; }
 #page .rrow .rr-main .nchip, #page .peek-sub .nchip { flex:none; }
+
+#page .home-settings-pending { overflow-wrap:anywhere; }

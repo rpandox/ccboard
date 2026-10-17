@@ -959,6 +959,11 @@ function homeRender(st) {
   if (!r || !s) return;
   Pages.dropSkeleton();
   if (r.usageHost) r.usageHost.classList.remove('hidden');
+  const pending = s.settings_pending || {};
+  if (pending.count || r.settingsPending) {
+    const paint = () => { if (homePage.refs === r) settingsHomePending(r, state.settings_pending || {}); };
+    if (typeof settingsHomePending === 'function') paint(); else if (typeof lazyRun === 'function') lazyRun('settings', paint);
+  }
   homeAwayTouch(s);
   homeAwayFetchLim();
   const model = homeBuildNow(s);

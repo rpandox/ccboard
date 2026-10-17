@@ -42,9 +42,36 @@ function settingsKv(label, ...kids) {
 /* A section heading inside a panel: 13 px, upper case, dim. */
 function settingsHead(text) { return el('h2', { class: 'set-h', text }); }
 
-/* Options is a read-only startup snapshot, fetched only when its tab opens. */
+/* Options compares saved values with this process and edits one safe option at a time. */
 function settingsOptionsLink(group) {
   return el('a', { href: buildHash('settings', {}, { sec: 'options', group }), text: 'see Options' });
+}
+
+function settingsRestartCommand(command) {
+  return command ? el('div', { class: 'doc-cmdline' }, el('code', { class: 'doc-cmd', text: command }), copyButton(command, 'the restart command')) : null;
+}
+
+function settingsRestartBanner(pending, home = false) {
+  const labels = pending.labels || [];
+  const names = labels.slice(0, 3).join(', ') + (pending.count > 3 ? ' and ' + (pending.count - 3) + ' more' : '');
+  return el('div', { class: 'callout warn settings-restart ' + (home ? 'home-settings-pending' : 'set-pending'), role: 'status' },
+    el('p', { text: (pending.count === 1 ? 'A saved setting waits' : 'Saved settings wait') + ' for a restart' + (names ? ': ' + names : '') + '.' }),
+    settingsRestartCommand(pending.restart_hint),
+    home ? el('a', { href: '#/settings?sec=options', text: 'Open Settings > Options' }) : null);
+}
+
+function settingsHomePending(r, pending) {
+  const sig = JSON.stringify(pending);
+  if (r.settingsPendingSig === sig) return;
+  r.settingsPendingSig = sig;
+  if (r.settingsPending) r.settingsPending.remove();
+  r.settingsPending = pending.count ? settingsRestartBanner(pending, true) : null;
+  if (r.settingsPending) r.summary.parentNode.insertBefore(r.settingsPending, r.summary);
+}
+
+function settingsPendingSummary(data) {
+  const keys = data.pending || [];
+  return { count: keys.length, keys, labels: keys.map(key => data.options.find(o => o.key === key)?.label).filter(Boolean), restart_hint: data.restart_hint };
 }
 
 function settingsOptionText(value, option) {
@@ -58,11 +85,101 @@ function settingsOptionText(value, option) {
   return String(value);
 }
 
+function settingsOptionControl(option) {
+  const value = option.edit_value === undefined ? String(option.value ?? '') : option.edit_value;
+  const attrs = { 'aria-label': option.label, class: 'set-option-input' };
+  let control, read;
+  if (option.kind === 'bool') {
+    control = el('input', { ...attrs, type: 'checkbox', role: 'switch' });
+    control.checked = value === '1';
+    read = () => control.checked ? '1' : '0';
+  } else if (option.choices && option.choices.length <= 4) {
+    let selected = value;
+    const segment = settingsNdSeg(option.label, option.choices.map(v => [v, v || 'empty']), v => { selected = v; segment.paint(v); });
+    control = segment.node;
+    control.classList.add('set-option-input');
+    segment.paint(value);
+    read = () => selected;
+  } else if (option.choices) {
+    control = el('select', attrs, ...option.choices.map(v => el('option', { value: v, text: v || 'empty' })));
+    control.value = value;
+    read = () => control.value;
+  } else {
+    const number = option.kind === 'int' || option.kind === 'float';
+    control = el('input', { ...attrs, type: number ? 'number' : 'text', value, maxlength: '500' });
+    control.value = value;
+    if (number) {
+      control.setAttribute('step', option.kind === 'int' ? '1' : 'any');
+      if (option.bounds && option.bounds[0] !== null) control.setAttribute('min', String(option.bounds[0]));
+      if (option.bounds && option.bounds[1] !== null) control.setAttribute('max', String(option.bounds[1]));
+    }
+    read = () => control.value;
+  }
+  return { control, read, initial: value };
+}
+
+function settingsOptionEdit(p, data, option, row) {
+  if (p.ccOptionCancel) p.ccOptionCancel();
+  const { control, read, initial } = settingsOptionControl(option);
+  const error = el('span', { class: 'bad set-option-error', role: 'alert', id: 'option-error-' + option.key });
+  control.setAttribute('aria-describedby', error.id);
+  const editor = el('div', { class: 'set-option-editor' }, control, error);
+  const actions = row.querySelector('.kv-act');
+  const close = () => { editor.remove(); actions.classList.remove('hidden'); p.ccOptionCancel = null; };
+  const submit = async (value) => {
+    if (value === initial) { close(); return; }
+    for (const button of editor.querySelectorAll('button')) button.disabled = true;
+    try {
+      const result = await api('PUT', '/api/settings/options', { changes: { [option.key]: value }, stamp: data.stamp });
+      settingsOptionsPaint(p, result);
+      if (state) state.settings_pending = settingsPendingSummary(result);
+    } catch (e) {
+      if (e.status === 409) { settingsOptions(p); return; }
+      error.textContent = (e.body && e.body.reason) || e.message;
+      control.setAttribute('aria-invalid', 'true');
+      for (const button of editor.querySelectorAll('button')) button.disabled = false;
+    }
+  };
+  editor.append(el('div', { class: 'row' },
+    el('button', { type: 'button', class: 'primary', text: 'Save', onclick: () => submit(read()) }),
+    el('button', { type: 'button', text: 'Cancel', onclick: close }),
+    el('button', { type: 'button', text: "Use the file's value", onclick: () => submit(null) })));
+  actions.classList.add('hidden');
+  row.querySelector('.kv-main').append(editor);
+  p.ccOptionCancel = close;
+  control.focus();
+}
+
+let settingsDemoOptions = null;
+async function demoSettingsOptions(body) {
+  if (!settingsDemoOptions) settingsDemoOptions = await demoApi('GET', '/api/settings/options');
+  for (const [key, value] of Object.entries(body.changes)) {
+    const row = settingsDemoOptions.options.find(o => o.key === key);
+    if (!row || row.cls !== 'page') throw demoError(403, 'file_only');
+    if (value !== null && (row.kind === 'int' || row.kind === 'float') && (!value.trim() || !Number.isFinite(Number(value)) || (row.kind === 'int' && !/^\d+$/.test(value)) || (row.bounds && ((row.bounds[0] !== null && Number(value) < row.bounds[0]) || (row.bounds[1] !== null && Number(value) > row.bounds[1]))))) {
+      const e = demoError(400, 'Use a number within the listed bounds.'); e.body = { key, reason: e.message }; throw e;
+    }
+    row.running = row.running === undefined ? row.value : row.running;
+    if (row.file_value === undefined) { row.file_value = row.running; row.file_source = row.source === 'page' ? 'file' : row.source; }
+    row.value = value === null ? row.file_value : value;
+    row.edit_value = String(row.value);
+    row.source = value === null ? row.file_source : 'page';
+    row.pending = String(row.running) !== String(row.value);
+  }
+  settingsDemoOptions.pending = settingsDemoOptions.options.filter(o => o.pending).map(o => o.key);
+  settingsDemoOptions.saved = Object.keys(body.changes);
+  return settingsDemoOptions;
+}
+
 function settingsOptionsPaint(p, data) {
   p.textContent = '';
+  p.ccOptionCancel = null;
   const filter = el('input', { type: 'search', placeholder: 'Filter by key or label', 'aria-label': 'Filter options', class: 'set-options-filter' });
-  p.append(el('p', { class: 'dim set-note', text: 'Read only. Startup values, with any existing page override shown.' }), filter);
-  if (data.restart_hint) p.append(el('p', { class: 'dim set-note', text: 'After changing startup options: ' + data.restart_hint }));
+  const pending = settingsPendingSummary(data);
+  if (pending.count) p.append(settingsRestartBanner(pending));
+  p.append(el('div', { class: 'dim set-note set-options-guidance' },
+    el('p', { text: 'Page options save here; others are set by the installer or settings file.' }),
+    pending.count ? null : settingsRestartCommand(data.restart_hint)), filter);
   const sections = [];
   const glyphs = { default: '○', file: '▤', environment: '◇', page: '▣' };
   for (const group of data.groups) {
@@ -72,7 +189,7 @@ function settingsOptionsPaint(p, data) {
     const rows = [];
     for (const option of data.options.filter((o) => o.group === group.id)) {
       const chips = el('div', { class: 'set-chips' }, el('span', { class: 'badge', text: (glyphs[option.source] || '○') + ' ' + option.source }));
-      if (option.applies === 'restart') chips.append(el('span', { class: 'badge warn', text: 'needs restart' }));
+      if (option.applies === 'restart') chips.append(el('span', { class: 'badge warn', text: option.pending ? 'saved, needs restart' : 'needs restart' }));
       if (option.cls === 'file' || option.cls === 'installer') chips.append(el('span', { class: 'badge', text: option.cls === 'file' ? 'file only' : 'install.sh' }));
       const row = settingsKv(option.label,
         el('span', { class: 'v', text: option.secret ? (option.set ? 'set (hidden)' : 'not set') : settingsOptionText(option.value, option) }),
@@ -81,6 +198,8 @@ function settingsOptionsPaint(p, data) {
       row.classList.add('set-option');
       row.setAttribute('data-key', option.key);
       row.querySelector('.k').append(el('code', { class: 'mono set-option-key', text: option.key }));
+      if (option.pending) row.add(el('span', { class: 'set-option-next', text: 'running ' + settingsOptionText(option.running, option) + ', next start ' + settingsOptionText(option.value, option) }));
+      if (option.cls === 'page' && !option.secret) row.add(el('button', { type: 'button', text: 'Edit', onclick: () => settingsOptionEdit(p, data, option, row) }));
       if (option.problem) row.add(el('span', { class: 'warn', text: option.problem }));
       if (option.cls === 'file' || option.cls === 'installer') {
         row.add(el('code', { class: 'set-option-line', text: option.secret ? option.key + '=<value>' : option.line }));
@@ -90,6 +209,12 @@ function settingsOptionsPaint(p, data) {
     }
     p.append(section);
     sections.push({ section, rows });
+  }
+  for (const [title, items] of [['Recent settings saves', data.audit || []], ['Recent settings refusals', data.refusals || []]]) {
+    if (!items.length) continue;
+    const activity = el('div', { class: 'set-options-audit' }, settingsHead(title));
+    for (const item of items) activity.append(el('p', { text: [item.at, item.user, item.action, item.detail].filter(Boolean).join(' · ') }));
+    p.append(activity);
   }
   const empty = el('p', { class: 'dim hidden', role: 'status', text: 'No matching options.' });
   p.append(empty, el('p', { class: 'dim set-note', text: String(data.other_lines || 0) + ' other lines in the settings file; their contents are not shown.' }));
@@ -2855,7 +2980,7 @@ const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, team: (p)
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
-  if (id === 'options') return settingsPage.optionGroup || 'all';
+  if (id === 'options') return JSON.stringify([settingsPage.optionGroup || 'all', st.boot && st.boot.id]);
   const minute = Math.floor(Date.now() / 60000);                       // ages ("3h ago") move on, so the minute is part of the key
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, st.config && st.config.auto_continue, minute]);
   if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
