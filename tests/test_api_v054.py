@@ -589,11 +589,11 @@ def test_api_create_session_refuses_codex_without_a_binary_and_unknown(board):
 
 def test_create_claude_session_stores_agent_cwd_opts_and_exports_the_agent(board):
     r = new_session(board, "claude", name="dev", model="fable", effort="high", permission_mode="acceptEdits",
-                    allowed_tools="Bash(npm test), Read", bypass=True, args="--verbose")
+                    allowed_tools="Bash(npm test), Read", args="--verbose")
     assert r["agent"] == "claude" and r["agent_session_id"] == r["claude_session_id"] and r["tmux"] == "shop--api--dev"
     argv = shlex.split(r["cmd"])
     assert argv[:5] == ["claude", "--session-id", r["claude_session_id"], "--name", "dev"]
-    assert "--dangerously-skip-permissions" in argv and "--verbose" in argv
+    assert "--dangerously-skip-permissions" not in argv and "--verbose" in argv
     name, cwd, env = board.tmux["created"][-1]
     assert env["CCBOARD_AGENT"] == "claude" and env["CCBOARD_SESSION"] == name
     row = row_of(name)
@@ -602,10 +602,9 @@ def test_create_claude_session_stores_agent_cwd_opts_and_exports_the_agent(board
     assert opts == {"model": "fable", "effort": "high", "permission_mode": "acceptEdits", "allowed_tools": ["Bash(npm test)", "Read"]}
     assert "bypass" not in row["opts"] and "--verbose" not in row["opts"] and "extra" not in opts, "never stored: bypass, extra args"
     assert row["claude_session_id"] == r["claude_session_id"]
-    # bypassPermissions as the permission mode is run (an explicit choice) but never stored for resume
-    r2 = new_session(board, "claude", name="byp", permission_mode="bypassPermissions", model="opus")
-    assert "--permission-mode bypassPermissions" in r2["cmd"]
-    assert json.loads(row_of(r2["tmux"])["opts"]) == {"model": "opus"}
+    # bypassPermissions as the permission mode is refused on the host (owner decision, #104); the devcontainer cases are in test_launcher_api and test_tmux_cmd
+    r2 = board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "name": "byp", "permission_mode": "bypassPermissions", "model": "opus"})
+    assert r2.status_code == 400 and r2.json()["error"].startswith("bypass is allowed only inside the repo's devcontainer")
 
 
 def test_create_resume_continue_and_shell_sessions(board):

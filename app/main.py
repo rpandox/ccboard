@@ -34,9 +34,10 @@ from . import account_store, accounts, agents, autoresume, backup, claude_auth, 
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
-from .agents.base import LaunchReq
+from .agents.base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, BYPASS_REFUSAL_CODEX, LaunchReq
 from .agents import claude as claude_adapter
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
+from .agents.codex import FORBIDDEN_ARG_PARTS as CODEX_BYPASS_PARTS
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
 from . import platform as plat
@@ -1809,7 +1810,7 @@ class LaunchOpts(BaseModel):
     """The launch choices the board offers as proper controls (mirrors the claude CLI flags)."""
     model: str | None = None                 # --model alias or full id
     effort: str | None = None                # --effort low|medium|high|xhigh|max
-    permission_mode: str | None = None       # --permission-mode (bypassPermissions is refused for unattended runs; an interactive session chooses it per session, #104)
+    permission_mode: str | None = None       # --permission-mode (bypassPermissions is refused for unattended runs; an interactive session may choose it only in the repo's devcontainer, #104)
     allowed_tools: str | None = None         # --allowedTools, comma/newline separated patterns
     disallowed_tools: str | None = None      # --disallowedTools
     append_system_prompt: str | None = None  # --append-system-prompt
@@ -1891,8 +1892,8 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
-    refusal = ("bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there "
-               "if you really want it")
+    refusal = ("bypassPermissions (or a settings override) is not allowed for tasks; "
+               "bypass is only for an interactive Claude session in the repo's devcontainer (#104)")
     if agent != "claude":
         # the adapter's own rules (Codex: -c/-p/--profile/--enable... and every bypass spelling), the board's bypass spellings, and
         # a bypass or an unsandboxed run asked for through the controls: none of them reaches a task
@@ -3223,7 +3224,7 @@ def api_run_resume(rid: int):
 # ---------- sessions ----------
 
 # Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in
-# extra args, use the controls instead. The bypass flags themselves are an explicit choice on interactive sessions.
+# extra args, use the controls instead. The bypass flags themselves are an explicit choice on interactive sessions in the repo's devcontainer only (#104).
 # (OVERRIDE_PARTS and BYPASS_PARTS live in app.agents.claude, where launch_plan enforces the same rules.)
 
 def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
@@ -3240,6 +3241,19 @@ def _override_requested(extra: list[str]) -> str | None:
 
 def _bypass_requested(extra: list[str]) -> str | None:
     return _arg_matching(extra, BYPASS_PARTS)
+
+
+def _bypass_asked(agent: str, body, extra: list[str]) -> bool:
+    """Does an interactive session request ask for bypass in any spelling: the sheet's mode, the bypass flag, permission_mode bypassPermissions,
+    Codex's danger-full-access sandbox (flat or in `opts`), or a bypass flag in the extra args? Only Claude inside the repo's devcontainer may (#104)."""
+    if agent == "shell":
+        return False
+    asked = {"bypass": body.bypass, "permission_mode": body.permission_mode, "sandbox": body.sandbox, **(body.opts or {})}
+    if body.mode == "bypass" or any(recover._is_bypass(k, v) for k, v in asked.items()):
+        return True
+    if agent == "codex":
+        return any(w in str(a).lower() for a in extra for w in (*CODEX_BYPASS_PARTS, "danger-full-access"))
+    return bool(_bypass_requested(extra))
 
 
 def _normalize_launcher(launcher: str, agent: str | None = None) -> tuple[str, str]:
@@ -3512,6 +3526,8 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
     opts_clean: dict | None = None
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
+    if _bypass_asked(agent, body, extra) and not (body.devcontainer and agent == "claude") and not (agent == "claude" and _override_requested(extra)):
+        raise projects.BadRequest(BYPASS_REFUSAL_CODEX if agent == "codex" else BYPASS_REFUSAL)    # owner decision on #104: bypass only for Claude in the repo's devcontainer; every host, Codex and compat spelling ends here
     if body.devcontainer and agent != "codex":       # the typed line starts with `devcontainer`: without the CLI the pane only says "command not found" (issue #104)
         cli = doctor.devcontainer_cli_state()
         if cli in ("missing", "broken"):
@@ -3522,12 +3538,11 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
     bad = _override_requested(extra) if agent != "codex" else agents.get("codex").forbidden_extra(extra, interactive=True)
     if bad:
         raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
-    # The danger gate of the launcher sheet: mode "bypass" is the explicit choice and needs the acknowledgement that came with it. The flat
-    # compat spellings (permission_mode bypassPermissions, bypass, the args) stay what they were: on the host an explicit choice, never the
-    # default, never for tasks / dispatch / headless runs (those routes never read `mode`).
-    bypass_mode = isinstance(body.mode, str) and body.mode == "bypass" and agent != "shell"
-    if bypass_mode and not body.bypass:
-        raise projects.BadRequest("mode bypass skips every approval and the sandbox: send bypass: true with the acknowledgement")
+    # The danger gate of the launcher sheet: every bypass spelling (mode bypass, permission_mode / mode bypassPermissions, the bypass flag's args, a
+    # resume or continue with a bypass mode) is only possible inside the repo's devcontainer (refused above, #104) and there still needs the
+    # acknowledgement that came with it (bypass: true). Tasks / dispatch / headless runs never read `mode`.
+    if agent == "claude" and _bypass_asked(agent, body, extra) and not body.bypass:
+        raise projects.BadRequest(BYPASS_ACK_REQUIRED)
     prompt = (body.prompt or "").strip() or None
     wt_on, wt_name = _worktree_request(body)
     if wt_on and agent != "shell":
@@ -3540,8 +3555,8 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
     if body.cwd_rel not in (None, "", ".", "./") and (body.devcontainer or (wt_on and agent != "shell")):
         raise projects.BadRequest("cwd_rel: not together with a worktree or the devcontainer (both start at the repo's root)")
     cwd = _session_cwd(rpath, body.cwd_rel)
-    # bypassPermissions on the host is an explicit choice (the permission control, the bypass flag, or the arg);
-    # Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
+    # bypassPermissions is an explicit choice (the permission control, the bypass flag, or the arg) and only in the devcontainer (the adapter
+    # refuses it anywhere else too); Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
     managed: tuple[str, Path] | None = None
     if agent == "claude":
         exe = settings.claude_bin()
@@ -3550,7 +3565,7 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
         add_dirs = _resolve_add_dirs(body.add_dirs, rpath) if not body.devcontainer else []
         plan = agents.get("claude").launch_plan(LaunchReq(
             kind=kind, session_name=session, cwd=str(cwd), opts=_claude_session_opts(body, extra), resume_id=body.resume_id,
-            add_dirs=add_dirs, prompt=prompt, bypass=body.bypass and not bypass_mode,
+            add_dirs=add_dirs, prompt=prompt, bypass=body.bypass,
             worktree=(wt_name or f"{session}-{uuid.uuid4().hex[:6]}") if wt_on else None))
         cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
     elif agent == "codex":

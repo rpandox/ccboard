@@ -568,12 +568,13 @@ def _c_devcontainer(db) -> Outcome:
     and the `devcontainer` CLI. The board itself never calls docker (it only tests that .devcontainer/devcontainer.json exists), so a board
     container needs no docker CLI and no socket. Skips when no repo has a devcontainer. Run by the board on the host (systemd, launchd) it asks
     docker and the CLI directly. Run by the board in a container it cannot see the host's docker, and says so; the one thing it can see is
-    ~/.local/bin/devcontainer (the host's home is mounted), where install.sh puts the CLI."""
+    ~/.local/bin/devcontainer (the host's home is mounted), where install.sh puts the CLI. The devcontainer is also the only place a Claude session
+    may bypass permissions (owner decision, #104), so the summaries say so."""
     repos = _devcontainer_repos()
     if repos is None:
         return _skip("the project scan is not ready yet, so it is not known whether a repo has a devcontainer")
     if not repos:
-        return _skip("no repo has a .devcontainer/devcontainer.json, so nothing asks for the host's docker and devcontainer CLI")
+        return _skip("no repo has a .devcontainer/devcontainer.json, so nothing asks for the host's docker and devcontainer CLI (bypass permissions are allowed only inside a repo's devcontainer)")
     n = f"{len(repos)} repo{'s' if len(repos) != 1 else ''} with a devcontainer"
     install = fix(f"Install the CLI on the host: CCBOARD_DEVCONTAINER=1 ./install.sh, or {DEVCONTAINER_INSTALL}", DEVCONTAINER_INSTALL)
     local = Path.home() / ".local" / "bin" / "devcontainer"
@@ -592,7 +593,7 @@ def _c_devcontainer(db) -> Outcome:
         f_cli = ex.submit(_probe_helper, "devcontainer", ["--version"], path)
         docker, cli = f_docker.result(), f_cli.result()
     if docker == cli == "ok":
-        return _pass(f"{n}: docker answers for this user and the devcontainer CLI runs")
+        return _pass(f"{n}: docker answers for this user and the devcontainer CLI runs. Bypass permissions are allowed only inside a devcontainer")
     bad: list[tuple[str, dict]] = []
     if docker == "missing":
         if plat.IS_MACOS:   # Homebrew has no docker.io: on a Mac docker comes with Docker Desktop
