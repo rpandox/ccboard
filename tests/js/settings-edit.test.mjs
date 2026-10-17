@@ -17,6 +17,20 @@ async function world(fixture = FX) {
 }
 const row = (w, key = 'CCBOARD_AUTOCLOSE_GRACE') => page(w).querySelector('[data-key=' + key + ']');
 
+test('the memory dashboard URL can be saved from Options', async () => {
+  const w = await world();
+  const key = 'CCBOARD_MEM_VIEWER_URL';
+  const value = 'https://memory.example.ts.net:8446/';
+  assert.ok(row(w, key));
+  button(row(w, key), 'Edit').click();
+  row(w, key).querySelector('.set-option-input').value = value;
+  button(row(w, key), 'Save').click();
+  await settle();
+  assert.deepEqual(calls(w).filter(c => c.method === 'PUT'), [
+    { method: 'PUT', path: '/api/settings/options', body: { changes: { [key]: value }, stamp: FX.stamp } },
+  ]);
+});
+
 test('recent saves and refusals have separate sections', async () => {
   const fx = structuredClone(FX);
   fx.audit = [{ action: 'settings_set', user: 'alice', detail: 'saved marker' }];

@@ -1979,8 +1979,13 @@ def _mem_viewer(db, ctx: dict) -> Outcome:
     """The optional claude-mem viewer on the tailnet (CCBOARD_MEM_HTTPS_PORT, issue #9). Not set: skip. Set: the worker has no sign-in of its
     own and its API can write, so a mapping that points at the current worker port is a warning that says who can reach it; a missing or
     stale mapping is a warning with the installer as the fix; a mapping that cannot be read is reported as unknown, never as healthy."""
+    if settings.mem_viewer_url_bad:
+        return _warn("CCBOARD_MEM_VIEWER_URL was rejected: use HTTPS, or HTTP on loopback, without credentials",
+                     fix("Correct or clear CCBOARD_MEM_VIEWER_URL in Settings > Options, then restart the board"))
     port = settings.mem_https_port
     if not port:
+        if settings.mem_viewer_url_override:
+            return _skip("CCBOARD_MEM_VIEWER_URL links to an existing dashboard; no local viewer mapping is needed (dashboard availability not checked)")
         return _skip("not set: the claude-mem worker is not exposed on the tailnet (CCBOARD_MEM_HTTPS_PORT is empty)")
     web = _mem_serve_web()
     if web is None:

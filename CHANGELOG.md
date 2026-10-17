@@ -13,6 +13,14 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.82 - 2026-10-17
+
+### Added
+- Settings > Options can save a claude-mem dashboard URL for the Memory page link, taking precedence over the local viewer port.
+- Viewer URLs require HTTPS or loopback HTTP without credentials; invalid values are ignored and reported in Options and Doctor.
+
+Upgrade: nothing to do.
+
 ## v0.5.81 - 2026-10-17
 
 ### Added

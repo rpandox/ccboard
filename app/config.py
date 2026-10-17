@@ -18,6 +18,32 @@ from .options import EXTRAS, registry
 log = logging.getLogger("ccboard")
 
 
+def parse_mem_viewer_url(raw: str) -> tuple[str, bool]:
+    """Accept a credential-free HTTPS dashboard, or HTTP on literal loopback/localhost."""
+    from urllib.parse import urlsplit
+    from .options import mask_urls
+    text = raw.strip()
+    if not text:
+        return "", False
+    try:
+        if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in text) or "\\" in text or mask_urls(text) != text:
+            raise ValueError
+        url = urlsplit(text)
+        host = url.hostname
+        if not host or url.username is not None or url.password is not None or url.scheme not in ("https", "http"):
+            raise ValueError
+        if url.port is not None and not 1 <= url.port <= 65535:
+            raise ValueError
+        if not re.fullmatch(r"[A-Za-z0-9.:-]+", host):
+            raise ValueError
+        if url.scheme == "http" and host != "localhost":
+            if not ipaddress.ip_address(host).is_loopback:
+                raise ValueError
+    except ValueError:
+        return "", True
+    return text, False
+
+
 def parse_allowlist(raw: str) -> set[str]:
     """Comma list -> normalised set. Empty entries are dropped (never match '')."""
     out: set[str] = set()
@@ -686,8 +712,11 @@ class Settings:
         # An optional JSON file that adds to or replaces the built-in list prices behind the Usage page's estimates (app/pricing.py, issue #95). Server side only.
         self.price_table = (env.get("CCBOARD_PRICE_TABLE") or "").strip()
         self.claude_mem_dir = Path(env.get("CLAUDE_MEM_DATA_DIR") or (Path.home() / ".claude-mem"))   # claude-mem's own override
+        self.mem_viewer_url_override, self.mem_viewer_url_bad = parse_mem_viewer_url(env.get("CCBOARD_MEM_VIEWER_URL") or "")
+        if self.mem_viewer_url_bad and not _quiet:
+            log.warning("ignoring CCBOARD_MEM_VIEWER_URL (use HTTPS, or HTTP on loopback, without credentials)")
         # The optional claude-mem viewer link (v0.5.20, issue #9): CCBOARD_MEM_HTTPS_PORT is the tailnet HTTPS port the installer would map to the worker.
-        # Empty (the default) exposes nothing and hides the Memory page's link. A value that is not 1-65535, or that is a port the board already uses
+        # Empty (the default) exposes nothing. The explicit dashboard URL wins for the link. A value that is not 1-65535, or that is a port the board already uses
         # (443 carries another service on the owner's box; the board, code-server and ntfy ports), is ignored with a warning, never used.
         self.mem_https_port = None
         raw_mem_https = (env.get("CCBOARD_MEM_HTTPS_PORT") or "").strip()
@@ -722,8 +751,9 @@ class Settings:
         return self.image_version or self.checkout_version
 
     def mem_viewer_url(self) -> str | None:
-        """https://<the board's public host>:<CCBOARD_MEM_HTTPS_PORT>/ for the Memory page's viewer link, or None: not set, or no public URL to take the host from.
-        No token or path is ever part of it."""
+        """An existing dashboard wins; otherwise use the optional local viewer mapping."""
+        if self.mem_viewer_url_override:
+            return self.mem_viewer_url_override
         if not self.mem_https_port or not self.public_url:
             return None
         from urllib.parse import urlsplit
