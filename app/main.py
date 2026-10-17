@@ -443,8 +443,57 @@ async def _node_auth(request: Request, call_next):
     ok, wait = nodes.rate_check(pid, write=nodes_relay.rate_class(request.method, request.url.path) == nodes_relay.WRITE)      # the row's class (issue #140), else by method
     if not ok:
         return _node_refused(429, "too many requests from this node", **{"Retry-After": str(wait)})
+    from . import node_keys
+    if request.headers.get("transfer-encoding"):
+        return _node_refused(411, "send a Content-Length")
+    try:
+        size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        return _node_refused(400, "bad Content-Length")
+    if size < 0:
+        return _node_refused(400, "bad Content-Length")
+    if size > nodes.BODY_MAX:
+        return _node_refused(413, f"the body is over {nodes.BODY_MAX // 1024} KB")
+    raw = await _read_capped(request, nodes.BODY_MAX)
+    if raw is None:
+        return _node_refused(413, "the body is too large")
+    if len(raw) != size:
+        return _node_refused(400, "body does not match Content-Length")
+    # CachedRequest's wrapped_receive replays this body once, then forwards disconnects.
+    request._body = raw
+    if not hasattr(request, "wrapped_receive"):
+        receive = request._receive
+        sent = False
+        async def replay_body():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": raw, "more_body": False}
+            return await receive()
+        request._receive = replay_body
+    target_bytes = request.scope.get("raw_path") or request.url.path.encode("utf-8")
+    query = request.scope.get("query_string", b"")
+    exact_target = (target_bytes + (b"?" + query if query else b"")).decode("ascii")
+    duplicate = any(len(request.headers.getlist(k)) > 1 for k in
+                    ("x-ccboard-signature", "x-ccboard-node", "x-ccboard-acting-user", "x-ccboard-pubkey", "x-ccboard-key-rotation"))
+    reason = "bad_signature" if duplicate else node_keys.verify_request(
+        request.method, exact_target, raw, headers=request.headers, peer=peer, recipient_id=nodes.node_id(),
+        token=mcp_tokens.bearer(request.headers.get("authorization")), db=db, defer_pin=True)
+    if reason:
+        kid = node_keys.key_id(peer["pubkey"]) if peer.get("pubkey") else "unkeyed"
+        nodes.audit("in", pid, "signature_refused", False, reason + " " + kid, db=db)
+        if reason == "key_changed":
+            nodes.audit("in", pid, "key_changed", False, reason + " " + kid, db=db)
+        message = "Node signature refused: " + reason
+        if reason == "clock":
+            message += "; this is transient: check the two clocks; they must be within 120 seconds."
+        elif reason in ("stale", "replay"):
+            message += "; this is transient: the request was refused once, nothing to do."
+        elif reason in ("key_changed", "key_required", "bad_signature", "signature_required"):
+            message += "; pair again if the key was lost"
+        return JSONResponse({"error": message, "reason": reason}, status_code=401, headers=NODE_SECURITY_HEADERS)
     scope = nodes.route_scope(request.method, request.url.path)
-    note = _node_note(request)
+    note = ("verified " if peer.get("key_verified") else "") + _node_note(request)
     allowed = nodes_relay.methods_for(request.url.path) if scope is None else []
     if allowed:                                                  # a listed path with another method: 405, not 403 (issue #140)
         nodes.audit("in", pid, "method_refused", False, note, node_name=peer.get("name"), target=f"{request.method} {request.url.path}"[:120], status="refused", db=db)
@@ -458,21 +507,23 @@ async def _node_auth(request: Request, call_next):
                                       target=target, db=db)
         if den is not None:
             return _whois_refused(den)
-    if request.headers.get("transfer-encoding"):
-        return _node_refused(411, "send a Content-Length")
-    try:
-        size = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        return _node_refused(400, "bad Content-Length")
-    if size > nodes.BODY_MAX:
-        return _node_refused(413, f"the body is over {nodes.BODY_MAX // 1024} KB")
+    reason = node_keys.finish_request(peer, db)
+    if reason:
+        nodes.audit("in", pid, "signature_refused", False, reason, db=db)
+        return JSONResponse({"error": "Node key changed; pair again", "reason": reason}, status_code=401, headers=NODE_SECURITY_HEADERS)
     request.state.user = "node:" + _clean_text(peer.get("name") or pid, 60)
     request.state.node_pair = pid
     request.state.node_peer = peer
     request.state.node_note = note
-    resp = await call_next(request)
+    context = nodes._verified_call.set(bool(peer.get("key_verified")))
+    try:
+        resp = await call_next(request)
+    finally:
+        nodes._verified_call.reset(context)
     for k, v in NODE_SECURITY_HEADERS.items():
         resp.headers[k] = v
+    if peer.get("key_verified"):
+        resp.headers["X-CCBoard-Key-Seen"] = node_keys.key_id(peer["pubkey"])
     return resp
 
 
@@ -5157,6 +5208,17 @@ def _epic_canon(owner: str, repo: str) -> tuple[str, str]:
     return owner, repo
 
 
+@app.get("/api/settings/options")
+def api_settings_options(request: Request):
+    """The option registry and startup values, read only and redacted for a signed-in person."""
+    from .options import view
+    _epic_person(request, "settings options are for a signed-in person")
+    rec = db.kv_get(mcp_tokens.KV_REMOTE) if db is not None else None
+    saved = rec.get("value") if isinstance(rec, dict) else None
+    page_values = {"CCBOARD_MCP_REMOTE": saved["enabled"]} if isinstance(saved, dict) and isinstance(saved.get("enabled"), bool) else {}
+    return JSONResponse(view(settings, page_values), headers={"Cache-Control": "no-store"})
+
+
 @app.put("/api/epics/{owner}/{repo}/{n}/settings")
 def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, request: Request):
     """Pins and pause for one epic, kept on this board only (kv `epic:<owner/repo#n>`); only the keys sent change. `pins` merges per issue number (a node handle
@@ -5608,7 +5670,19 @@ async def api_nodes_pair_confirm(request: Request):
         got = nodes.confirm_answer(proof) if proof is not None else None
     if got is None:
         return JSONResponse({"error": "no pairing is in progress here"}, status_code=404, headers={"Cache-Control": "no-store"})
-    return JSONResponse({"node_id": got}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+    return JSONResponse(nodes.node_keys.sign_confirm(proof), headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/nodes/key/rotate")
+def api_nodes_key_rotate(request: Request):
+    _node_manager(request)
+    try:
+        key = nodes.node_keys.rotate()
+    except (ValueError, OSError):
+        return JSONResponse({"error": "Could not rotate the saved node key; check Doctor"}, status_code=409)
+    nodes.audit("out", "", "key_rotated", True, key["id"], db=db)
+    doctor.invalidate()
+    return {"key": key}
 
 
 @app.post("/api/nodes", status_code=201)

@@ -70,13 +70,13 @@ SKEW_WARN_MS = 5000
 STATE_MAX = node_state.BODY_MAX
 CARD_MAX = 64 * 1024
 STATES = ("online", "stale", "offline", "unauthorized", "unpaired", "incompatible")
-ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed", "api_version")
+ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed", "api_version", "key_changed", "own_key_changed", "key_required", "clock", "stale", "replay", "bad_signature", "signature_required")
 HARD = ("unauthorized", "unpaired", "incompatible")          # statuses a poll sets by itself; the next good poll clears them
 SUPPORTED_API = (nodes.API_VERSION,)                        # the node API numbers this board speaks (issue #153); any other is `incompatible`
 ETAG_RE = re.compile(r'W/"[0-9a-f]{8,64}"')
 NOW_HEADER = "x-ccboard-now"
 
-_CARD_KEYS = ("app", "api", "node_id", "name", "url", "version", "os", "runtime", "now", "agents", "accounts", "lanes", "load", "sessions", "capabilities", "tailscale")
+_CARD_KEYS = ("app", "api", "node_id", "name", "url", "version", "os", "runtime", "now", "agents", "accounts", "lanes", "load", "sessions", "capabilities", "tailscale", "key", "key_mode")
 _SUMMARY_KEYS = ("node", "health", "tmux_down", "sessions", "attention", "tasks", "usage", "backup", "url")
 _STATE_KEYS = ("api", "node", "etag_base", "projects", "sessions", "tasks", "needs_you", "usage", "lanes", "login_problems", "truncated")
 
@@ -456,6 +456,7 @@ class NodeHub:
                 "last_ok_at": iso(ok) if ok is not None else None, "age_s": int(max(0.0, now - ok)) if ok is not None else None,
                 "skew_ms": skew, "skew_warn": bool(skew is not None and abs(skew) > SKEW_WARN_MS), "error_kind": rec.get("error_kind"),
                 "card": rec.get("card"), "state": rec.get("state"), "etag": rec.get("etag"), "legacy": bool(row.get("legacy")),
+                "pubkey": row.get("pubkey"), "key_id": row.get("key_id"), "key_source": row.get("key_source"),
                 "scopes": row.get("scopes") or [], "peer_api": rec.get("peer_api"), "api": nodes.API_VERSION, "needs_repair": bool(row.get("needs_repair"))}
 
     def records(self, handle: str | None = None) -> list[dict]:
@@ -586,7 +587,8 @@ class NodeHub:
         rt = max(0.0, self.mono() - m0)
         st = r.status
         if st in (401, 403):
-            return {"hard": "unauthorized", "error_kind": None}
+            reason = r.json.get("reason") if isinstance(r.json, dict) else None
+            return {"hard": "unauthorized", "error_kind": "own_key_changed" if reason == "key_changed" else reason if reason in ERROR_KINDS else None}
         if st == 404:
             return {"hard": "unpaired", "error_kind": None}
         if st == 304:
@@ -634,7 +636,11 @@ class NodeHub:
             r = self._fetch(row, "/api/node", None)
             if r.status != 200 or len(r.body) > CARD_MAX or not isinstance(r.json, dict):
                 return {}
-            return {"card": clean_card(r.json, row), "card_ts": now}
+            card = clean_card(r.json, row)
+            reason = nodes.node_keys.check_card(row, r.json, self.db)
+            if reason:
+                return {"hard": "unauthorized", "error_kind": reason, "card": None, "state": None}
+            return {"card": card, "card_ts": now}
         except Exception as e:
             log.debug("card of %s could not be read: %s", row.get("handle"), e.__class__.__name__)
             return {}

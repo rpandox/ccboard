@@ -648,7 +648,7 @@ def test_the_detail_answer_shape_children_claims_progress_and_links(board):
     d = r.json()
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     assert d["epic"] == {"repo": REPO, "owner": "acme", "name": "shop", "number": 147, "title": "Checkout rework", "url": "https://github.com/acme/shop/issues/147",
-                         "state": "open", "labelled": True, "updated_at": "2026-10-01T09:00:00Z", "author": "alice"}
+                         "state": "open", "labelled": True, "updated_at": "2026-10-01T09:00:00Z", "author": "alice", "edit_state": None, "edited_by": None}
     assert d["source"] == "sub_issues" and d["note"] is None and d["error"] is None and d["empty"] is False and d["partial"] is False and d["truncated"] is False
     assert [(c["repo"], c["number"]) for c in d["children"]] == [(REPO, n) for n in range(201, 207)] + [("acme/api", 9)], "the sub-issue order is the queue order"
     assert [c["order"] for c in d["children"]] == [1, 2, 3, 4, 5, 6, 7]

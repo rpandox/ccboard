@@ -579,7 +579,7 @@ def doctor_auth() -> tuple[str, str, str | None]:
     Token mode is a skip and asks Tailscale nothing."""
     r = readiness()
     if r["mode"] == TOKEN:
-        return "skip", "CCBOARD_NODE_AUTH=token (the default): a paired node is checked by its pair token alone; whois and whois+cap add the device check", None
+        return "skip", "CCBOARD_NODE_AUTH=token (the default): no extra device check; node signatures still apply; whois and whois+cap add the device check", None
     if not r["ready"]:
         fix = {"bad_mode": "Set CCBOARD_NODE_AUTH to token, whois or whois+cap in the settings file, then restart the board",
                "board_bind": "Start the board with --host 127.0.0.1 and reach it through tailscale serve, then restart it",

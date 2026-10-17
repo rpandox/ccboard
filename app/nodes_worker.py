@@ -23,9 +23,8 @@ ELIGIBLE (every one, in this order; the first that fails is the skip reason, a f
                for this board's own login, else the first id this node saw for the login (trust on first use); another id is refused
   label_by / label_unknown  the NEWEST labeled/unlabeled event of ccboard:ready in the issue's events is `labeled`, by a User with a numeric id whose login is allowed; events that
                cannot be read, too many to read (EVENT_PAGES), or no such event: not eligible. A label removed and set again by someone else is therefore not eligible.
-  renamed      no `renamed` event by a login that is not allowed (the title goes into the prompt)
-  edited / edit_unknown  the body's LAST editor (GraphQL `editor`, the same constant query as the presence check) is an allowed login, or the body was never edited. LIMIT: GitHub
-               names the last editor only; an earlier edit by someone else followed by an allowed person's edit passes (that person edited the text as it stood).
+  edited / edit_unknown / epic_edited  the shared full edit-history guard checks every body revision and title rename of the issue and its epic, with numeric User ids.
+               Incomplete or hidden history is never eligible.
   and the text judged is the text that runs: the work route reads the issue again before and after its claim and refuses (`changed`) when the title or body is not the same.
 
 THE LOOP: every CCBOARD_EPIC_WORKER_POLL seconds (default 90, at least 30) plus or minus 10 percent jitter. One cycle reads the open ccboard:epic issues of the listed
@@ -78,13 +77,13 @@ SKIPPED_SHOWN = 20                    # skips a view shows
 PARK_AFTER_S = 1800.0                 # a task waiting for a person this long is parked and its claim released
 REST_S = 300.0                        # GitHub trouble: the worker rests at least this long
 EPICS_PER_CYCLE = 3
-DEEP_PER_CYCLE = 2                    # candidates whose events and editor are read in one cycle
+DEEP_PER_CYCLE = 2                    # candidates whose events and edit history are read in one cycle
 CALL_BUDGET = 80                      # reader calls one cycle may make
 EVENT_PAGES = 3                       # pages of 100 events read at most; a full last page is "too many to read"
 JITTER = 0.1
 HOUR, DAY = 3600.0, 86400.0
 TROUBLE = ("rate_limited", "no_login", "no_gh", "timeout", "unavailable", "sso")
-GITHUB_REFUSALS = ("rate_limited", "no_login", "error", "unreadable", "outcome_unknown")
+GITHUB_REFUSALS = ("rate_limited", "no_login", "error", "unreadable", "outcome_unknown", "edit_unknown", "epic_edit_unknown")
 
 clock = time.time                     # epoch seconds; tests patch it (the fake GitHub's clock)
 jitter = random.random                # tests patch it
@@ -101,8 +100,12 @@ SKIP_TEXT = {
     "label_by": "the label ccboard:ready was set by a login that is not allowed",
     "label_unknown": "who set the label ccboard:ready could not be read",
     "renamed": "the title was changed by a login that is not allowed",
-    "edited": "the text was last edited by a login that is not allowed",
-    "edit_unknown": "who last edited the text could not be read",
+    "edit_not_allowed": nodes_work.WORK_TEXT["edit_not_allowed"],
+    "epic_edit_not_allowed": nodes_work.WORK_TEXT["epic_edit_not_allowed"],
+    "epic_edit_unknown": nodes_work.WORK_TEXT["epic_edit_unknown"],
+    "epic_edited": "the epic text was edited by a login that is not allowed",
+    "edited": "the text was edited by a login that is not allowed",
+    "edit_unknown": "who edited the text could not be read",
     "unreadable": "the issue could not be read just now",
     "cycle": "its dependencies go in a circle",
     "depends": "it waits for another issue",
@@ -553,7 +556,7 @@ class Worker:
                 self.skipped[k] = why
                 if self._see(k, why):
                     self.decide("skip", why, k)
-                if why == "unreadable" and self.rest_until > clock():
+                if self.rest_until > clock():
                     break
                 continue
             self._flush()                                                      # the decisions so far and the ids seen, before the call
@@ -653,7 +656,7 @@ class Worker:
         return None if self._id_ok(row, login, u["id"]) else "id_changed"
 
     def _deep(self, c: dict, allowed: set[str], row: dict) -> tuple[str | None, str | None]:
-        """The fresh reads of one candidate: the issue, its events, its body's last editor. (None, digest of the text judged) when eligible, else (the reason word, None)."""
+        """The fresh reads of one candidate: the issue, its events and its full edit history. (None, digest of the text judged) when eligible, else (the reason word, None)."""
         o, r = c["repo"].split("/", 1)
         n = c["number"]
         try:
@@ -692,7 +695,7 @@ class Worker:
         why = self._label_verdict(events, allowed, row)
         if why:
             return why, None
-        why = self._editor_verdict(issue, allowed, row)
+        why = self._editor_verdict(issue, allowed, row, owner=o, name=r, n=n)
         if why:
             return why, None
         return None, nodes_work.text_digest(issue)
@@ -709,33 +712,24 @@ class Worker:
         bad = self._user_ok(last.get("actor"), allowed, row)
         if bad:
             return "label_by" if bad == "who" else bad
-        for e in events:
-            if e.get("event") == "renamed" and self._user_ok(e.get("actor"), allowed, row):
-                return "renamed"
         return None
 
-    def _editor_verdict(self, issue: dict, allowed: set[str], row: dict) -> str | None:
-        node_id = github.clean_node_id(issue.get("node_id"))
-        iid = issue.get("id")
-        if node_id is None or not _int(iid):
-            return "edit_unknown"
-        try:
-            status, _h, data = github.graphql_editor(node_id)
-        except github.GhReadError as e:
-            if e.reason in TROUBLE:
-                self._rest(e.wait_s)
-            return "edit_unknown"
-        if status != 200 or github.graphql_reason(data):
-            return "edit_unknown"
-        v = github.parse_editor(data, iid)
-        if v is None:
-            return "edit_unknown"
-        if not v["edited"]:
+    def _editor_verdict(self, issue: dict, allowed: set[str], row: dict, *, owner, name, n, epic=False) -> str | None:
+        v = nodes_work.edit_guard(owner, name, n, issue, allowed, epic=epic)
+        if nodes_work._edit_record(self.db, owner, name, n, issue, v):
+            nodes_work._audit(nodes_epics.board_actor(self.db), v["ok"], owner, name, n, f"{v['reason']} edit_cost={v['cost']}")
+        if v["ok"]:
             return None
-        login, uid = v.get("editor_login"), v.get("editor")
-        if not login or uid is None or login.lower() not in allowed:
-            return "edited"
-        return None if self._id_ok(row, login, uid) else "id_changed"
+        if v["reason"] in ("edit_unknown", "epic_edit_unknown"):
+            if v.get("wait_s") is not None or v.get("reset_at") is not None:
+                wait = v.get("wait_s")
+                if wait is None:
+                    wait = max(0, github.ts_epoch(v["reset_at"]) - clock())
+                self._rest(wait)
+            else:
+                self._change(lambda r: r["held"].__setitem__(_key(f"{owner}/{name}", n), clock() + HELD_S))
+            return "edit_unknown"
+        return "epic_edited" if epic else "edited"
 
     def _start(self, c: dict, d: dict, st: dict, digest: str, stop: threading.Event | None = None) -> str | None:
         """The one start of a cycle, through the local work route. The start is counted in the row BEFORE the call (a restart keeps it); a refusal gives it back and holds the issue.
@@ -758,15 +752,20 @@ class Worker:
             out = nodes_work.work_issue(c["repo"], c["number"], epic=f"{ep['repo']}#{ep['number']}", report=st["report"], auto_pr=st["auto_pr"], close=st["close"],
                                         expect=digest)
         except nodes_work.Refused as e:
+            transient_edit = e.reason in ("edit_unknown", "epic_edit_unknown") and e.facts.get("wait_s") is not None
             def refused(r):
                 if t0 in r["starts"]:
                     r["starts"].remove(t0)                                     # nothing started: the start is given back
-                r["held"][k] = clock() + HELD_S
+                if not transient_edit:
+                    r["held"][k] = clock() + HELD_S
                 r["trying"] = None
-                self.decide("refused", e.reason, k, r)
+                word = {"edit_not_allowed": "edited", "epic_edit_not_allowed": "epic_edited", "epic_edit_unknown": "edit_unknown"}.get(e.reason, e.reason)
+                self.decide("refused", word, k, r)
+                if word in ("edited", "epic_edited", "edit_unknown"):
+                    self.skipped[k] = word
             self._change(refused)
             self._seen[k] = "held"
-            if e.reason in GITHUB_REFUSALS:
+            if e.reason in GITHUB_REFUSALS and (e.reason not in ("edit_unknown", "epic_edit_unknown") or transient_edit):
                 self._rest(e.facts.get("wait_s"))
             return None
         except Exception as e:                                                  # the outcome is not known: the start stays counted, the issue is held

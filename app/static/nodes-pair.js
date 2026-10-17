@@ -76,7 +76,7 @@ NodeView.countdown = function (ms) {
 /* Which field of the Add node sheet an error belongs to: 'handle', 'address', 'code', or '' (it belongs to no field). The board's one-word `reason` (app/nodes.py PairError) is
    read first, then the status (a 429 counts the tries of a code), then the board's own words. */
 NodeView.REASON_FIELD = {
-  none: 'code', wrong: 'code', expired: 'code', burned: 'code', rate_limited: 'code', bad_url: 'address', callback_mismatch: 'address', unreachable: 'address',
+  none: 'code', wrong: 'code', expired: 'code', burned: 'code', rate_limited: 'code', bad_url: 'address', callback_mismatch: 'address', unreachable: 'address', callback_unreachable: 'address', answer_unverified: '', key_changed: '', key_required: '',
   bad_request: '', refused: '', store: '', registry_full: '',
 };
 NodeView.errField = function (status, message, reason) {
@@ -100,6 +100,17 @@ NodeView.list = function (answer, ...keys) {
    { id, key, name, handle, host, scopes, seen, unverified, repair, legacy, revoked, error, direction, superseded, supersededHost }.
    `superseded` is the peer_id of the newer pair that replaced this one from another address ('' when none), `supersededHost` that pair's address.
    id is what the board's routes take (peer_id); name falls back to the handle and then the id; `seen` is the last time the board really heard from it (epoch s) or null. */
+
+NodeView.keyId = function (id) {
+  return typeof id === 'string' && /^[0-9a-f]{16}$/.test(id) ? id.match(/.{4}/g).join(' ') : '';
+};
+NodeView.keyState = function (rec) {
+  if (rec.last_error === 'own_key_changed' || rec.error_kind === 'own_key_changed') return '✕ this board’s signing key changed; remove its pair on the peer first';
+  if (rec.last_error === 'key_changed' || rec.error_kind === 'key_changed') return '✕ peer signing key changed; remove its pair here first';
+  const source = ['pairing', 'upgrade', 'rotation'].includes(rec.key_source) ? rec.key_source : 'upgrade';
+  return rec.pubkey ? `✓ keyed (${source})` : '○ unkeyed, pair again';
+};
+
 NodeView.peer = function (rec) {
   const r = rec && typeof rec === 'object' ? rec : {};
   const s = NodeView.str;
@@ -111,7 +122,7 @@ NodeView.peer = function (rec) {
     scopes: NodeView.scopeList(r.scopes), seen, unverified: r.callback_unverified === true, repair: r.needs_repair === true, legacy: r.legacy === true,
     revoked: !!r.revoked_at, error: s(r.last_error, 120), direction: r.direction === 'in' ? 'in' : 'out',
     superseded: s(r.superseded_by, 80), supersededHost: NodeView.hostOf(s(r.superseded_by_url, 300)),
-    device: NodeView.deviceOf(r),
+    device: NodeView.deviceOf(r), keyId: NodeView.keyId(r.key_id), keySource: r.key_source, keyState: NodeView.keyState(r),
   };
 };
 
@@ -155,7 +166,7 @@ function demoAuth(data, check) {
    These are the words for the board's answer. Pure functions; every string the board sent is cut and shown through textContent. The mode is set in the settings file
    (CCBOARD_NODE_AUTH), never from the page, and the grant and the Serve command are text to copy: nothing here runs them. A value the board could not read is "to verify", never "fine". */
 NodeView.AUTH_MODES = {
-  token: { title: 'Pair token only', what: 'The default. A node is checked by its pair token alone, so a copied token works from any device on the tailnet. Nothing is asked of Tailscale.' },
+  token: { title: 'Pair token only', what: 'The default device setting. Node signatures still apply; no device check is asked of Tailscale.' },
   whois: { title: 'Pair token and device', what: 'The token only works from the device that was paired. The board asks Tailscale who is calling and compares it with the device saved at pairing.' },
   'whois+cap': { title: 'Pair token, device and permission', what: 'As whois, and the tailnet policy must also grant the operation (read, tasks, sessions or permissions) to the calling device. It can only narrow what the token allows.' },
 };
@@ -295,6 +306,8 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
   return el('div', { class: `nd-row${p.repair ? ' repair' : ''}${replaced ? ' superseded' : ''}`, 'data-key': p.key, 'data-kind': incoming ? 'in' : 'out' },
     el('div', { class: 'nd-main' },
       el('div', { class: 'nd-head' }, el('b', { class: 'nd-name', text: p.name }), p.handle ? el('span', { class: 'dim nd-handle', text: p.handle }) : null),
+      !p.legacy ? el('p', { class: 'nd-key-note', text: `${p.keyState}${p.keyId ? ' · ' + p.keyId : ''}` }) : null,
+      p.keySource === 'upgrade' ? el('p', { class: 'dim', text: 'Pinned by upgrade using the token. Pair again to bind the key with a code.' }) : null,
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
         incoming ? NodeView.deviceChips(p, deviceCheck) : null,
@@ -310,6 +323,10 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
    read_task, read_pane, read_agents, scope_refused, route_refused, method_refused): the first rule that matches the action's name gives [words when it worked, words when
    it did not]. An action this table does not know is its name with the underscores and dots turned into spaces, and 'failed' after it when it did not work. */
 NodeView.AUDIT_WORDS = [
+  [/^key_pinned$/, 'Key pinned', 'Key not pinned'],
+  [/^key_changed$/, 'Key changed', 'Key changed, pair again'],
+  [/^key_rotated$/, 'Key rotated', 'Key not rotated'],
+  [/^signature_refused$/, 'Signature refused', 'Signature refused'],
   [/^(scope|route|method)_refused/, 'Request refused', 'Request refused'],
   [/^read_card/, 'Card read', 'Card read failed'],
   [/^read_state/, 'State read', 'State read failed'],
@@ -428,6 +445,10 @@ function demoRemoval(data, id) {
 function demoNodesWrite(method, path, body, data) {
   const b = body && typeof body === 'object' ? body : {};
   let m = null;
+  if (method === 'POST' && path === '/api/nodes/key/rotate') {
+    demoNodesNote('key_rotated', '', true, 'demo rotation');
+    return { key: { alg: 'ed25519', id: '9f2c41aa07bed310', created_at: new Date().toISOString() } };
+  }
   if (method === 'POST' && path === '/api/nodes/pair-code') {
     const mins = Number.isFinite(b.minutes) ? Math.min(30, Math.max(1, b.minutes)) : 10;
     demoNodesNote('code_created', '', true, `scopes ${(Array.isArray(b.scopes) ? b.scopes : []).join(', ')}`, 'in');

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from . import platform as plat
+from .options import EXTRAS, registry
 
 log = logging.getLogger("ccboard")
 
@@ -112,7 +113,7 @@ def uvicorn_forwarded_allow(argv) -> str | None:
 
 
 def parse_node_auth(raw) -> tuple[str, bool]:
-    """CCBOARD_NODE_AUTH (issue #136): `token` (the default: the pair token alone), `whois` (token plus the device it was paired from) or `whois+cap`
+    """CCBOARD_NODE_AUTH (issue #136): `token` (the default: no extra device check), `whois` (token plus the device it was paired from) or `whois+cap`
     (that plus a Tailscale app capability). Unset or blank is `token`. Any other text is returned as it was typed (lower case) with True: it is never
     read as `token`, so a typo cannot quietly turn the check off; app/nodes_whois.py refuses every node call until it is fixed."""
     text = (raw or "").strip().lower()
@@ -254,21 +255,8 @@ def parse_bounded(raw, default: int, lo: int, hi: int) -> tuple[int, bool]:
     return default, True
 
 
-# The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
-# (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
-ENV_FILE_KEYS = (
-    "PROJECTS_DIR", "CCBOARD_PORT", "TTYD_PORT", "CODE_SERVER_PORT", "CCBOARD_HTTPS_PORT", "CODE_HTTPS_PORT", "CCBOARD_ALLOWED_USERS",
-    "CCBOARD_DATA_DIR", "CODE_SERVER_VERSION", "CCBOARD_PUBLIC_URL", "NTFY_URL", "NTFY_TOPIC", "NTFY_PUBLIC_URL", "NTFY_HTTPS_PORT", "NTFY_PORT",
-    "CCBOARD_APPROVE_TIMEOUT", "PREVIEW_HTTPS_BASE", "CCBOARD_NODE_NAME", "CCBOARD_HUB_TOKEN", "CCBOARD_NODES", "CCBOARD_RESTIC_REPO",
-    "CCBOARD_RESTIC_PASSWORD_FILE", "CCBOARD_BACKUP_PUSH", "CCBOARD_BACKUP_ONCALENDAR", "CCBOARD_BACKUP_EXTRA", "CCBOARD_RUNTIME",
-    "CCBOARD_AUTO_CONTINUE", "CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_HTTPS_PORT", "CCBOARD_MEM_SERVICE",
-    "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
-    "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
-    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL", "CCBOARD_MCP_NODES",
-    "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES", "CCBOARD_EPIC_ALIAS", "CCBOARD_EPIC_LEASE_MIN", "CCBOARD_EPIC_MAX_WINDOW_PCT",
-    "CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_WORKER_POLL", "CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
-    "CCBOARD_NODE_AUTH", "CCBOARD_NODE_CAP",
-)
+# The installer and file reader use the registry's order; the three extras are never loaded from the file.
+ENV_FILE_KEYS = tuple(o.key for o in registry() if o.key not in EXTRAS)
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
 
@@ -311,7 +299,7 @@ def env_file_problem(path) -> str | None:
     return None
 
 
-def read_env_file(path, *, missing_ok: bool = True) -> dict[str, str]:
+def read_env_file(path, *, missing_ok: bool = True, info=None) -> dict[str, str]:
     """The ENV_FILE_KEYS lines of the settings file as {key: value}. KEY=value lines are DATA, split at the first '=': nothing is expanded,
     unquoted or run (the same reading as install.sh, which never sources /etc/ccboard/env either). A key outside ENV_FILE_KEYS, a comment, a line
     without '=' and an empty value are skipped (an empty value reads as unset, as in the installer). {} when the file is absent, or refused:
@@ -338,13 +326,15 @@ def read_env_file(path, *, missing_ok: bool = True) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in raw.decode("utf-8", "replace").splitlines():
         key, sep, value = line.partition("=")
+        if info is not None and (not sep or key not in ENV_FILE_KEYS):
+            info["other_lines"] = info.get("other_lines", 0) + 1
         if not sep or key not in ENV_FILE_KEYS or not value:
             continue
         out[key] = value
     return out
 
 
-def apply_env_file(env) -> dict | os._Environ:
+def apply_env_file(env, *, file_keys=None, info=None) -> dict | os._Environ:
     """`env` with the settings file's values added for every key the environment does not already set (a non-empty explicit value wins,
     as in install.sh). The file is CCBOARD_ENV_FILE when that key is present (an empty value switches the file off), else, for the
     process environment and off Linux only, <data dir>/env; a mapping a test passes in is never merged with a file unless it names one. For the process
@@ -360,11 +350,24 @@ def apply_env_file(env) -> dict | os._Environ:
         # in the data dir, which the board's own user (and every session it runs) can write, must never become a second source.
         path = Path(env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())) / "env"
         explicit = False
+    elif process and plat.IS_LINUX:
+        # Inspect only: Linux already receives these values from the service or container environment.
+        path = Path("/etc/ccboard/env")
+        if env_file_problem(path) is None:
+            values = read_env_file(path, info=info)
+            if file_keys is not None:
+                file_keys.update(k for k, v in values.items() if env.get(k) == v)
+        return env
     else:
         return env
     if path is None:
         return env
-    fresh = {k: v for k, v in read_env_file(path, missing_ok=not explicit).items() if not env.get(k)}
+    values = read_env_file(path, missing_ok=not explicit, info=info)
+    fresh = {k: v for k, v in values.items() if not env.get(k)}
+    if file_keys is not None:
+        file_keys.update(fresh)
+        if process and plat.IS_LINUX:
+            file_keys.update(k for k, v in values.items() if env.get(k) == v)
     if not fresh:
         return env
     if process:
@@ -377,7 +380,11 @@ def apply_env_file(env) -> dict | os._Environ:
 
 class Settings:
     def __init__(self, env=None):
-        env = apply_env_file(os.environ if env is None else env)
+        self.file_keys: set[str] = set()
+        info = {}
+        env = apply_env_file(os.environ if env is None else env, file_keys=self.file_keys, info=info)
+        self.raw = {o.key: str(env[o.key]) for o in registry() if o.key in env}
+        self.other_lines = info.get("other_lines", 0)
         self.projects_dir = Path(env["PROJECTS_DIR"]) if "PROJECTS_DIR" in env else plat.default_projects_dir()
         self.port = int(env.get("CCBOARD_PORT", "8000"))
         self.ttyd_port = int(env.get("TTYD_PORT", "7681"))
@@ -451,6 +458,10 @@ class Settings:
         self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
         self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
         # Issue #136: the optional device binding and app capability for calls from paired nodes (app/nodes_whois.py). Off (`token`) by default.
+        self.node_keys_input = str(env.get("CCBOARD_NODE_KEYS") or "prefer")
+        self.node_keys = self.node_keys_input.strip().lower()
+        if self.node_keys not in ("prefer", "require", "off"):
+            self.node_keys = "require"
         self.node_auth, self.node_auth_bad = parse_node_auth(env.get("CCBOARD_NODE_AUTH"))
         self.node_cap, self.node_cap_bad = parse_node_cap(env.get("CCBOARD_NODE_CAP"))
         # The address uvicorn was told to listen on, from this process's own command line (`--host`; uvicorn's default is 127.0.0.1); None when the

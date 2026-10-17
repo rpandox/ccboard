@@ -224,6 +224,18 @@ MIGRATIONS = [
     #      Additive: the previous image ignores both.
     "ALTER TABLE node_pairs ADD COLUMN peer_ts_id TEXT",
     "ALTER TABLE node_pairs ADD COLUMN peer_tags TEXT",
+    "ALTER TABLE node_pairs ADD COLUMN peer_pubkey TEXT",
+    "ALTER TABLE node_pairs ADD COLUMN peer_key_source TEXT",
+    "ALTER TABLE node_pairs ADD COLUMN peer_key_at TEXT",
+    # ---- issue #246: signed requests remain spent across restarts. Keep each sender/nonce until
+    #      its timestamp window ends; the expiry index bounds cleanup work on each insertion.
+    """CREATE TABLE IF NOT EXISTS node_nonces (
+  sender_node_id TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (sender_node_id, nonce)
+)""",
+    "CREATE INDEX IF NOT EXISTS node_nonces_expiry ON node_nonces(expires_at)",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -249,7 +261,7 @@ JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
 NODE_PAIR_COLS = ("peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
                   "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by",
-                  "peer_ts_id", "peer_tags")
+                  "peer_ts_id", "peer_tags", "peer_pubkey", "peer_key_source", "peer_key_at")
 NODE_AUDIT_CAP = 20000
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 
@@ -1115,6 +1127,17 @@ class DB:
     def node_pair_delete(self, peer_id: str) -> bool:
         with self.lock:
             return self.conn.execute("DELETE FROM node_pairs WHERE peer_id=?", (peer_id,)).rowcount > 0
+
+    def node_nonce_accept(self, sender_node_id: str, nonce: str, expires_at: int, now: float) -> bool:
+        """Atomically spend a nonce; never evict one whose timestamp is still acceptable."""
+        with self.lock:
+            # Strictly less: a request at timestamp + WINDOW is still acceptable. The
+            # indexed subquery bounds each cleanup, including after a long shutdown.
+            self.conn.execute("DELETE FROM node_nonces WHERE rowid IN ("
+                              "SELECT rowid FROM node_nonces WHERE expires_at < ? ORDER BY expires_at LIMIT 256)", (now,))
+            return self.conn.execute(
+                "INSERT INTO node_nonces(sender_node_id, nonce, expires_at) VALUES (?,?,?) "
+                "ON CONFLICT(sender_node_id, nonce) DO NOTHING", (sender_node_id, nonce, expires_at)).rowcount == 1
 
     def node_audit_add(self, *, at: str, direction: str, peer: str, action: str, status: str, node_name=None, user=None, target=None, detail=None) -> int:
         with self.lock:

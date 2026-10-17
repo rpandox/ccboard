@@ -79,3 +79,12 @@ def test_the_demo_settings_and_plan_are_the_boards_defaults():
     assert set(d["authors"]) == {"allowed", "epic", "epic_ok", "blocked", "text"}
     for c in d["children"]:
         assert {"author", "author_ok", "work", "phase"} <= set(c)
+
+
+def test_edit_refusal_has_a_glyph_words_and_a_disabled_work_reason():
+    assert "'data-edit': c.edit_state" in EPIC_JS
+    assert "'blocked', 'unknown'" in EPIC_JS
+    assert "text: '⚠ '" in EPIC_JS
+    assert "off = 'edit'; text = epEditText(c)" in EPIC_JS
+    fx = json.loads((STATIC / 'demo' / 'epic.json').read_text())
+    assert any(c.get('edit_state') == 'blocked' for c in fx['details']['example/website#147']['children'])

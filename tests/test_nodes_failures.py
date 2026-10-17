@@ -121,6 +121,12 @@ def test_hub_restart_shows_node_last_with_the_true_age_and_the_nodes_keep_their_
 def test_skew_is_measured_and_warned_above_five_seconds(fx, offset):
     fx.net.offset("node-b", offset)
     r = fx.poll()
+    if abs(offset) > 120:
+        assert r["status"] == "unauthorized" and r["error_kind"] == "clock"
+        with fx.a.enter():
+            out = dn._c_nodes_health(fx.a.db)
+        assert "120 seconds" in out.detail and "automatic time" in out.fix["text"]
+        return
     assert r["status"] == "online"
     assert abs(r["skew_ms"] - offset * 1000) < 2000 and r["skew_warn"] is (abs(offset) > 5)
     with fx.a.enter():
@@ -267,15 +273,15 @@ def test_identity_changed_merges_nothing_and_refuses_with_its_own_reason(fx):
     b_task_add(fx.b, "A task of the other device")
     fx.tick(20)
     r = fx.poll()
-    assert r["status"] == "unpaired" and r["error_kind"] == "identity_changed"
+    assert r["status"] == "unauthorized"
     assert r["state"] == first["state"] and "A task of the other device" not in json.dumps(r), "none of its data is merged"
     before = calls_to_b(fx, "/probe")
     resp = fx.a.post(PROBE.format(h=fx.h), json={})
-    assert resp.status_code == 409 and resp.json()["reason"] == "identity_changed" and "This address now belongs to another device" in resp.json()["error"]
+    assert resp.status_code == 409 and resp.json()["reason"] == "needs_repair"
     assert calls_to_b(fx, "/probe") == before and fx.probe.calls == []
     with fx.a.enter():
         out = dn._c_nodes_health(fx.a.db)
-    assert out.status == "warn" and "another device" in out.detail and "Remove" in out.fix["text"]
+    assert out.status == "warn" and "signature is not valid" in out.detail and "key update" in out.fix["text"]
 
 
 # ================================================================ address changed
@@ -549,6 +555,10 @@ def test_idempotency_a_hub_timeout_after_the_peer_started_it_and_a_manual_retry_
 def test_duplicate_claim_and_skew_ten_minutes_either_way_change_no_claim_outcome(ew, offset):
     ew.net.offset("node-b", offset)                                               # node-b's own clock (nodes._now, nodes_work.clock) and what others read of it
     r = run_route(ew)
+    if abs(offset) > 120:
+        assert r.status_code == 409 and r.json()["reason"] == "needs_repair"
+        assert ew.b.db.tasks() == [] and ew.a.db.tasks() == [] and claims(ew) == []
+        return
     assert r.status_code == 200 and r.json()["data"]["reason"] == "won"
     with pytest.raises(nodes_work.Refused) as e:
         work_on_a(ew)
