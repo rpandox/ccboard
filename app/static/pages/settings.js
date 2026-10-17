@@ -2685,11 +2685,12 @@ async function settingsLocalSessions(panel) {
     const data = await api('GET', '/api/auth/local/sessions');
     if (!data.enabled) return;
     panel.append(settingsHead('Local sign-in'));
+    panel.append(el('p', { class: 'dim', text: 'On this machine, run bin/ccboard-open from the ccboard folder; the link works once, for 60 seconds' }));
     const rows = el('div');
     for (const row of data.sessions) {
-      rows.append(settingsKv('Browser', el('span', { text: `Created ${new Date(row.created * 1000).toLocaleString()}; last seen ${new Date(row.last_seen * 1000).toLocaleString()}` })));
+      rows.append(settingsKv(row.current ? 'This browser' : 'Browser', el('span', { text: `Created ${new Date(row.created * 1000).toLocaleString()}; last seen ${new Date(row.last_seen * 1000).toLocaleString()}` })));
     }
-    if (!data.sessions.length) rows.append(el('p', { class: 'dim', text: 'No active local sessions. Run bin/ccboard-open on this machine to sign in.' }));
+    if (!data.sessions.length) rows.append(el('p', { class: 'dim', text: 'No browser is signed in locally.' }));
     const signout = confirmButton('local-signout', 'Sign out all local sessions', async () => {
       await api('DELETE', '/api/auth/local/sessions');
       rows.textContent = 'All local sessions and pending links signed out. Run bin/ccboard-open to sign in again.';

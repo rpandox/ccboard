@@ -142,6 +142,12 @@ async def redeem(request: Request):
         if _tokens.pop(digest(token), None) is None:
             return refused()
         raw = secrets.token_urlsafe(32)
+        previous = request.cookies.get(COOKIE, "")
+        if previous and len(previous) <= 128:
+            key = digest(previous)
+            rec = _sessions.get(key)
+            if rec and rec["user"] in settings.allowed_users:
+                del _sessions[key]
         lifetime = settings.local_signin_hours * 3600
         _sessions[digest(raw)] = {"user": user, "created": now[0], "last_seen": now[0],
                                   "expires": (now[0] + lifetime, now[1] + lifetime)}
@@ -158,9 +164,13 @@ def person(request):
 def sessions(request: Request):
     if not person(request):
         return refused()
+    raw = request.cookies.get(COOKIE, "")
+    current = digest(raw) if direct(request, settings) and raw and len(raw) <= 128 else None
     with _lock:
         _prune(_clock())
-        rows = [{k: r[k] for k in ("created", "last_seen")} for r in _sessions.values()] if settings.local_signin else []
+        rows = [{"created": r["created"], "last_seen": r["last_seen"],
+                 "current": key == current and r["user"] in settings.allowed_users}
+                for key, r in _sessions.items()] if settings.local_signin else []
     return JSONResponse({"enabled": settings.local_signin, "sessions": rows}, headers=HEADERS)
 
 

@@ -28,15 +28,37 @@ for (const ok of [true, false]) test(`fragment removed before redemption; succes
   assert.ok(!status.textContent.includes(token));
 });
 
-async function settingsWorld(enabled) {
+async function settingsWorld(enabled, sessions = [{ created: 100, last_seen: 200 }]) {
   const { w } = homeWorld();
-  w.ctx.__local = { enabled, sessions: [{ created: 100, last_seen: 200 }] };
+  w.ctx.__local = { enabled, sessions };
   w.run(`__answers['/api/auth/local/sessions'] = req => req.method === 'GET' ? __local : {ok: true};`);
   w.location.hash = '#/settings?sec=app';
   await tick(); await tick();
   return w;
 }
 const button = (w, label) => page(w).querySelectorAll('button').find(b => text(b).trim() === label);
+const localPanel = w => page(w).querySelectorAll('section').find(node => node.getAttribute('aria-label') === 'Local sign-in');
+
+test('App labels the current session as This browser and others as Browser', async () => {
+  const w = await settingsWorld(true, [
+    { created: 100, last_seen: 200, current: true },
+    { created: 300, last_seen: 400, current: false },
+  ]);
+  const panel = localPanel(w);
+  const labels = panel.querySelectorAll('.k').map(node => text(node));
+  assert.deepEqual(labels, ['This browser', 'Browser', 'Sign out']);
+});
+
+for (const empty of [false, true]) test(`App explains local sign-in above rows; empty=${empty}`, async () => {
+  const w = await settingsWorld(true, empty ? [] : [{ created: 100, last_seen: 200 }]);
+  const panelText = text(localPanel(w));
+  const instructions = 'On this machine, run bin/ccboard-open from the ccboard folder; the link works once, for 60 seconds';
+  assert.ok(panelText.includes(instructions));
+  const rowText = empty ? 'No browser is signed in locally.' : 'Browser';
+  assert.ok(panelText.indexOf(instructions) < panelText.indexOf(rowText));
+  assert.equal(panelText.includes('No browser is signed in locally.'), empty);
+  assert.ok(button(w, 'Sign out all local sessions'));
+});
 
 test('App lists timestamps only when enabled and sign out requires confirmation', async () => {
   const w = await settingsWorld(true);

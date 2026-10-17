@@ -61,6 +61,34 @@ def test_single_use_and_hash_only_storage(browser):
     assert browser.get('/api/state').json()['user'] == 'owner'
 
 
+def test_redeeming_again_replaces_this_browser_session(browser):
+    _, first, _ = login(browser)
+    token = mint(browser)
+    assert redeem(browser, token, {'Cookie': f'{local.COOKIE}={first}'}).status_code == 204
+    second = browser.cookies.get(local.COOKIE)
+    assert second != first
+    assert len(browser.get('/api/auth/local/sessions').json()['sessions']) == 1
+    assert browser.get('/api/auth/local/sessions', headers={'Cookie': f'{local.COOKIE}={first}'}).status_code == 403
+    assert browser.get('/api/state').json()['user'] == 'owner'
+
+
+def test_sessions_mark_only_the_callers_browser_without_identifiers(browser):
+    _, first, _ = login(browser)
+    browser.cookies.clear()  # a separate browser
+    _, second, _ = login(browser)
+    for cookie, expected in ((first, [True, False]), (second, [False, True])):
+        response = browser.get('/api/auth/local/sessions', headers={'Cookie': f'{local.COOKIE}={cookie}'})
+        assert response.status_code == 200
+        rows = response.json()['sessions']
+        assert [row.get('current') for row in rows] == expected
+        assert all(set(row) == {'created', 'last_seen', 'current'} for row in rows)
+        for secret in (first, second, local.digest(first), local.digest(second)):
+            assert secret not in response.text
+    browser.cookies.clear()
+    rows = browser.get('/api/auth/local/sessions', headers={'Tailscale-User-Login': 'owner'}).json()['sessions']
+    assert [row['current'] for row in rows] == [False, False]
+
+
 @pytest.fixture
 def clock(monkeypatch):
     clocks = [10000.0, 100.0]  # wall, monotonic; fake only local sign-in's clock
@@ -88,7 +116,7 @@ def test_session_expires_and_seen_updates(browser, monkeypatch, clock, elapsed):
     _, cookie, r = login(browser)
     assert 'Max-Age=3600' in r.headers['set-cookie']
     before = browser.get('/api/auth/local/sessions').json()['sessions'][0]
-    assert before == {'created': 10000.0, 'last_seen': 10000.0}
+    assert before == {'created': 10000.0, 'last_seen': 10000.0, 'current': True}
     clock[0] += 10
     clock[1] += 10
     after = browser.get('/api/auth/local/sessions').json()['sessions'][0]
@@ -146,6 +174,7 @@ def test_cookie_post_needs_csrf_even_same_origin(browser):
 
 def test_sign_out_all_revokes_every_cookie_and_pending_link(browser):
     _, first, _ = login(browser)
+    browser.cookies.clear()  # a separate browser retains the first session
     _, second, _ = login(browser)
     pending = mint(browser)
     assert len(browser.get('/api/auth/local/sessions').json()['sessions']) == 2
