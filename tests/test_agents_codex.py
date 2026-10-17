@@ -287,7 +287,7 @@ def test_a_missing_flag_is_skipped_not_emitted(ag, monkeypatch):
     assert p.argv == ["codex", "--", "hi"]
     caps2 = {**codex.BASELINE_CAPS, "approval_on_failure": True}                         # an older build that does list on-failure
     monkeypatch.setattr(ag, "_probe_caps", lambda: (caps2, True))
-    assert plan(ag, opts={"permission_mode": "auto"}).argv[-4:] == ["-a", "on-failure", "-s", "workspace-write"]
+    assert plan(ag, opts={"permission_mode": "auto"}).argv[-4:] == ["-s", "workspace-write", "-a", "on-request"]    # not on-failure: auto without its flag is exactly `default`
     assert plan(ag, opts={"approval": "on-failure"}).argv[-2:] == ["-a", "on-failure"]
     caps3 = {**codex.BASELINE_CAPS}                                                      # neither flag (the 0.145 box): plain on-request
     monkeypatch.setattr(ag, "_probe_caps", lambda: (caps3, True))
@@ -1624,3 +1624,33 @@ def test_schema_models_drop_the_legacy_generation_but_the_levels_of_any_id_stay_
     assert ag.MODELS == ("gpt-6.1-sol",) and list(ag.REASONING_BY_MODEL) == ["gpt-6.1-sol"]
     assert ag._allowed_efforts("gpt-5.6-sol") == ("low", "medium", "high", "xhigh", "max"), "a launch with a legacy id still validates"
     assert next(f for f in ag.option_schema() if f.key == "model").choices == ["gpt-6.1-sol"]
+
+
+# ---- issue #83: `auto` is the board's default for new work, so without its flag it must be exactly today's default and never wider
+
+def test_auto_default_uses_approve_for_me_where_the_flag_exists(ag, monkeypatch):
+    caps = {**codex.BASELINE_CAPS, "approve_for_me": True}
+    monkeypatch.setattr(ag, "_probe_caps", lambda: (caps, True))
+    argv = plan(ag, opts={"permission_mode": "auto"}).argv
+    assert "--approve-for-me" in argv and argv[-2:] == ["-s", "workspace-write"] and "-a" not in argv
+
+
+@pytest.mark.parametrize("on_failure", [False, True])
+def test_auto_default_without_the_flag_is_exactly_the_default_mapping(ag, monkeypatch, on_failure):
+    caps = {**codex.BASELINE_CAPS, "approve_for_me": False, "approval_on_failure": on_failure}
+    monkeypatch.setattr(ag, "_probe_caps", lambda: (caps, True))
+    got = plan(ag, opts={"permission_mode": "auto"}).argv
+    assert "--approve-for-me" not in got and "on-failure" not in got
+    assert got == plan(ag, opts={"permission_mode": "default"}).argv
+    assert got[-4:] == ["-s", "workspace-write", "-a", "on-request"]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in got and "danger-full-access" not in got
+
+
+def test_auto_headless_is_the_same_run_as_default(ag, monkeypatch):
+    for approve in (True, False):
+        caps = {**codex.BASELINE_CAPS, "approve_for_me": approve}
+        monkeypatch.setattr(ag, "_probe_caps", lambda caps=caps: (caps, True))
+        a = ag.headless_argv("go", mode="auto", extra=[])
+        d = ag.headless_argv("go", mode="default", extra=[])
+        assert a == d and "--approve-for-me" not in a and "-s" in a and a[a.index("-s") + 1] == "workspace-write"
+        assert "danger-full-access" not in a and "--dangerously-bypass-approvals-and-sandbox" not in a

@@ -1151,7 +1151,7 @@ test('Options… opens the launcher in dispatch mode: a new session of either ag
   model.value = 'opus';
   f.dispatchEvent({ type: 'submit', preventDefault() {} });
   await settle();
-  assert.deepEqual(posts(env, /dispatch$/).map((c) => c.body), [{ mode: 'lane', model: 'opus' }], 'Claude, auto-close on: neither is sent, the changed model is');
+  assert.deepEqual(posts(env, /dispatch$/).map((c) => c.body), [{ mode: 'lane', model: 'opus', permission_mode: 'auto' }], 'Claude, auto-close on: the switch is not sent; the changed model is, and so is the board default permission (auto, issue #83)');
   // a Codex session with the switch off
   const env2 = tasksWorld({ state: withAgents([BACKLOG()]), answers: { '/api/tasks/20/dispatch': DISPATCHED(20, 'petroit--api--t-x') } });
   await go(env2, PETROIT);

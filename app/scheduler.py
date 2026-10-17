@@ -270,7 +270,7 @@ def codex_command(job: dict, wt: Path, out_file: Path, extra: list[str]) -> list
     extra = list(extra)
     if "--skip-git-repo-check" not in extra:
         extra.append("--skip-git-repo-check")              # a worktree is a repo; the flag only removes a way for the run to refuse to start
-    return agents.get("codex").headless_argv(job["prompt"], mode=job.get("permission_mode") or "acceptEdits", max_turns=0, budget=None, extra=extra,
+    return agents.get("codex").headless_argv(job["prompt"], mode=job.get("permission_mode") or "auto", max_turns=0, budget=None, extra=extra,
                                              cwd=None, slug="", last_message_file=str(out_file), opts=job_opts(job))
 
 
@@ -400,7 +400,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
         summary.update(status="error", error=held[:300], result="")
         return _finish(db, job, run_id, summary, rpath, slug, stamp, None, agent)
     exe = settings.claude_bin()
-    cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "acceptEdits", int(job.get("max_turns") or 30),
+    cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "auto", int(job.get("max_turns") or 30),
                         job.get("max_budget_usd"), extra, allowed_tools=job_opts(job).get("allowed_tools"))
     if exe:
         cmd[0] = exe

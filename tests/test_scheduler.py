@@ -78,7 +78,7 @@ def test_job_lifecycle(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     task = main.db.task_get(run["task_id"])
     assert task["claude_session_id"].startswith("2222") and task["branch"].startswith("worktree-nightly-tests-") and task["cost_usd"] == 0.42
     args = (repo / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
-    assert "--permission-mode acceptEdits" in args and "--max-turns 30" in args and "--output-format json" in args
+    assert "--permission-mode auto" in args and "--max-turns 30" in args and "--output-format json" in args
     job = main.db.job_get(j["id"])
     assert job["last_status"] == "ok" and job["next_run_at"] > main.db_now()   # cron rescheduled
     st = client.get("/api/state", headers=H).json()
@@ -681,6 +681,54 @@ def test_starting_an_agent_is_tried_again_while_its_binary_is_busy_and_other_err
         scheduler._run_agent(["claude"])
     assert len(seen) == 1, "another error is not retried"
 
+
+# ---- issue #83: a new job or batch the person gave no permission mode runs with auto; a saved choice wins; bypass is never a default
+
+def test_new_job_and_batch_without_a_mode_get_auto(client, codex_box):
+    main, repo, _ = codex_box
+    jid = post_job(client, run_now=False).json()["id"]
+    assert main.db.job_get(jid)["permission_mode"] == "auto"
+    cid = post_job(client, run_now=False, agent="codex").json()["id"]
+    assert main.db.job_get(cid)["permission_mode"] == "auto"
+    b = client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"]}).json()
+    assert main.db.job_get(b["jobs"][0])["permission_mode"] == "auto"
+    assert main.db.job_get(main.db.job_add(project="shop", repo="api", name="old", prompt="p"))["permission_mode"] == "acceptEdits"   # rows keep their own: the column default is only for rows written without one
+
+
+def test_a_chosen_mode_still_wins_over_the_auto_default(client, codex_box):
+    main, repo, _ = codex_box
+    for mode in ("acceptEdits", "default", "plan", "dontAsk", "auto"):
+        jid = post_job(client, run_now=False, permission_mode=mode).json()["id"]
+        assert main.db.job_get(jid)["permission_mode"] == mode
+    b = client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"], "permission_mode": "plan"}).json()
+    assert main.db.job_get(b["jobs"][0])["permission_mode"] == "plan"
+    # a stored job keeps its mode when it runs (its own acceptEdits is not rewritten to auto)
+    job = {"name": "n", "prompt": "do it", "permission_mode": "acceptEdits"}
+    argv = scheduler.codex_command(job, repo, repo / "o.txt", [])
+    assert argv[:5] == ["codex", "exec", "--json", "-s", "workspace-write"]
+
+
+def test_bypass_is_never_a_default_or_accepted_for_a_job(client, codex_box):
+    main, repo, _ = codex_box
+    assert "bypassPermissions" not in scheduler.MODES
+    assert main.JobIn(name="n", prompt="p").permission_mode == "auto" and main.BatchIn(prompt="p", repos=[]).permission_mode == "auto"
+    assert post_job(client, run_now=False, permission_mode="bypassPermissions").status_code == 400
+    assert client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api"], "permission_mode": "bypassPermissions"}).status_code == 400
+
+
+def test_a_stored_job_with_an_empty_mode_runs_with_auto_not_bypass(client, codex_box):
+    main, repo, _ = codex_box
+    jid = main.db.job_add(project="shop", repo="api", name="blank", prompt="run tests", permission_mode="")
+    started = client.post(f"/api/jobs/{jid}/run", headers=H).json()["started"]
+    w = scheduler.Worker(main.db)
+    run_all(w)
+    for t in list(main.sched.running.values() if main.sched else []):
+        t.join(timeout=30)
+    rid = started[0] if started else w.tick()[0]
+    run_all(w)
+    task = main.db.task_get(main.db.run_get(rid)["task_id"])
+    args = (repo / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
+    assert "--permission-mode auto" in args and "bypassPermissions" not in args and "--dangerously-skip-permissions" not in args
 
 # ---- #116 slice 8: a timeout ends the agent's whole process group
 
