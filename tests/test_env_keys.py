@@ -43,6 +43,7 @@ NOT_REMEMBERED = {
 
 # Names the code reads that are neither ENV_KEYS nor a user setting, each with the reason. Everything in NOT_REMEMBERED counts too.
 EXTRA_INTERNAL = {
+    "CCBOARD_RESTART_POLICY": "set by deploy/docker-compose.yml (unless-stopped) so the board knows its container is restarted after it exits (#241); never set by the installer",
     "CCBOARD_IMAGE_VERSION": "baked into the image by the build; shown in the footer",
     "CCBOARD_IMAGE_REVISION": "baked into the image by the build; the doctor's build check compares it with the repository",
     "CCBOARD_SOURCE_REPO": "baked into the image by the build (owner/name); the doctor's build check reads it",
