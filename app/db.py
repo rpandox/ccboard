@@ -130,6 +130,21 @@ CREATE INDEX IF NOT EXISTS samples_at ON samples(at);
 #   * order matters inside this list: a statement may only use columns added above it.
 # New columns are deliberately not added to SCHEMA, so a fresh DB and an upgraded one take the identical path.
 MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS bare_sessions (
+        id INTEGER PRIMARY KEY,
+        host TEXT NOT NULL,
+        tmux_name TEXT NOT NULL UNIQUE,
+        repo TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        cmd TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'unconfirmed',
+        state_at TEXT NOT NULL,
+        last_event TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        ended_at TEXT,
+        ended_reason TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS bare_sessions_open ON bare_sessions(host) WHERE ended_at IS NULL",
     "ALTER TABLE sessions ADD COLUMN state TEXT",
     "ALTER TABLE sessions ADD COLUMN state_at TEXT",
     "ALTER TABLE sessions ADD COLUMN last_event TEXT",
@@ -407,6 +422,51 @@ class DB:
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e):
                         raise
+
+    # Device rows are deliberately invisible to previous images' sessions/recovery SQL.
+    def add_bare_session(self, *, host, tmux_name, repo, agent, cmd) -> int:
+        ts = now()
+        with self.lock:
+            return _insert(self.conn, "bare_sessions", {"host": host, "tmux_name": tmux_name,
+                "repo": repo, "agent": agent, "cmd": cmd, "created_at": ts, "state_at": ts,
+                "state": "unconfirmed", "last_event": "bare_start"})
+
+    def bare_open_rows(self, host: str) -> dict[str, dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM bare_sessions WHERE host=? AND ended_at IS NULL ORDER BY id LIMIT 50", (host,)
+            ).fetchall()
+        return {r["tmux_name"]: dict(r) for r in rows}
+
+    def bare_set_state(self, host, tmux_name, state, event):
+        with self.lock:
+            self.conn.execute(
+                "UPDATE bare_sessions SET state=?, state_at=?, last_event=? "
+                "WHERE host=? AND tmux_name=? AND ended_at IS NULL",
+                (state, now(), event, host, tmux_name))
+
+    def bare_end(self, host, tmux_name, reason):
+        with self.lock:
+            self.conn.execute(
+                "UPDATE bare_sessions SET ended_at=?, ended_reason=? WHERE host=? AND tmux_name=? AND ended_at IS NULL",
+                (now(), reason, host, tmux_name))
+
+    def bare_reconcile(self, host, alive: set[str], before: str):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT tmux_name FROM bare_sessions WHERE host=? AND ended_at IS NULL AND created_at < ? ORDER BY id LIMIT 50",
+                (host, before)).fetchall()
+            for row in rows:
+                if row["tmux_name"] not in alive:
+                    self.conn.execute(
+                        "UPDATE bare_sessions SET ended_at=?, ended_reason='reconciled' WHERE host=? AND tmux_name=?",
+                        (now(), host, row["tmux_name"]))
+
+    def bare_forget(self, host):
+        with self.lock:
+            self.conn.execute(
+                "UPDATE bare_sessions SET ended_at=?, ended_reason='device_removed' WHERE host=? AND ended_at IS NULL",
+                (now(), host))
 
     def add_session(self, *, tmux_name, project, repo, name, launcher, cmd=None, claude_session_id=None, add_dirs=None,
                     agent="claude", cwd=None, opts=None, flags=None, account=None) -> int:

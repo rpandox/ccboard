@@ -632,7 +632,7 @@ test('demo: the picker lists the three fixture nodes, a remote session and task 
   const repo = proj.repos[0].name;
   w.run(`openLauncher(${JSON.stringify({ project: proj.name, repo, mode: 'session' })})`);
   await settle();
-  assert.deepEqual(pickBtns(w).map((b) => text(b).trim()), ['This node', 'build-box', 'alice-mac ◐', 'old-laptop ○']);
+  assert.deepEqual(all(picker(w), 'option').map((b) => text(b).trim()), ['This node', 'lab-pi (no board)', 'build-box', 'alice-mac ◐', 'old-laptop ○']);
   pickNode(w, 'build-box');
   await settle();
   let f = remote(w);

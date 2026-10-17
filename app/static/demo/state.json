@@ -1,4 +1,84 @@
 {
+  "bare_devices": [
+  {
+    "ts_id": "demo-lab-pi",
+    "name": "lab-pi",
+    "check": {
+      "ok": true,
+      "rows": [
+        {
+          "key": "ssh",
+          "ok": true,
+          "message": "SSH works for ccagent on lab-pi.",
+          "fix": ""
+        },
+        {
+          "key": "user",
+          "ok": true,
+          "message": "ccagent is a non-root user on lab-pi.",
+          "fix": ""
+        },
+        {
+          "key": "groups",
+          "ok": true,
+          "message": "ccagent's groups: staff. Not in sudo, wheel or admin.",
+          "fix": ""
+        },
+        {
+          "key": "system",
+          "ok": true,
+          "message": "lab-pi runs Linux.",
+          "fix": ""
+        },
+        {
+          "key": "tmux",
+          "ok": true,
+          "message": "tmux 3.4 is installed for ccagent on lab-pi.",
+          "fix": ""
+        },
+        {
+          "key": "claude",
+          "ok": true,
+          "message": "claude is on ccagent's PATH on lab-pi. Sign-in has not been checked.",
+          "fix": ""
+        },
+        {
+          "key": "codex",
+          "ok": false,
+          "message": "codex is not on ccagent's PATH on lab-pi.",
+          "fix": "Install codex for ccagent, then Check again."
+        },
+        {
+          "key": "repos",
+          "ok": true,
+          "message": "Found 2 repositories under ~/projects.",
+          "fix": ""
+        }
+      ],
+      "repos": [
+        "example-api",
+        "example-web"
+      ],
+      "login_url": null
+    },
+    "sessions": [
+      {
+        "tmux_name": "bare-demo-claude",
+        "host": "demo-lab-pi",
+        "repo": "example-api",
+        "agent": "claude",
+        "state": "alive"
+      },
+      {
+        "tmux_name": "bare-demo-shell",
+        "host": "demo-lab-pi",
+        "repo": "example-web",
+        "agent": "shell",
+        "state": "alive"
+      }
+    ]
+  }
+],
   "tmux_down": false,
   "scan_slow": false,
   "projects": [

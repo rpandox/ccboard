@@ -646,10 +646,17 @@ Shell.patchOlder = function (node, it) {
 };
 
 Shell.patchTree = function (tree, model) {
+  const devices = state.bare_devices || [];
   let items = model.main.slice();
   if (model.older.length) items.push({ key: 'older', kind: 'older', projects: model.older });
   if (typeof Nodes.sbItems === 'function') items = Nodes.sbItems(items);                // the hub view (nodes-hub.js): a "This node" label before, a collapsed group per paired node after; items it adds carry their own make / patch
-  if (typeof TeamView !== 'undefined' && TeamView.ready && teamShared()) items = TeamView.sbItems(items);      // the Team group after them (pages/team.js), only while a repository is shared
+  if (devices.length && !Shell.bareDevice && !Shell._bareLoad && typeof Lazy !== 'undefined') {
+    Shell._bareLoad = Lazy.load('bare').then(() => Shell.bareDevice && Shell.patchTrees()).catch(() => { Shell._bareLoad = null; });
+  }
+  if (Shell.bareDevice && devices.length) items.push({ key: 'bare-heading',
+    make: () => el('div', { class: 'sb-h nd-sbh', role: 'presentation', text: 'Devices (no board)' }), patch: () => {} });
+  for (const d of (Shell.bareDevice ? devices : [])) items.push({ key: 'bare:' + d.ts_id, make: () => el('div'), patch: (n) => Shell.bareDevice(n, d) });
+  if (typeof TeamView !== 'undefined' && TeamView.ready && teamShared()) items = TeamView.sbItems(items);      // the Team group after devices (pages/team.js), only while a repository is shared
   Shell.sync(tree, items, (it) => (it.make ? it.make(it) : it.kind === 'older' ? Shell.olderNode() : Shell.projNode()),
     (n, it) => (it.patch ? it.patch(n, it) : it.kind === 'older' ? Shell.patchOlder(n, it) : Shell.patchProj(n, it, 1)));
   tree._empty.classList.toggle('hidden', !model.empty);

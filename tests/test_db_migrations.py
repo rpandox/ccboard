@@ -646,3 +646,29 @@ def test_node_key_columns_are_additive_and_idempotent(tmp_path):
         assert all(row[k] is None for k in ("peer_pubkey", "peer_key_source", "peer_key_at", "pending_until"))
         assert row["token_sha256"] == "a" * 64
         db.close()
+
+
+def test_bare_table_is_additive_idempotent_and_invisible_to_previous_image(tmp_path):
+    path = tmp_path / 'bare.db'
+    make_old_db(path)
+    for _ in range(2):
+        db = DB(path)
+        assert 'host' not in columns(db.conn, 'sessions')
+        assert columns(db.conn, 'bare_sessions')['host'] == ('TEXT', 1, None)
+        db.close()
+    db = DB(path)
+    try:
+        db.add_bare_session(tmux_name='bare-example', repo='repo', agent='shell', cmd='sh -l', host='device-1')
+        # The previous image's unfiltered open_rows and reconcile/recovery queries.
+        rows = db.conn.execute('SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY id ASC').fetchall()
+        assert 'bare-example' not in {r['tmux_name'] for r in rows}
+        stale = db.conn.execute('SELECT DISTINCT tmux_name FROM sessions WHERE ended_at IS NULL AND created_at < ?', ('9999',)).fetchall()
+        assert 'bare-example' not in {r[0] for r in stale}
+        for row in stale:
+            db.conn.execute("UPDATE sessions SET ended_at=?, ended_reason='reconciled' WHERE tmux_name=? AND ended_at IS NULL", ('9999', row[0]))
+        db.reconcile(set(), '9999')
+        assert 'bare-example' in db.bare_open_rows('device-1')
+        db.bare_reconcile('device-1', set(), '9999')
+        assert db.bare_open_rows('device-1') == {}
+    finally:
+        db.close()

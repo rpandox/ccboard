@@ -930,6 +930,7 @@ def build_state(user: str) -> dict:
     st["restart"] = restart.info()
     st["settings_pending"] = {**pending_state(settings), "restart_hint": st["restart"]["hint"]}
     st["user"] = user
+    st["bare_devices"] = bare.stored_devices(db, user)
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime, "auto_continue": settings.auto_continue,
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
@@ -4896,7 +4897,7 @@ def api_nodes_discover(request: Request, refresh: int = 0):
     return nodes_discovery.discover(db, refresh=bool(refresh))
 
 
-# ---------- devices without a board: no session operations in this phase ----------
+# ---------- devices without a board ----------
 
 class BareAddIn(BaseModel):
     model_config = {"extra": "forbid"}
@@ -4911,10 +4912,12 @@ def api_bare(request: Request):
     return JSONResponse(bare.listing(db, request.state.user), headers={"Cache-Control": "no-store"})
 
 
-def _bare_action(request, verb, tid, user="ccagent", folder="projects"):
+def _bare_action(request, verb, tid, user="ccagent", folder="projects", **fields):
     _node_manager(request)
     try:
-        result = bare.action(db, request.state.user, verb, tid, user, folder)
+        result = bare.action(db, request.state.user, verb, tid, user, folder, **fields)
+    except bare.DeviceBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409, headers={"Cache-Control": "no-store"})
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -4941,9 +4944,59 @@ def api_bare_forget_host_key(tid: str, body: BareForgetIn, request: Request):
     return _bare_action(request, "forget_host_key", tid, body.user, body.folder)
 
 
+class BareRemoveIn(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    confirm: bool = False
+    discard_sessions: bool = False
+
+
 @app.delete("/api/bare/{tid}")
-def api_bare_remove(tid: str, request: Request):
-    return _bare_action(request, "remove", tid)
+def api_bare_remove(tid: str, request: Request, body: BareRemoveIn | None = None):
+    return _bare_action(request, "remove", tid, **(body.model_dump() if body else {}))
+
+
+class BareStartIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    repo: str
+    agent: str = "claude"
+    mode: str | None = None
+    model: str = ""
+    effort: str = ""
+
+
+class BareStopIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    confirm: bool = False
+
+
+def _bare_session(request, tid, verb, **fields):
+    _node_manager(request)
+    try:
+        result = bare.session_action(db, request.state.user, tid, verb, **fields)
+    except bare.DeviceBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409, headers={"Cache-Control": "no-store"})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400, headers={"Cache-Control": "no-store"})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/bare/{tid}/sessions")
+def api_bare_start(tid: str, body: BareStartIn, request: Request):
+    fields = body.model_dump()
+    # An omitted choice selects a safe explicit mode. A supplied null/empty mode is invalid.
+    if "mode" not in body.model_fields_set and body.agent in bare.MODES:
+        fields["mode"] = bare.MODES[body.agent][0]
+    return _bare_session(request, tid, "start", **fields)
+
+
+@app.post("/api/bare/{tid}/sessions/read")
+def api_bare_sessions(tid: str, request: Request):
+    return _bare_session(request, tid, "list")
+
+
+@app.post("/api/bare/{tid}/sessions/{session}/stop")
+def api_bare_stop(tid: str, session: str, body: BareStopIn, request: Request):
+    return _bare_session(request, tid, "stop", session=session, confirm=body.confirm)
 
 
 # ---------- team (issue #197): what GitHub shows about the people working in a shared repository; read only; the logic is in app/team.py and app/team_github.py ----------

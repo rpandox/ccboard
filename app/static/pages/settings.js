@@ -1616,43 +1616,6 @@ function settingsNdUi() {
   return ui;
 }
 
-/* Demo device writes stay in this page's memory, just like demo pairing. Only the static fixture is fetched. */
-let settingsDemoBare = null;
-async function demoBare(method, path, body = {}) {
-  if (!settingsDemoBare) {
-    const r = await fetch('/static/demo/bare.json');
-    if (!r.ok) throw new Error(`demo fixture bare.json: ${r.status} ${r.statusText}`);
-    const data = await r.json();
-    settingsDemoBare = { data, template: JSON.parse(JSON.stringify(data.devices[0])) };
-  }
-  const { data, template } = settingsDemoBare;
-  const route = path.split('?')[0];
-  if (method === 'GET' && route === '/api/bare') return data;
-  const match = /^\/api\/bare\/([^/]+)(?:\/(check|forget-host-key))?$/.exec(route);
-  const id = match ? decodeURIComponent(match[1]) : body.ts_id;
-  const saved = data.devices.find((d) => d.ts_id === id);
-  const candidate = data.candidates.find((d) => d.ts_id === id);
-  if (!candidate) throw demoError(404, 'No such demo device.');
-  if (method === 'DELETE' && match && !match[2]) {
-    data.devices = data.devices.filter((d) => d.ts_id !== id);
-    return { ok: true };
-  }
-  if (method === 'POST' && match && match[2] === 'forget-host-key') {
-    if (saved) saved.check = { ok: false, rows: [{ key: 'ssh', ok: false,
-      message: "Host key forgotten. Check again to pin the device's current key.", fix: 'Check again.' }], repos: [], login_url: null };
-    return { ok: true };
-  }
-  if (method !== 'POST' || (route !== '/api/bare' && (!match || match[2] !== 'check'))) throw demoError(404, 'No such demo action.');
-  const user = saved ? saved.user : body.user || 'ccagent', folder = saved ? saved.folder : body.folder || 'projects';
-  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user) || user === 'root') throw demoError(400, 'Choose a dedicated non-root user, such as ccagent.');
-  const check = JSON.parse(JSON.stringify(template.check));
-  const wording = (s) => s.replaceAll(template.name, candidate.name).replaceAll(template.user, user).replaceAll('~/projects', `~/${folder}`).replaceAll('Darwin (macOS)', candidate.os === 'Linux' ? 'Linux' : 'Darwin (macOS)');
-  check.rows = check.rows.map((row) => ({ ...row, message: wording(row.message), fix: wording(row.fix) }));
-  const device = { ...candidate, user, folder, owner: template.owner, check };
-  data.devices = [...data.devices.filter((d) => d.ts_id !== id), device];
-  return { added: true, device, check };
-}
-
 /* Bare devices are checked only when asked. Keep the form and results mounted across board polls. */
 const settingsBare = { data: null, busy: false, seq: 0, result: null, err: '', ui: null };
 
@@ -1667,7 +1630,7 @@ function settingsBareFrame() {
   ui.add = el('button', { type: 'button', text: 'Add and check', onclick: () => settingsBareAction('POST', '/api/bare', { ts_id: ui.candidate.value, user: ui.user.value, folder: ui.folder.value }) });
   ui.root = el('section', { class: 'bare-section', 'aria-label': 'Devices without a board' },
     el('div', { class: 'nd-sec-head' }, settingsHead('Devices without a board'), ui.refresh),
-    el('p', { class: 'dim set-note', text: 'Your online devices and tagged devices on your tailnet. Shared-in devices are excluded. Use a dedicated non-root user outside sudo, wheel and admin. Sessions on this device come in a later version.' }),
+    el('p', { class: 'dim set-note', text: 'Your online devices and tagged devices on your tailnet. Shared-in devices are excluded. Use a dedicated non-root user outside sudo, wheel and admin. Start sessions from the launcher after a successful check.' }),
     el('div', { class: 'bare-form' }, el('label', {}, 'Device', ui.candidate), el('label', {}, 'User', ui.user),
       el('label', {}, 'Projects folder (under user’s home)', ui.folder), ui.add), ui.status, ui.list);
   B.ui = ui;
@@ -1718,6 +1681,28 @@ function settingsBarePaint() {
         onclick: () => settingsBareAction('POST', `/api/bare/${encodeURIComponent(d.ts_id)}/forget-host-key`, { user: d.user, folder: d.folder }) }));
     if (added) actions.append(el('button', { type: 'button', text: 'Remove device', disabled: B.busy,
       onclick: () => settingsBareAction('DELETE', `/api/bare/${encodeURIComponent(d.ts_id)}`) }));
+    if (added) {
+      let armed = false, timer;
+      const notice = el('span', { role: 'status' });
+      const forget = el('button', { type: 'button', text: 'Forget its sessions here', disabled: B.busy });
+      const cancel = el('button', { class: 'hidden', type: 'button', text: 'Cancel', hidden: true });
+      const disarm = () => {
+        armed = false; clearTimeout(timer); forget.textContent = 'Forget its sessions here';
+        cancel.classList.add('hidden'); cancel.setAttribute('hidden', ''); notice.textContent = '';
+      };
+      cancel.addEventListener('click', disarm);
+      forget.addEventListener('click', () => {
+        if (!armed) {
+          armed = true; forget.textContent = 'Confirm'; cancel.classList.remove('hidden'); cancel.removeAttribute('hidden');
+          notice.textContent = 'Remove this device and forget its sessions here? They keep running on the device. Tap Confirm, or Cancel.';
+          timer = setTimeout(disarm, 5000);
+          return;
+        }
+        disarm();
+        settingsBareAction('DELETE', `/api/bare/${encodeURIComponent(d.ts_id)}`, { confirm: true, discard_sessions: true });
+      });
+      actions.append(forget, cancel, notice);
+    }
     const refused = check && Array.isArray(check.rows) && check.rows.some((r) => ['user', 'groups'].includes(r.key) && !r.ok && !r.skipped);
     body.append(el('p', { class: 'dim', text: added ? 'Saved device. Nothing was started.' : refused
       ? 'Device was refused and was not added.' : 'Not added yet: fix the rows marked ✕ and check again.' }), actions);

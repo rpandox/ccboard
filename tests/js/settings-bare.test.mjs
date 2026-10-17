@@ -141,11 +141,11 @@ for (const key of ['ssh', 'user', 'groups', 'tmux']) {
   });
 }
 
-test('device copy describes later sessions without phase wording', async () => {
+test('device copy points to the launcher after checking', async () => {
   const w = world();
   await settle();
   assert.doesNotMatch(text(section(w)), /This phase checks devices/);
-  assert.match(text(section(w)), /Sessions on this device come in a later version\./);
+  assert.match(text(section(w)), /Start sessions from the launcher after a successful check\./);
 });
 
 for (const seen of [new Date(Date.now() - 12 * 60000).toISOString(), 'invalid timestamp']) {
@@ -160,3 +160,29 @@ for (const seen of [new Date(Date.now() - 12 * 60000).toISOString(), 'invalid ti
     assert.ok(!text(section(w)).includes(seen));
   });
 }
+
+
+test('forget sessions requires a second tap and disarms on Cancel or timeout', async () => {
+  const w = world();
+  await settle();
+  section(w).querySelector('select').value = 'device-1';
+  button(w, 'Add and check').click(); await settle();
+  w.run(`globalThis.__forgetTimers = new Map(); globalThis.__forgetId = 0;
+    setTimeout = (fn) => { const id = ++__forgetId; __forgetTimers.set(id, fn); return id; };
+    clearTimeout = (id) => __forgetTimers.delete(id);`);
+  const deletes = () => calls(w).filter((c) => c.method === 'DELETE');
+  button(w, 'Forget its sessions here').click();
+  assert.equal(deletes().length, 0);
+  assert.match(text(section(w)), /They keep running on the device/);
+  button(w, 'Cancel').click();
+  assert.ok(button(w, 'Forget its sessions here'));
+  assert.equal(w.get('__forgetTimers.size'), 0);
+  button(w, 'Forget its sessions here').click();
+  w.run('[...__forgetTimers.values()][0]()');
+  assert.ok(button(w, 'Forget its sessions here'));
+  assert.equal(deletes().length, 0);
+  button(w, 'Forget its sessions here').click();
+  button(w, 'Confirm').click(); await settle();
+  assert.equal(deletes().length, 1);
+  assert.deepEqual(deletes()[0].body, {confirm: true, discard_sessions: true});
+});
