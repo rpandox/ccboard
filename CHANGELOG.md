@@ -12,6 +12,47 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.69 - 2026-10-17
+
+### Fixed
+- Slow relayed claims get more time, and the epic page reads the node’s result after an unknown answer without claiming again.
+- Busy claim refusals say how many claims are ahead; `wait_s` is an upper bound, not a measured queue time. Run respects the wait.
+- The relay gained one read-only GET row, `epic_claim_status` (scope `tasks`), on purpose to recover unknown claims from local state without another GitHub write.
+- Claim recovery uses attempt tokens, expires abandoned pending results, records exceptions and released wins, and prunes results older than a day. The page paints before status reads finish and preserves the fresh GitHub owner or closed state.
+- Claim steps log their duration so queue delays can be measured.
+
+Upgrade: nothing to do.
+
+## v0.5.68 - 2026-10-17
+
+### Fixed
+- During the first minute after launch (after a 20-second grace), running Claude tasks with no reported state now fail when a shell pane shows a line starting with the workspace-trust error. The failure explains how to accept trust in a session, including through a hub. Sending prompts and echoed commands quoting the error do not trigger this check.
+- The project page and task launcher warn until repository history shows an interactive Claude session, a reported Claude state other than the trust failure, or a completed Claude task. Dispatch to an existing session hides the warning. Hub warnings and failure reasons accept only the exact board sentence for that row's folder. The board never answers the trust dialog.
+
+Upgrade: nothing to do.
+
+## v0.5.67 - 2026-10-17
+
+### Fixed
+- Removing a both-ways node pair now names the incoming pairs it revoked automatically in the answer. Settings > Nodes warns that both directions go before removal and names the revoked pairs afterwards.
+
+Upgrade: nothing to do.
+
+## v0.5.66 - 2026-10-17
+
+### Fixed
+- The test suite's real-home guard (#235) no longer fails a run because the board installed on the same machine synced its hooks while the suite ran (its auto-update restarts it, and the hook installer rewrites `~/.claude/settings.json` and `~/.codex/hooks.json`). `scripts/claude_settings.py` and `scripts/codex_hooks.py` now touch an empty `.ccboard-hook-sync` beside each file they write (best effort; a failed stamp never fails the install). The guard excuses a change to one of those two files only when that stamp moved during the run and the file changed within 15 seconds of it, and prints one warning line saying the install did it.
+- A test that really writes the real home still fails the run, as does any change to the other guarded files, or to a hook file with no fresh stamp. The stamp is written on the next hook sync.
+
+Upgrade: nothing to do.
+
+## v0.5.65a - 2026-10-17
+
+### Fixed
+- Allow, Deny and In terminal for a permission request (`POST /api/permission/<id>/<decision>`) now answer only for a signed-in person, like the other routes that change what an agent may do. The local hook token, the hub, node tokens and MCP device tokens get `403`, and the request stays undecided. The phone notification buttons and the board's pages are unchanged (they act as the signed-in person); a hub's relayed answer keeps its own path and scope rules. Found in a review of #249.
+
+Upgrade: nothing to do.
+
 ## v0.5.65 - 2026-10-17
 
 ### Added

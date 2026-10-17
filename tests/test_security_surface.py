@@ -201,6 +201,7 @@ EXPECTED = {
     ("GET", "/api/node/permissions"): "node-token",                # scope permissions: the pending requests (tool, a 300-character redacted summary)
     ("POST", "/api/node/epics/work"): "node-token",                # scope tasks (issue #149): run one issue of an epic on this board (the author check, the claim, a task, the comments). Refused with CCBOARD_EPIC_WRITES off; an acting user is required; the body is repo, issue, epic and the epic's three settings
     ("POST", "/api/node/epics/claim"): "node-token",               # scope tasks (issue #148): claim one issue of an epic on this board. A write to GitHub, refused with CCBOARD_EPIC_WRITES off; an acting user is required; the body is repo, issue, epic and nothing else
+    ("GET", "/api/node/epics/claim/status"): "node-token",         # scope tasks (issue #250): read-only, whether this board holds a claim it was asked for (claim_id, attempt); no write, no GitHub call beyond the claim read
     ("POST", "/api/node/permissions/{pid}/{decision}"): "node-token",     # scope permissions: allow or deny once. The only way a node token answers a permission, and the hub route is a signed-in person only
     ("GET", "/api/nodes/{handle}/card"): "relay",       # the hub side of a relay row: a signed-in person with X-CCBoard (even for a GET), or the local hook token; a node token is a 403; 404 for a handle the registry does not hold
     ("GET", "/api/nodes/{handle}/state"): "relay",
@@ -217,6 +218,7 @@ EXPECTED = {
     ("GET", "/api/nodes/{handle}/permissions"): "relay",
     ("POST", "/api/nodes/{handle}/epics/work"): "relay",        # ask a paired node to run one issue of an epic (issue #149): a signed-in person only; the hook token, an agent and a node token are refused
     ("POST", "/api/nodes/{handle}/epics/claim"): "relay",       # ask a paired node to claim one issue of an epic (issue #148): a signed-in person only; the hook token, an agent and a node token are refused
+    ("GET", "/api/nodes/{handle}/epics/claim/status"): "relay",  # read a claim's outcome on a paired node after an unknown answer (issue #250): a signed-in person only, read-only
     ("POST", "/api/nodes/{handle}/permissions/{pid}/{decision}"): "relay",     # allow or deny another node's request: a person's act, no setting, tool or job reaches it
     ("GET", "/api/nodes/{handle}/stream"): "relay",      # an SSE passthrough that parses and re-serialises: only lines, tick and gone leave it (app/nodes_stream.py); a person only, never the hook token
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler

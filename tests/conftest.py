@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import os
 import pathlib
 import shutil
@@ -23,12 +24,18 @@ GUARDED = (".claude/settings.json", ".claude/settings.local.json", ".claude/.cre
 # Written all the time by the owner's own running tools (a live Claude Code session rewrites ~/.claude.json, the claude-mem worker
 # touches ~/.claude-mem), so size/mtime would fail every run made beside them: only their existence is compared.
 LIVE = (".claude.json", ".claude-mem")
+# Issue #235: the ccboard install on the same machine (its auto-update restarts the board, and the hook installer rewrites these two files)
+# touches an empty `.ccboard-hook-sync` beside each file it writes (scripts/claude_settings.py, scripts/codex_hooks.py). A change to one of
+# these two files that lands within SYNC_WINDOW_NS of a stamp that moved during the run is that install, not a test. Stat only, as ever.
+HOOK_STAMP = {".claude/settings.json": ".claude/.ccboard-hook-sync", ".codex/hooks.json": ".codex/.ccboard-hook-sync"}
+SYNC_WINDOW_NS = 15 * 1_000_000_000
+SYNC_NOTES: list[str] = []          # one line per change explained by the install; printed in the terminal summary
 
 
 def home_snapshot(home=None):
     """(exists, size, mtime_ns) of each guarded path under the real home. Stat only: no file is ever opened or read."""
     snap = {}
-    for rel in GUARDED + LIVE:
+    for rel in GUARDED + LIVE + tuple(HOOK_STAMP.values()):
         try:
             st = os.stat(pathlib.Path(home or REAL_HOME) / rel)
             snap[rel] = (True, 0, 0) if rel in LIVE else (True, st.st_size, st.st_mtime_ns)
@@ -40,6 +47,21 @@ def home_snapshot(home=None):
 def home_changes(before, after):
     """The guarded paths (relative to home, never absolute) whose stat differs."""
     return [rel for rel in GUARDED + LIVE if before[rel] != after[rel]]
+
+
+def split_changes(before, after, window_ns=SYNC_WINDOW_NS):
+    """(touched, synced): the changed guarded paths, split. `synced` holds (rel, stamp_mtime_ns) for a hook file whose stamp moved during the run
+    and whose new mtime is within window_ns of the stamp's new mtime (the ccboard install synced its hooks); `touched` is everything else, which
+    fails the run as before. Pure: it only compares the two snapshots."""
+    touched, synced = [], []
+    for rel in home_changes(before, after):
+        stamp = HOOK_STAMP.get(rel)
+        if (stamp and after[rel][0] and after[stamp][0] and before[stamp] != after[stamp]
+                and abs(after[rel][2] - after[stamp][2]) <= window_ns):
+            synced.append((rel, after[stamp][2]))
+        else:
+            touched.append(rel)
+    return touched, synced
 
 
 def pytest_configure(config):
@@ -82,10 +104,18 @@ def _real_home_canary():
     """Fail the run, naming the file, if any test or code under test changed the real home's Claude or Codex configuration."""
     before = home_snapshot()
     yield
-    changed = home_changes(before, home_snapshot())
+    changed, synced = split_changes(before, home_snapshot())
+    for rel, stamp_ns in synced:
+        when = datetime.datetime.fromtimestamp(stamp_ns / 1e9).astimezone().isoformat(timespec="seconds")
+        SYNC_NOTES.append(f"~/{rel} changed during the run: the ccboard install on this machine synced its hooks (stamp {when}); not a test")
     if changed:
         pytest.fail("a test touched the real home: " + ", ".join(f"~/{rel}" for rel in changed)
                     + " changed during the run (stat size/mtime; the content was never read)", pytrace=False)
+
+
+def pytest_terminal_summary(terminalreporter):
+    for line in SYNC_NOTES:
+        terminalreporter.write_line("warning: " + line, yellow=True)
 
 
 @pytest.fixture(autouse=True)

@@ -254,6 +254,29 @@ def test_cli_install_show_remove_on_a_hooks_file(tmp_path):
     assert json.loads(f.read_text()) == {"hooks": {"Stop": [{"hooks": [FOREIGN]}]}}
 
 
+def test_a_write_touches_an_empty_hook_sync_stamp_beside_the_file_after_writing_it(tmp_path):
+    """Issue #235: tests/conftest.py's home guard tells the install's hook sync from a test by this stamp."""
+    f = tmp_path / "codex" / "hooks.json"
+    cx.save(f, {"hooks": {}})
+    stamp = tmp_path / "codex" / ".ccboard-hook-sync"
+    assert stamp.is_file() and stamp.read_bytes() == b""
+    assert stamp.stat().st_mtime_ns >= f.stat().st_mtime_ns, "touched right after the write"
+
+
+def test_cli_install_and_remove_stamp_the_codex_home(tmp_path):
+    stamp = tmp_path / ".ccboard-hook-sync"
+    assert run_script("install", "--app-dir", str(APP), env_extra={"CODEX_HOME": str(tmp_path)}).returncode == 0 and stamp.is_file()
+    stamp.unlink()
+    assert run_script("remove", env_extra={"CODEX_HOME": str(tmp_path)}).returncode == 0 and stamp.is_file()
+
+
+def test_a_stamp_that_cannot_be_written_never_fails_the_install(tmp_path, monkeypatch):
+    f = tmp_path / "hooks.json"
+    monkeypatch.setattr(Path, "touch", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    cx.save(f, {"hooks": {}})
+    assert json.loads(f.read_text()) == {"hooks": {}}
+
+
 def test_cli_no_remote_approve_and_approve_timeout(tmp_path):
     f = tmp_path / "x.json"
     assert run_script("install", "--hooks", str(f), "--app-dir", str(APP), "--no-remote-approve").returncode == 0
@@ -318,7 +341,7 @@ def test_cli_leaves_no_temp_file_behind(tmp_path):
     f = d / "x.json"
     run_script("install", "--hooks", str(f), "--app-dir", str(APP))
     run_script("remove", "--hooks", str(f))
-    assert sorted(p.name for p in d.iterdir()) == ["x.json"]
+    assert sorted(p.name for p in d.iterdir()) == [".ccboard-hook-sync", "x.json"]      # the sync stamp (#235), no .tmp
 
 
 # ------------------------------------------------------------------------------------------------ trust-help
