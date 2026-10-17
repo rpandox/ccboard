@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.65 - 2026-10-17
+
+### Added
+- Home now lists the sessions of the paired nodes (issue #82): a collapsible "Other nodes" block after the projects, one group per node (the box, a Mac), read only. Each row has the node chip, project and repo, session name, state glyph and age, and a tap opens the node's session page (`#/n/<handle>/s/<name>`). It uses the hub's last reading only, so Home asks no node for it: a stale node shows how old the reading is, an offline node's last reading is dimmed with its age.
+- Sessions that need you stay under "On other nodes" and are not listed twice; the Home state chips narrow the node rows too, and `?demo=1` shows them for build-box, alice-mac and old-laptop.
+
+Upgrade: nothing to do.
+
 ## v0.5.61 - 2026-10-17
 
 ### Changed
