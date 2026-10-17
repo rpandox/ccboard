@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import claude_auth, tasks
+from app import claude_auth, doctor, projects, tasks
 from app.agents import claude, codex, registry
-from app.agents.base import OptField
+from app.agents.base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, BYPASS_REFUSAL_CODEX, OptField
 from app.config import settings
 from tests.conftest import write_fake_codex
 
@@ -55,9 +55,13 @@ def board(lite_client, projects_dir, fake_tmux, monkeypatch):
     claude.reset_caches()
     registry.invalidate()
     git_repo(projects_dir / "shop" / "api")
+    dev = git_repo(projects_dir / "shop" / "dev")                    # a repo with a devcontainer: the only place a bypass session may start (#104)
+    (dev / ".devcontainer").mkdir()
+    (dev / ".devcontainer" / "devcontainer.json").write_text("{}")
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: "ok")
     from app import main
     main._invalidate_scan()
-    yield SimpleNamespace(client=lite_client, tmux=fake_tmux, projects=projects_dir, repo=projects_dir / "shop" / "api")
+    yield SimpleNamespace(client=lite_client, tmux=fake_tmux, projects=projects_dir, repo=projects_dir / "shop" / "api", dev=dev)
     claude.reset_caches()
     registry.invalidate()
     main._invalidate_scan()
@@ -314,46 +318,63 @@ def test_ultracode_is_an_effort_only_where_the_box_takes_it_over_http(board, mon
 
 def test_the_flat_compat_body_is_unchanged(board):
     r = post(board, {"launcher": "claude", "name": "old", "model": "fable", "effort": "high", "permission_mode": "acceptEdits",
-                     "allowed_tools": "Bash(npm test), Read", "disallowed_tools": "WebFetch", "append_system_prompt": "x", "args": "--verbose",
-                     "bypass": True})
-    assert argv_of(r) == ["claude", "--session-id", r["agent_session_id"], "--name", "old", "--dangerously-skip-permissions", "--model", "fable",
+                     "allowed_tools": "Bash(npm test), Read", "disallowed_tools": "WebFetch", "append_system_prompt": "x", "args": "--verbose"})
+    assert argv_of(r) == ["claude", "--session-id", r["agent_session_id"], "--name", "old", "--model", "fable",
                           "--effort", "high", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(npm test)", "Read",
                           "--disallowedTools", "WebFetch", "--append-system-prompt", "x", "--verbose"]
-    # the pre-v0.5.13 spellings of bypass stay what they were: an explicit choice on the host, never stored
-    r = post(board, {"launcher": "claude", "name": "byp", "permission_mode": "bypassPermissions"})
-    assert argv_of(r)[-2:] == ["--permission-mode", "bypassPermissions"] and row_of(r["tmux"])["opts"] in (None, "", "{}")
+    # the pre-v0.5.13 spellings of bypass are refused on the host (owner decision, #104); in the devcontainer they stay what they were, never stored
+    refused(board, {"launcher": "claude", "name": "byp", "permission_mode": "bypassPermissions"}, BYPASS_REFUSAL)
+    refused(board, {"launcher": "claude", "name": "byp", "bypass": True}, BYPASS_REFUSAL)
+    # (v0.5.62 hardening: inside the devcontainer the flat spellings changed on purpose: they need the acknowledgement `bypass: true` too)
+    for spelling in ({"permission_mode": "bypassPermissions"}, {"mode": "bypassPermissions"}, {"args": "--dangerously-skip-permissions"},
+                     {"args": "--permission-mode bypassPermissions"}, {"args": "--permission-mode=bypassPermissions"}):
+        refused(board, {"launcher": "claude", "name": "byp", "devcontainer": True, **spelling}, BYPASS_ACK_REQUIRED, repo="dev")
+    for launcher, more in (("resume", {"resume_id": UUID2}), ("continue", {})):
+        refused(board, {"launcher": launcher, "name": "byp", "devcontainer": True, "permission_mode": "bypassPermissions", **more}, BYPASS_ACK_REQUIRED, repo="dev")
+    r = post(board, {"launcher": "claude", "name": "byp", "permission_mode": "bypassPermissions", "bypass": True, "devcontainer": True}, repo="dev")
+    assert argv_of(r)[-2:] == ["--permission-mode", "bypassPermissions"] and "--dangerously-skip-permissions" not in argv_of(r)
+    assert row_of(r["tmux"])["opts"] == '{"devcontainer": true}'
     assert post(board, {"launcher": "shell", "name": "sh"})["cmd"] is None
     assert post(board, {"launcher": "resume", "resume_id": UUID2, "name": "rr"})["cmd"] == f"claude --resume {UUID2}"
     assert post(board, {"launcher": "continue", "name": "cc"})["cmd"] == "claude --continue"
 
 
 def test_mode_bypass_needs_the_acknowledgement(board):
-    msg = "mode bypass skips every approval and the sandbox: send bypass: true with the acknowledgement"
-    refused(board, {"launcher": "claude", "mode": "bypass"}, msg)
-    refused(board, {"launcher": "claude", "mode": "bypass", "bypass": False}, msg)
-    r = post(board, {"launcher": "claude", "mode": "bypass", "bypass": True, "name": "ack"})
+    msg = BYPASS_ACK_REQUIRED
+    refused(board, {"launcher": "claude", "mode": "bypass"}, BYPASS_REFUSAL)                    # on the host the refusal comes first, with or without the acknowledgement
+    refused(board, {"launcher": "claude", "mode": "bypass", "bypass": True}, BYPASS_REFUSAL)
+    refused(board, {"launcher": "claude", "mode": "bypass", "devcontainer": True}, msg, repo="dev")
+    refused(board, {"launcher": "claude", "mode": "bypass", "bypass": False, "devcontainer": True}, msg, repo="dev")
+    r = post(board, {"launcher": "claude", "mode": "bypass", "bypass": True, "name": "ack", "devcontainer": True}, repo="dev")
     argv = argv_of(r)
     assert argv[-2:] == ["--permission-mode", "bypassPermissions"] and "--dangerously-skip-permissions" not in argv, "one spelling, not both"
-    assert row_of(r["tmux"])["opts"] in (None, "", "{}"), "never stored for resume"
+    assert "bypassPermissions" not in (row_of(r["tmux"])["opts"] or ""), "never stored for resume"
 
 
 def test_the_sheets_bypass_body_builds_the_same_argv_as_the_flat_spelling(board):
     """The sheet says the danger gate's answer twice (mode bypass + bypass true, beside permission_mode): the route must build exactly the
-    argv the older flat `permission_mode: bypassPermissions` always did, with the one --permission-mode and no --dangerously-skip-permissions."""
-    base = {"launcher": "claude", "model": "opus", "effort": "high", "prompt": "go"}
-    flat = post(board, {**base, "name": "flat", "permission_mode": "bypassPermissions"})
-    sheet = post(board, {**base, "name": "sheet", "permission_mode": "bypassPermissions", "mode": "bypass", "bypass": True})
-    only_mode = post(board, {**base, "name": "modeonly", "mode": "bypass", "bypass": True})
+    argv the older flat `permission_mode: bypassPermissions` always did, with the one --permission-mode and no --dangerously-skip-permissions.
+    Inside the devcontainer only (#104); the pinned line is devcontainer up && devcontainer exec -- claude ..."""
+    base = {"launcher": "claude", "model": "opus", "effort": "high", "prompt": "go", "devcontainer": True}
+    flat = post(board, {**base, "name": "flat", "permission_mode": "bypassPermissions", "bypass": True}, repo="dev")
+    sheet = post(board, {**base, "name": "sheet", "permission_mode": "bypassPermissions", "mode": "bypass", "bypass": True}, repo="dev")
+    only_mode = post(board, {**base, "name": "modeonly", "mode": "bypass", "bypass": True}, repo="dev")
 
     def masked(res, name):
         return ["<name>" if t == name else ("<uuid>" if t == res["agent_session_id"] else t) for t in argv_of(res)]
 
+    wf = str(board.dev)
     want = masked(flat, "flat")
-    assert "--dangerously-skip-permissions" not in want and want.count("--permission-mode") == 1 and "bypassPermissions" in want
+    assert want == ["devcontainer", "up", "--workspace-folder", wf, "&&", "devcontainer", "exec", "--workspace-folder", wf, "--", "claude",
+                    "--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions", "--session-id", "<uuid>", "--name", "<name>",
+                    "--", "go"]
+    assert "--dangerously-skip-permissions" not in want
     assert masked(sheet, "sheet") == want, "the sheet's body and the flat spelling: one argv"
     assert masked(only_mode, "modeonly") == want, "mode alone says the same"
     stored = [json.loads(row_of(res["tmux"])["opts"] or "{}") for res in (flat, sheet, only_mode)]
-    assert stored[0] == stored[1] == stored[2] == {"model": "opus", "effort": "high"}, "the same options are kept, and no bypass among them (never stored for a resume)"
+    assert stored[0] == stored[1] == stored[2] == {"model": "opus", "effort": "high", "devcontainer": True}, "the same options are kept, and no bypass among them (never stored for a resume)"
+    for host in ({"permission_mode": "bypassPermissions"}, {"mode": "bypass", "bypass": True}, {"bypass": True}, {"args": "--dangerously-skip-permissions"}):
+        refused(board, {"launcher": "claude", "model": "opus", **host}, BYPASS_REFUSAL)
 
 
 @pytest.mark.parametrize("body,message", [
@@ -434,16 +455,18 @@ def test_the_codex_mode_picker_over_http(cx):
     refused(cx, {"launcher": "new", "agent": "codex", "mode": "yolo"}, "mode must be one of default, auto, read-only, bypass, custom")
 
 
-def test_codex_bypass_and_danger_full_access_need_the_acknowledgement(cx):
-    msg = "mode bypass skips every approval and the sandbox: send bypass: true with the acknowledgement"
-    refused(cx, {"launcher": "new", "agent": "codex", "mode": "bypass"}, msg)
-    r = post(cx, {"launcher": "new", "agent": "codex", "mode": "bypass", "bypass": True})
-    assert argv_of(r) == ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"] and row_of(r["tmux"])["opts"] in (None, "", "{}")
-    refused(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "sandbox": "danger-full-access"}, re.compile(r"^sandbox danger-full-access: "))
-    r = post(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "sandbox": "danger-full-access", "bypass": True})
-    assert argv_of(r)[-1] == "--dangerously-bypass-approvals-and-sandbox"
-    # the pre-v0.5.13 spelling is what it was
-    assert argv_of(post(cx, {"launcher": "codex", "permission_mode": "bypassPermissions"}))[-1] == "--dangerously-bypass-approvals-and-sandbox"
+def test_codex_bypass_and_danger_full_access_are_refused_in_every_spelling(cx):
+    """Owner decision on #104: bypass is Claude-in-the-devcontainer only, and Codex never runs in the devcontainer."""
+    for body in ({"mode": "bypass"}, {"mode": "bypass", "bypass": True}, {"bypass": True}, {"permission_mode": "bypassPermissions"},
+                 {"mode": "custom", "sandbox": "danger-full-access"}, {"mode": "custom", "sandbox": "danger-full-access", "bypass": True},
+                 {"opts": {"sandbox": "danger-full-access"}}, {"opts": {"permission_mode": "bypassPermissions"}},
+                 {"args": "--dangerously-bypass-approvals-and-sandbox"}, {"args": "--yolo"}, {"args": "-s danger-full-access"},
+                 {"args": "--sandbox=danger-full-access"}, {"worktree": True, "mode": "bypass", "bypass": True}):
+        refused(cx, {"launcher": "new", "agent": "codex", **body}, BYPASS_REFUSAL_CODEX)
+        refused(cx, {"launcher": "codex", **body}, BYPASS_REFUSAL_CODEX)
+    refused(cx, {"launcher": "new", "agent": "codex", "mode": "bypass", "bypass": True, "devcontainer": True}, BYPASS_REFUSAL_CODEX, repo="dev")
+    # the safe words still launch
+    assert argv_of(post(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "sandbox": "read-only"}))[1:] == ["--no-alt-screen", "-s", "read-only"]
 
 
 def test_codex_resume_by_id_or_name_continue_and_fork(cx):
@@ -493,7 +516,7 @@ def test_codex_without_fork_refuses_it_with_a_reason(cx, fake_codex):
     ({"model": "gpt-6-luna", "reasoning": "ultra"}, re.compile(r"^reasoning_effort must be one of")),     # Luna has no ultra (#17)
     ({"devcontainer": True}, "this repo has no .devcontainer/devcontainer.json"),
     ({"args": "-c model=x"}, re.compile(r"^-c: settings overrides are not allowed in extra args")),
-    ({"args": "--yolo"}, re.compile(r"^--yolo: ")),
+    ({"args": "--yolo"}, BYPASS_REFUSAL_CODEX),
     ({"prompt": "x" * 8001}, re.compile(r"^prompt is too long")),
     ({"worktree": True, "cwd_rel": "x"}, re.compile(r"^cwd_rel: not together with a worktree")),
 ])
@@ -564,6 +587,59 @@ def test_the_session_route_shell_and_unknown_pairs(cx):
     assert post(cx, {"launcher": "shell", "name": "plain", "model": "x", "mode": "bypass", "prompt": "ignored"})["cmd"] is None
     refused(cx, {"launcher": "shell", "agent": "codex"}, re.compile(r"cannot start codex"))
     refused(cx, {"launcher": "codex", "agent": "claude"}, re.compile(r"starts codex; it cannot start claude"))
+
+
+# ======================================================================== bypass only inside the devcontainer (owner decision, #104)
+
+def test_the_codex_sentence_does_not_point_at_a_devcontainer_switch():
+    assert BYPASS_REFUSAL_CODEX == "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto"
+    assert "devcontainer" not in BYPASS_REFUSAL_CODEX
+
+
+def test_the_owners_sentence_is_pinned():
+    assert BYPASS_REFUSAL == ("bypass is allowed only inside the repo's devcontainer (owner decision, #104); "
+                              "choose auto or turn on Run in the devcontainer")
+
+
+@pytest.mark.parametrize("launcher,extra", [("claude", {}), ("new", {}), ("resume", {"resume_id": UUID1}), ("resume", {}), ("continue", {}),
+                                            ("from_pr", {"from_pr": "7"}), ("claude", {"from_pr": "7"}), ("claude", {"worktree": True}),
+                                            ("claude", {"prompt": "go"}), ("resume", {"resume_id": UUID1, "fork_session": True})])
+@pytest.mark.parametrize("bypass", [{"bypass": True}, {"permission_mode": "bypassPermissions"}, {"mode": "bypass", "bypass": True}, {"mode": "bypass"},
+                                    {"args": "--dangerously-skip-permissions"}, {"args": "--allow-dangerously-skip-permissions"},
+                                    {"args": "--permission-mode bypassPermissions"}, {"args": "--permission-mode=bypassPermissions"}])
+def test_every_launch_kind_refuses_host_bypass_in_every_spelling(board, launcher, extra, bypass):
+    git(board.repo, "commit", "--allow-empty", "-q", "-m", "init")                          # worktrees need a commit
+    refused(board, {"launcher": launcher, **extra, **bypass}, BYPASS_REFUSAL)
+
+
+@pytest.mark.parametrize("launcher", ["claude", "resume", "continue", "from_pr"])
+def test_a_devcontainer_bypass_builds_the_pinned_line_for_every_launch_kind(board, launcher):
+    wf = str(board.dev)
+    extra = {"resume": {"resume_id": UUID1}, "from_pr": {"from_pr": "7"}}.get(launcher, {})
+    r = post(board, {"launcher": launcher, "devcontainer": True, "mode": "bypass", "bypass": True, **extra}, repo="dev")
+    pre = f"devcontainer up --workspace-folder {wf} && devcontainer exec --workspace-folder {wf} -- claude "
+    assert r["cmd"].startswith(pre) and "--permission-mode bypassPermissions" in r["cmd"], r["cmd"]
+    assert "bypassPermissions" not in (row_of(r["tmux"])["opts"] or ""), "never stored: a resume of it carries no bypass"
+
+
+def test_bypass_with_the_devcontainer_but_a_codex_session_or_a_repo_without_one_is_refused(cx):
+    refused(cx, {"launcher": "claude", "agent": "codex", "devcontainer": True, "mode": "bypass", "bypass": True}, BYPASS_REFUSAL_CODEX, repo="dev")
+    refused(cx, {"launcher": "claude", "devcontainer": True, "mode": "bypass", "bypass": True}, "this repo has no .devcontainer/devcontainer.json")
+    refused(cx, {"launcher": "shell", "devcontainer": True, "bypass": True}, "this repo has no .devcontainer/devcontainer.json")
+
+
+def test_a_node_request_cannot_carry_a_bypass_into_a_session(cx):
+    """peer_session_open builds its SessionIn from safe_launch(...) only: a bypass word in the body is refused there, and what it builds has no bypass word and no devcontainer."""
+    from app import nodes_relay
+    for agent in ("claude", "codex"):
+        for words in (("bypass", None, None, None), (None, "bypassPermissions", None, None), (None, None, "danger-full-access", None), ("bypass", "bypassPermissions", "danger-full-access", "never")):
+            try:
+                got = nodes_relay.safe_launch(agent, *words)
+            except projects.BadRequest:
+                continue                                                                   # refused outright
+            assert got.get("permission_mode") != "bypassPermissions" and got.get("sandbox") != "danger-full-access" and not got.get("bypass"), (agent, words, got)
+        kw = nodes_relay.safe_launch(agent, None, None, None, None)
+        assert not any(k in kw for k in ("bypass", "devcontainer")) and kw.get("permission_mode") != "bypassPermissions" and kw.get("sandbox") != "danger-full-access"
 
 
 # ======================================================================== tasks and dispatch never get the danger

@@ -1055,7 +1055,7 @@ const TermKit = (() => {
   const TK_CODEX_REASONING = { 'gpt-6.1-sol': TK_CODEX_EFFORTS.concat(['ultra']) };   // the fallback's per-model extras: ultra only on 6.1-Sol (the box's picker)
   /* Codex's launch flags the Tune changes by restarting the session with the same conversation resumed (issue #2; POST /restart): -a takes on-request | never
      (untrusted is retired and on-failure deprecated: codex --help on 0.160 and 0.161 lists neither) and -s read-only | workspace-write (danger-full-access is a
-     bypass: the launcher's acknowledgement, never this panel). The adapter's RESTART_APPROVALS / RESTART_SANDBOXES are the same lists. */
+     bypass, refused for Codex: bypass is Claude-in-devcontainer only, #104; never this panel). The adapter's RESTART_APPROVALS / RESTART_SANDBOXES are the same lists. */
   const TK_CODEX_APPROVALS = ['on-request', 'never'];
   const TK_CODEX_SANDBOXES = ['read-only', 'workspace-write'];
   const TK_RESTART_NOTE = 'Codex has no live command for this: changing it restarts the session and resumes the same conversation';

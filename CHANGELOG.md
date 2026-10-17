@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.62 - 2026-10-17
+
+### Changed
+- Bypass permissions is now allowed only inside the repo's devcontainer (owner decision on #104). An interactive Claude session can choose it only when it is launched with *Run in the devcontainer*; every other request, whatever its spelling or launch kind, is a 400: "bypass is allowed only inside the repo's devcontainer (owner decision, #104); choose auto or turn on Run in the devcontainer".
+- Host Claude sessions and every Codex session (`bypass`, `danger-full-access`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`) are refused. Tasks, dispatch, schedules and headless runs refused bypass already and still do. The acknowledgement for the devcontainer bypass stays. Host bypass sessions already running are not touched (nothing is killed); only new launches are refused.
+- The launcher shows the bypass choice only while *Run in the devcontainer* is on; otherwise it is disabled with its reason, and Codex has no bypass choice. A saved default or preset that holds a bypass falls back to auto with a note.
+- Hardening. Inside the devcontainer every bypass spelling now needs the acknowledgement `bypass: true`, not only `mode: "bypass"`: `permission_mode: bypassPermissions`, `mode: bypassPermissions`, `--dangerously-skip-permissions` or `--permission-mode bypassPermissions` in `args`, and a resume or continue with a bypass mode. Without it the answer is a 400 "bypass skips every approval: send bypass: true with the acknowledgement". This changes the flat compat body (`permission_mode: bypassPermissions` plus `devcontainer: true` used to launch alone); the launcher sheet already sent the acknowledgement. A stored schedule whose permission mode is not a headless mode (a hand-edited `bypassPermissions`, a typo) no longer runs in it: the run falls back to `auto` and logs a warning.
+- The task, dispatch and schedule refusals now say "bypass is only for an interactive Claude session in the repo's devcontainer (#104)" instead of sending you to start a session and choose bypass. Codex sessions get their own sentence, "Codex sessions never run with bypass or danger-full-access (owner decision, #104); choose auto", since Codex cannot use the devcontainer. When a saved bypass falls back in the launcher, the note names the real mode (ask, where this Claude has no auto).
+Upgrade: nothing to do.
+
 ## v0.5.61 - 2026-10-17
 
 ### Changed

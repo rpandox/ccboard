@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
+import shutil
 import subprocess
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
-from app import nodes, nodes_relay as nr
+from app import doctor, nodes, nodes_relay as nr
 from tests.test_nodes_guard import OK_BODIES, REFUSED_BODIES
 
 ID = {"Tailscale-User-Login": "alice@example.com"}
@@ -218,9 +221,32 @@ def make_session_on_b(w, name="s1", state="idle", **body):
     """A session started on the peer's own board (as its owner would). It says its permission mode (`mode: default`) unless a test passes its own body fields: a
     session whose line says nothing is undeterminable and another node may not type into it."""
     with w.b.enter():
-        r = w.two.client.post("/api/projects/shop/repos/api/sessions", headers={**ID, "X-CCBoard": "1"}, json={"launcher": "claude", "name": name, **({"mode": "default"} if not body else body)})
+        from app import main
+        req = {"launcher": "claude", "name": name, **({"mode": "default"} if not body else body)}
+        agent = req.get("agent") or "claude"
+        wide = main._bypass_asked(agent, main.SessionIn(**req), shlex.split(req.get("args") or ""))
+        legacy = None
+        if wide:                                         # the board no longer starts a bypass session on the host (#104): this one stands for a session started before that, still running
+            if agent == "codex":
+                req, legacy = {"launcher": "claude", "name": name, "agent": "codex", "mode": "default"}, "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
+            else:
+                dc = w.two.b_projects / "shop" / "api" / ".devcontainer"
+                dc.mkdir(exist_ok=True)
+                (dc / "devcontainer.json").write_text("{}")
+                req = {**req, "devcontainer": True, "bypass": True}      # inside the container every bypass spelling carries the acknowledgement (#104)
+        with mock.patch.object(doctor, "devcontainer_cli_state", lambda: "ok"):
+            r = w.two.client.post("/api/projects/shop/repos/api/sessions", headers={**ID, "X-CCBoard": "1"}, json=req)
         assert r.status_code == 201, r.text
         tm = r.json()["tmux"]
+        if wide:
+            if agent == "claude":                        # the recorded line is what the old route typed: the line inside the container, without the devcontainer wrapper
+                legacy = "claude " + r.json()["cmd"].split(" -- claude ", 1)[1]
+                shutil.rmtree(dc)
+            with w.b.db.lock:
+                row = w.b.db.conn.execute("SELECT opts FROM sessions WHERE tmux_name=?", (tm,)).fetchone()
+                opts = {k: v for k, v in json.loads(row["opts"] or "{}").items() if k != "devcontainer"}
+                w.b.db.conn.execute("UPDATE sessions SET cmd=?, opts=? WHERE tmux_name=?", (legacy, json.dumps(opts) if opts else None, tm))
+                w.b.db.conn.commit()
         w.b.db.set_state(tm, state, "test")
     return tm
 

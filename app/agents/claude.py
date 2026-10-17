@@ -26,7 +26,7 @@ from typing import NamedTuple
 
 from .. import claude_auth, projects
 from ..config import settings
-from .base import Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec
+from .base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec
 from .pickers import PROVEN
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$")           # an alias or id, optionally the 1M-context variant (opus[1m])
@@ -110,7 +110,7 @@ SUBAGENT_CHOICES = ("inherit", "haiku", "sonnet", "opus")
 MAX_ALLOWED_TOOLS = 20                            # a headless job's pre-approved tool rules
 FABLE_ENV = "ANTHROPIC_DEFAULT_FABLE_MODEL"       # remaps what the fable alias means
 MAX_MCP_PATH = 400
-HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions is never a headless mode: unattended runs, tasks and schedules refuse it everywhere, devcontainer or not. On an interactive session bypass is an explicit per-session choice, never a default, and a devcontainer launch does not change that; whether bypass inside the container should be offered is an open owner decision (#104)
+HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions is never a headless mode: unattended runs, tasks and schedules refuse it everywhere, devcontainer or not. An interactive session may bypass only when it is launched in the repo's devcontainer (owner decision, #104); launch_plan refuses every other bypass (BYPASS_REFUSAL)
 TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_*.:/ ()\-]{0,119}\Z")   # a tool name first: a rule that starts with - would reach the variadic --allowedTools as a flag
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 WORKTREE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")              # \Z: names a directory, so no trailing newline (#44 F-03)
@@ -125,8 +125,8 @@ BYPASS_PARTS = ("dangerously", "bypasspermissions")
 # Unattended runs: the permission mode is set by the job itself and may never be escalated through the args (any spelling).
 FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
                        "--permission-prompt", "--allow-dangerously")
-TASK_REFUSAL = ("bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there "
-                "if you really want it")
+TASK_REFUSAL = ("bypassPermissions (or a settings override) is not allowed for tasks; "
+                "bypass is only for an interactive Claude session in the repo's devcontainer (#104)")
 
 # Notification types that mean "the session is waiting for you" (v0.5.7 drops the dead agent_needs_input / input_needed), and what
 # kind of wait each is.
@@ -584,13 +584,13 @@ class ClaudeAgent(Agent):
             OptField("fast", "Fast mode", "bool", None, False,
                      "There is no CLI flag: the board sends /fast after the session starts.", "basic"),
             OptField("permission_mode", "Permission mode", "select", self.permission_modes(), None,
-                     "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks."
+                     "--permission-mode. bypassPermissions skips every prompt: only inside the repo's devcontainer (owner decision, #104), with the bypass acknowledgement, never for tasks."
                      + "".join(" " + why + "." for why in filter(None, (self.gate_unmet("manual_mode"), self.gate_unmet("auto_start_mode")))), "basic"),
             OptField("prompt", "First prompt", "textarea", None, None,
                      f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, launch_when("new")),
             OptField("bypass", "Skip all permission prompts", "bool", None, False,
-                     "--dangerously-skip-permissions. Needs an explicit acknowledgement; never offered for tasks, dispatch or scheduled runs, "
-                     "and never stored for resume.", "advanced", True),
+                     "--dangerously-skip-permissions. Only inside the repo's devcontainer (owner decision, #104) and with an explicit acknowledgement; "
+                     "never offered for tasks, dispatch or scheduled runs, and never stored for resume.", "advanced", True),
             OptField("allowed_tools", "Allowed tools", "textarea", None, None,
                      "--allowedTools: one pattern per line or comma separated, e.g. Bash(git *).", "advanced"),
             OptField("disallowed_tools", "Disallowed tools", "textarea", None, None, "--disallowedTools, same format.", "advanced"),
@@ -890,7 +890,12 @@ class ClaudeAgent(Agent):
         if devc and not projects.has_devcontainer(Path(cwd)):
             raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
         add_dirs = [] if devc else [str(d) for d in (req.add_dirs or [])]
-        bypass = ["--dangerously-skip-permissions"] if req.bypass and not _arg_matching(extra, BYPASS_PARTS) else []
+        if not req.task and not devc and (req.bypass or full.get("permission_mode") == "bypassPermissions" or _arg_matching(extra, BYPASS_PARTS)):
+            raise projects.BadRequest(BYPASS_REFUSAL)          # bypass only inside the repo's devcontainer (#104): the one gate for every caller and every launch kind
+        if not req.task and devc and not req.bypass and (full.get("permission_mode") == "bypassPermissions" or _arg_matching(extra, BYPASS_PARTS)):
+            raise projects.BadRequest(BYPASS_ACK_REQUIRED)     # and there every spelling still needs the acknowledgement (mode, permission_mode, the args)
+        # the acknowledgement adds the flag only when nothing else already says bypass (the mode, permission_mode or the args): one spelling, not two
+        bypass = ["--dangerously-skip-permissions"] if req.bypass and full.get("permission_mode") != "bypassPermissions" and not _arg_matching(extra, BYPASS_PARTS) else []
         tail = [*self._opt_args(full), *extra]
         more = ["--add-dir", *add_dirs] if add_dirs else []
         worktree = None
@@ -940,17 +945,24 @@ class ClaudeAgent(Agent):
                         + shlex.join(["devcontainer", "exec", "--workspace-folder", cwd, "--"]) + " " + cmd_line)
         return LaunchPlan(argv=argv, cmd_line=cmd_line, agent_session_id=agent_sid, cwd=cwd, opts_clean=clean, worktree=worktree)
 
+    @staticmethod
+    def _no_bypass(full: dict) -> dict:
+        """A resume or continue from stored options never re-passes a bypass, whatever a hand-edited row says: the one acknowledgement that counts is the launch being made now."""
+        if full.get("permission_mode") == "bypassPermissions":
+            full = {k: v for k, v in full.items() if k != "permission_mode"}
+        return full
+
     def resume_argv(self, session_id: str | None = None, *, name: str | None = None, opts: dict | None = None, add_dirs=()) -> list[str]:
         if session_id and not UUID_RE.match(session_id):
             raise projects.BadRequest("resume id must be a UUID")
-        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0]
+        full = self._no_bypass(self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0])
         target = session_id or name
         argv = [*self.env_prefix(full), "claude", "--resume", *([target] if target else []), *self._opt_args(full)]
         dirs = [str(d) for d in (add_dirs or ())]
         return argv + (["--add-dir", *dirs] if dirs else [])
 
     def continue_argv(self, cwd: str, opts: dict | None = None, add_dirs=()) -> list[str]:
-        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0]
+        full = self._no_bypass(self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0])
         dirs = [str(d) for d in (add_dirs or ())]
         return [*self.env_prefix(full), "claude", "--continue", *self._opt_args(full), *(["--add-dir", *dirs] if dirs else [])]
 
