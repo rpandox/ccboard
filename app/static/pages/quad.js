@@ -1108,7 +1108,7 @@ Quad.mount = function (root, route) {
       keysHere: live ? () => keysHere(tile) : null,
       allow: pr ? () => decide(tile, pr, 'allow') : null,
       deny: pr ? () => decide(tile, pr, 'deny') : null,
-      tui: pr ? () => decide(tile, pr, 'tui') : null,
+      tui: pr && pr.kind !== 'terminal_prompt' ? () => decide(tile, pr, 'tui') : null,
       composer: live && hasKit('composer') ? () => openComposer(tile) : null,
       dockComposer: live && hasKit('composer') && !tooNarrowForDock(tile) ? () => toggleDocked(tile) : null,
       tune: tune && hasKit('tune') ? () => openTune(tile) : null,
@@ -1122,7 +1122,7 @@ Quad.mount = function (root, route) {
     };
     return {
       tmux: tile.tmux, session: s, agent, mode: tile.mode, modes: Quad.MODES.slice(), touch: coarse(), actions,
-      perm: { pending: !!pr, summary: pr ? String(pr.summary || pr.tool_name || '') : '' },
+      perm: { pending: !!pr, summary: pr ? String(pr.summary || pr.tool_name || '') : '', ...(pr && pr.kind === 'terminal_prompt' ? { kind: pr.kind } : {}) },
       atPrompt: gate.ok, why: gate.ok ? '' : (gate.show ? gate.why : ''), schema: schemaOf(agent),
       zoomed: I.n >= 2 && I.zoom === tile.slot, composerDocked: !!I.composers[tile.tmux], keysTarget: I.active === tile.tmux && keysShown(),
     };
@@ -1434,7 +1434,7 @@ Quad.mount = function (root, route) {
   function patchPerm(tile, pr, s) {
     const full = Number((s && s.viewers && s.viewers.full) || 0) - (tile.mode === 'full' && tile.frame ? 1 : 0);
     const other = full > 0;
-    const sig = pr && tile.decided !== pr.id ? `${pr.id}|${pr.summary || ''}|${pr.tool_name || ''}|${other ? 1 : 0}` : '';
+    const sig = pr && tile.decided !== pr.id ? `${pr.id}|${pr.kind || ''}|${pr.summary || ''}|${pr.tool_name || ''}|${other ? 1 : 0}` : '';
     if (tile.permSig === sig) return;
     tile.permSig = sig;
     tile.permBtns.textContent = '';
@@ -1447,7 +1447,8 @@ Quad.mount = function (root, route) {
     tile.permText.setAttribute('title', other ? `${sum} (another terminal is attached to this session)` : sum);
     tile.permBtns.append(
       el('button', { class: 'primary tinted small qt-allow', type: 'button', onclick: () => decide(tile, pr, 'allow'), text: 'Allow' }),
-      el('button', { class: 'danger small qt-deny', type: 'button', onclick: () => decide(tile, pr, 'deny'), text: 'Deny' }),
+      el('button', { class: 'danger small qt-deny', type: 'button', onclick: () => decide(tile, pr, 'deny'), text: 'Deny' }));
+    if (pr.kind !== 'terminal_prompt') tile.permBtns.append(
       el('button', { class: 'minimal small qt-tui', type: 'button', title: 'Let Claude show its own prompt in the terminal', onclick: () => decide(tile, pr, 'tui'), text: 'In terminal' }));
     tile.permNode.classList.remove('hidden');
   }

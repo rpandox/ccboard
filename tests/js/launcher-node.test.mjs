@@ -677,3 +677,34 @@ test('demo: a repo the node does not list is the missing-repo refusal, played by
   const err = await w.run('api(__a[0], __a[1], __a[2]).then(() => null, (e) => e)');
   assert.deepEqual([err.status, err.body.reason, err.message], [404, 'repo_missing', 'ghost is not on build-box. Nothing was created.']);
 });
+
+test('remote task launcher warns from the selected node repository history', async () => {
+  const peer = node('worker');
+  const repo = peer.state.projects[0].repos[0];
+  const reason = `Claude has not been trusted in this folder yet: open a session in ${peer.state.projects[0].name}/${repo.name} once and accept the trust dialog before its first task`;
+  repo.claude_trust_warning = reason;
+  const { w } = await lWorld({ nodes: [peer], answers: { '/api/nodes/worker/agents': ENVELOPE('worker', AGENTS()) } });
+  open(w, { mode: 'task' });
+  pickNode(w, 'worker');
+  await tick();
+  const warning = remote(w).querySelector('.lx-trust-warning');
+  assert.equal(text(warning), reason);
+  assert.equal(warning.classList.contains('hidden'), false);
+});
+
+test('remote dispatch trust warning hides for an existing session and returns for a new lane', async () => {
+  const peer = node('worker');
+  peer.state.projects[0].repos[0].claude_trust_warning = 'Accept trust in shop/api first';
+  peer.state.tasks = [{ id: 9, title: 'Write docs', phase: 'backlog', agent: 'claude', project: 'shop', repo: 'api' }];
+  peer.state.sessions = [{ tmux: 'shop--api--s7', project: 'shop', repo: 'api', session: 's7', agent: 'claude', state: 'idle' }];
+  const { w } = await lWorld({ nodes: [peer], answers: { '/api/nodes/worker/agents': ENVELOPE('worker', AGENTS()) } });
+  const task = plain(w.run("Nodes.tasks('worker')[0]"));
+  w.run(`openLauncher(${JSON.stringify({ mode: 'dispatch', node: 'worker', remoteTask: task })})`);
+  await settle();
+  const f = remote(w), warning = f.querySelector('.lx-trust-warning');
+  assert.equal(hidden(warning), false);
+  all(group(f, 'Where'), 'button').find((b) => text(b) === 'Running session').click();
+  assert.equal(hidden(warning), true);
+  all(group(f, 'Where'), 'button').find((b) => text(b) === 'New session').click();
+  assert.equal(hidden(warning), false);
+});

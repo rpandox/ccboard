@@ -1657,6 +1657,79 @@ def test_two_nodes_race_for_the_same_issue_200_times_and_exactly_one_wins(race):
     assert t["won"] == 200 and t["lost"] >= 20 and t["taken"] >= 20, ("the races are not all alike: some are decided by the readings (the loser had posted and deleted), some by the first check", t)
 
 
+def test_two_hubs_race_and_read_exactly_one_winner_from_the_nodes(race, monkeypatch):
+    from app import nodes_relay as nr
+    actors = {name: race.actor(name) for name in ("node-a", "node-b")}
+    monkeypatch.setattr(nodes_epics, "board_actor", lambda: actors[threading.current_thread().name])
+    monkeypatch.setattr(nodes_epics, "board_repos", lambda: [REPO])
+    body = {"repo": REPO, "issue": 1000}
+    race.sim.s = Sim(race.gh, 4)
+
+    def ask(name):
+        try:
+            return nr.peer_epic_claim(actors[name].db, {}, body)
+        except nr.Refusal as e:
+            return {"claimed": False, "reason": e.extra["why"]}
+
+    answers = race.sim.s.run({name: lambda name=name: ask(name) for name in actors})
+    recovered = {name: nr.peer_epic_claim_status(actor.db, {}, body) for name, actor in actors.items()}
+    assert sum(r["claimed"] for r in answers.values()) == sum(r["claimed"] for r in recovered.values()) == 1
+    assert {name: r["reason"] for name, r in recovered.items()} == {name: r["reason"] for name, r in answers.items()}
+    assert len(race.gh.claims_on(K[1000])) == 1
+
+
+def test_twenty_simultaneous_claims_report_the_queue_and_recover_every_winner(env, monkeypatch):
+    monkeypatch.setattr(nodes_epics, "board_repos", lambda: [REPO])
+    from concurrent.futures import ThreadPoolExecutor
+    from app import nodes_relay as nr
+    actor = env.actor()
+    original = nodes_epics.claim_issue
+    start, finish = threading.Barrier(21), threading.Event()
+    cv, serial = threading.Condition(), threading.Lock()
+    counts = {"active": 0, "refused": 0}
+
+    def slow(repo, issue, **kwargs):
+        with cv:
+            counts["active"] += 1
+            cv.notify_all()
+        assert finish.wait(5)
+        with serial:                                      # the fake GitHub clock advances one request at a time
+            env.tick(nr.CLAIM_TIMEOUT + 1)
+            return original(repo, issue, actor=actor)
+
+    monkeypatch.setattr(nodes_epics, "claim_issue", slow)
+
+    def ask(i):
+        start.wait(5)
+        body = {"repo": REPO, "issue": 201 + i % 10}
+        try:
+            return body, nr.peer_epic_claim(actor.db, {}, body)
+        except nr.Refusal as e:
+            with cv:
+                counts["refused"] += 1
+                cv.notify_all()
+            assert e.extra["claims_ahead"] == nodes_epics.CLAIMS_IN_FLIGHT
+            assert e.extra["wait_s"] == nr.CLAIM_TIMEOUT
+            return body, {"claimed": False, "reason": e.extra["why"]}
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(ask, i) for i in range(20)]
+        start.wait(5)
+        try:
+            with cv:
+                assert cv.wait_for(lambda: sum(counts.values()) == 20, timeout=5)
+                assert counts == {"active": nodes_epics.CLAIMS_IN_FLIGHT, "refused": 20 - nodes_epics.CLAIMS_IN_FLIGHT}
+        finally:
+            finish.set()
+        answers = [f.result() for f in futures]
+    before = list(env.gh.calls())
+    for body, result in answers:
+        if result["claimed"]:
+            assert nr.peer_epic_claim_status(actor.db, {}, body)["claimed"] is True
+            assert len(env.gh.claims_on(K[body["issue"]])) == 1
+    assert env.gh.calls() == before
+
+
 def test_three_nodes_race_for_the_same_issue_200_times_and_exactly_one_wins(race):
     outcomes = run_races(race, ["node-a", "node-b", "node-c"], range(1000, 1200))
     assert len({w for w, _ in outcomes}) == 3

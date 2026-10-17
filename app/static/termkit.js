@@ -692,7 +692,7 @@ const TermKit = (() => {
     let list = row && Array.isArray(row.pending) ? row.pending : null;
     if (!list || !list.length) list = st && Array.isArray(st.pending_permissions) ? st.pending_permissions.filter((p) => p && p.tmux_name === tmux) : [];
     const p = list.find((x) => x && x.id !== undefined && x.id !== null);
-    return p ? { id: p.id, summary: String(p.summary || p.tool_name || 'permission request') } : null;
+    return p ? { id: p.id, summary: String(p.summary || p.tool_name || 'permission request'), ...(p.kind === 'terminal_prompt' ? { kind: p.kind } : {}) } : null;
   }
 
   /* The size chip of a grid / read-only pane: '45x30' (the pane's own cols x rows), or 'cropped' when the session's window (win = [w, h], tmux's) is more than
@@ -988,10 +988,11 @@ const TermKit = (() => {
       const pr = r ? panePending(st, tmux, r) : null;
       const ps = pr ? pr.id + '|' + pr.summary : '';
       pendingNow = pr;
+      if (permBtns[2]) permBtns[2].classList.toggle('hidden', !!pr && pr.kind === 'terminal_prompt');
       if (sig.perm !== ps) {
         sig.perm = ps;
         permNode.classList.toggle('hidden', !pr);
-        permText.textContent = pr ? pr.summary.slice(0, 200) : '';
+        permText.textContent = pr ? pr.summary.slice(0, 300) : '';
         permText.setAttribute('title', pr ? pr.summary.slice(0, 800) : '');
       }
     }
@@ -1484,7 +1485,7 @@ const TermKit = (() => {
         if (typeof a.allow === 'function' || typeof a.deny === 'function' || typeof a.tui === 'function') input.push({ id: 'permnote', kind: 'note', label: 'Permission: ' + String(perm.summary || 'permission request') });
         add(input, 'allow', 'Allow', a.allow);
         add(input, 'deny', 'Deny', a.deny);
-        add(input, 'tui', 'In terminal', a.tui, { title: 'Let the agent show its own prompt in the terminal' });
+        if (perm.kind !== 'terminal_prompt') add(input, 'tui', 'In terminal', a.tui, { title: 'Let the agent show its own prompt in the terminal' });
       }
 
       const tune = [];

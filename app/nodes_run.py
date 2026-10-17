@@ -563,7 +563,7 @@ class Runner:
                 return {"outcome": "refused", "code": "rate_limited", "text": text, "until": t + wait}
             self._not_before = t + wait                               # this board's own relay limit (a few seconds, the same for every node): nobody is asked until it is over
             return {"outcome": "abort", "code": "rate_limited", "text": text}
-        if e.reason == "unconfirmed":                                 # the node may have started it: keep the lane reserved and do not repeat the call
+        if e.reason == "unconfirmed" or e.extra.get("outcome") == "unknown":  # keep the reservation after any unknown write, including a broken reply
             self.unclear[(key, n)] = t
             return {"outcome": "unclear", "code": "unclear", "text": text, "until": t + UNCLEAR_S}
         self.reservations.drop(item)
@@ -580,6 +580,10 @@ class Runner:
             return {"outcome": "refused", "code": "github_unavailable", "github": why, "text": text, "until": until}
         if why == "lanes_full":                                       # the node's own count says full: believe it until its next readings
             self.reservations.add(handle, until, n=nodes_route.NO_LIMIT, kind="full")
+        if why == "busy":
+            wait = e.extra.get("wait_s")
+            if isinstance(wait, int) and not isinstance(wait, bool) and 0 < wait <= 86400:
+                until = max(until, t + wait)
         if why in NODE_WHY or e.reason in NODE_REASON or e.status >= 500:
             self.blocked[handle] = {"until": until, "text": text, "code": why or e.reason}
             return {"outcome": "refused", "code": why or e.reason, "text": text, "until": until}

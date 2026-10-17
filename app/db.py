@@ -442,6 +442,19 @@ class DB:
                 self.conn.execute("UPDATE sessions SET flags=? WHERE id=?", (json.dumps(new), r["id"]))
             return new
 
+    def claude_session_repos(self) -> set[tuple[str, str]]:
+        """Folders with an interactive Claude launch, a reported state or a done task; advice, not proof of trust."""
+        from .tasks import workspace_trust_reason
+        interactive = ("claude", "resume", "continue", "from_pr")
+        with self.lock:
+            rows = self.conn.execute("SELECT DISTINCT project, repo, launcher, state, last_message FROM sessions WHERE agent='claude'"
+                                     " AND (launcher IN ('claude', 'resume', 'continue', 'from_pr') OR COALESCE(state, '') != '')").fetchall()
+            done = self.conn.execute("SELECT DISTINCT project, repo FROM tasks WHERE agent='claude' AND phase='done'").fetchall()
+        opened = {(r["project"], r["repo"]) for r in rows
+                  if r["launcher"] in interactive or not (r["state"] == "errored"
+                      and r["last_message"] == workspace_trust_reason(r["project"], r["repo"])[:500])}
+        return opened | {(r["project"], r["repo"]) for r in done}
+
     def any_session_ever(self) -> bool:
         """Has the board ever started (or seen) a session? Open or ended; feeds state.setup.first_run."""
         with self.lock:

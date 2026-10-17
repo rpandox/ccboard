@@ -86,3 +86,10 @@ def test_github_slug_rules():
     assert github_slug("Hooks v2, notifications with context, /command /prompt /resize (v0.5.7)") == \
         "hooks-v2-notifications-with-context-command-prompt-resize-v057"
     assert github_slug("CI in your repos (backup branches)") == "ci-in-your-repos-backup-branches"
+
+
+@pytest.mark.parametrize("doc", ["README.md", "CHANGELOG.md"])
+def test_claim_recovery_documents_wait_bound_and_intentional_read_row(doc):
+    text = (ROOT / doc).read_text()
+    assert re.search(r'`wait_s`[^.]*upper bound[^.]*not a measured queue time', text)
+    assert re.search(r'one read-only GET row[^.]*`epic_claim_status`[^.]*`tasks`[^.]*on purpose', text)
