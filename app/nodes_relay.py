@@ -1253,7 +1253,7 @@ def _shape_epic_claim(body, reg):
     return {"claimed": True, "reason": body["reason"], "repo": repo, "issue": issue, **_claim_facts(body)}
 
 
-WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed", "changed")     # nodes_work.REASONS without the two good answers
+WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed", "changed", "edit_not_allowed", "edit_unknown", "epic_edit_not_allowed", "epic_edit_unknown")     # nodes_work.REASONS without the two good answers
 
 
 def _shape_claim_status(body, reg):
@@ -1278,9 +1278,12 @@ def _fill_work(clean: dict, db) -> dict:
 def _work_facts(src: dict) -> dict:
     """The claim's few facts, and the login of the author a refusal names (a plain GitHub login; nothing else of the peer's answer is kept)."""
     out = _claim_facts(src)
-    a = src.get("author")
-    if isinstance(a, str) and github.OWNER_RE.fullmatch(a):
-        out["author"] = a
+    if src.get("unknown_reason") == "newest_edit_hidden":
+        out["unknown_reason"] = "newest_edit_hidden"
+    for field in ("author", "editor"):
+        a = src.get(field)
+        if isinstance(a, str) and github.OWNER_RE.fullmatch(a):
+            out[field] = a
     return out
 
 
@@ -1289,6 +1292,8 @@ def _work_text(name: str, why: str, facts: dict) -> str:
     if why in ("author_not_allowed", "epic_author_not_allowed"):
         who = "the epic" if why == "epic_author_not_allowed" else "the issue"
         return f"{name}: {who} is authored by {facts['author']}, not on the allowed list." if facts.get("author") else f"{name}: {nodes_work.WORK_TEXT[why]}"
+    if why in ("edit_not_allowed", "epic_edit_not_allowed", "edit_unknown", "epic_edit_unknown"):
+        return f"{name}: {nodes_work.edit_text(why, facts.get('editor'), facts.get('unknown_reason'))}"
     base = nodes_work.WORK_TEXT.get(why) or nodes_epics.CLAIM_TEXT[why]
     if why == "busy" and "claims_ahead" in facts:
         base += f" {facts['claims_ahead']} claims ahead; try again in about {facts.get('wait_s', int(CLAIM_TIMEOUT))} s."

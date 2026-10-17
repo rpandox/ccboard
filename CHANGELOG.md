@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.72 - 2026-10-17
+
+### Fixed
+- Every epic work start checks the full visible edit history and title renames of the issue and its epic before claiming. An outsider edit still blocks after an allowed person's edit; unreadable or incomplete history refuses work, including a newest revision missing from the visible edit and rename timestamps (with one-second tolerance).
+- Epic rows show stored edit refusals and disable Work with a reason. Add an editor to `CCBOARD_EPIC_AUTHORS`, or copy the text into a new issue by an allowed author. Checkbox edits count too when GitHub reports them.
+- A permanent unknown editor or history holds only that issue; the worker continues to the next ready candidate in the same cycle. Checks rest the worker only with a wait or reset time.
+- Checks cache unchanged text and account pins, record GitHub's reported cost and rest on low budget. Matching cache hits write no audit or KV records. Older deleted revisions that disappear and compromised allowed accounts remain limits; real-token behaviour is still unverified.
+
+Upgrade: nothing to do.
+
 ## v0.5.71 - 2026-10-17
 
 ### Added
