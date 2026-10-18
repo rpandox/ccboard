@@ -45,7 +45,11 @@ def _base() -> list[str]:
     return ["tmux", "-N", "-L", settings.tmux_socket]
 
 
-def run(*args: str, timeout: float = 5, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
+TIMEOUT = 5.0                    # seconds one tmux command may take
+
+
+def run(*args: str, timeout: float | None = None, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
+    timeout = TIMEOUT if timeout is None else timeout
     try:
         cp = subprocess.run(_base() + list(args), capture_output=True, text=True, timeout=timeout, input=input)
     except FileNotFoundError as e:

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.93 - 2026-10-18
+
+### Changed
+- New module-level constants name subprocess timeouts that were literals (`platform.LAUNCHCTL_TIMEOUT`, the `claude_auth` version, status and logout timeouts, `codex.LOGOUT_TIMEOUT`, `github.CONFIG_TIMEOUT`, `tmux.TIMEOUT`, `bare.RUNNER_TIMEOUT`). Every value is the one it replaced.
+- `doctor._run`, `codex._run`, `tmux.run` and `preflight.ls_remote` read their default limit when called, not when the module loads; the default is the same number.
+- Tests lift every subprocess timeout for each test, so a stalled machine no longer turns a fake binary's answer into "unknown" or "did not answer" (#293).
+- A guard test fails when a new `*_TIMEOUT` constant, a short literal timeout or a frozen default appears in `app/` without being lifted or exempted with a reason.
+
+Upgrade: nothing to do.
+
 ## v0.5.92 - 2026-10-17
 
 ### Changed

@@ -55,6 +55,7 @@ from .claude import (CONTINUING_END, FRESH_SOURCES, LIMIT_MSG_RE, PATH_MAX, RATE
 BIN_NAME = "codex"
 MIN_VERSION = (0, 157, 0)                       # below this the doctor's codex-bin detail says what newer builds add (a pass: the adapter works)
 CMD_TIMEOUT = 4.0                               # per subprocess: below doctor.CHECK_TIMEOUT (5 s), whose codex probes run in parallel
+LOGOUT_TIMEOUT = 20.0                           # `codex logout`
 MODELS_TIMEOUT = 8.0                            # `codex debug models` prints ~240 KB (and refreshes $CODEX_HOME/models_cache.json)
 MODELS_TTL = 3600.0                             # the catalogue is cached for an hour
 FAIL_TTL = 60.0                                 # a failed probe is retried after a minute, never on every call
@@ -166,8 +167,9 @@ def _child_env() -> dict:
     return env
 
 
-def _run(argv: list[str], timeout: float = CMD_TIMEOUT) -> tuple[int, str, str]:
-    """(returncode, stdout, stderr). Raises OSError / subprocess.TimeoutExpired: callers catch `_ERRORS`."""
+def _run(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+    """(returncode, stdout, stderr), under CMD_TIMEOUT unless a timeout is given. Raises OSError / subprocess.TimeoutExpired: callers catch `_ERRORS`."""
+    timeout = CMD_TIMEOUT if timeout is None else timeout
     if os.environ.get("PYTEST_CURRENT_TEST") and os.path.realpath(settings.codex_home) == os.path.realpath(Path.home() / ".codex"):
         # a test that forgot to sandbox codex_home must not drive the real codex against the developer's real ~/.codex
         # (`codex debug models` rewrites models_cache.json there): the callers read this as "codex could not be run"
@@ -698,7 +700,7 @@ class CodexAgent(Agent):
         exe = self.bin()
         if not exe:
             raise projects.BadRequest("codex is not installed")
-        rc, so, se = _run([exe, "logout"], timeout=20)
+        rc, so, se = _run([exe, "logout"], timeout=LOGOUT_TIMEOUT)
         reset_caches()
         return {"ok": rc == 0, "output": (so + se).strip()[-500:]}
 
