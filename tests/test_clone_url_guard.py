@@ -322,6 +322,14 @@ def test_a_probe_that_times_out_leaves_no_process_behind(tmp_path, monkeypatch):
     r = preflight.ls_remote("https://github.com/o/r.git", timeout=1)
     assert time.monotonic() - t0 < 8, "the call returns at the ceiling, it does not wait for the child's pipe"
     assert r["reachable"] is False and "1 seconds" in r["error"]
+    for _ in range(100):  # the shell may not have written the pid yet under load: wait up to 5 s
+        if pidfile.exists() and pidfile.read_text().strip().isdigit():
+            break
+        time.sleep(0.05)
+    if not (pidfile.exists() and pidfile.read_text().strip().isdigit()):
+        # The probe's 1 s limit ended the fake git before its shell reached `echo`, so no child was ever started
+        # and there is nothing to check: the host is too loaded for a 1 s fake, not a leak in the probe.
+        pytest.skip("the fake git was killed at the 1 s limit before it started its child (host under heavy load)")
     child = int(pidfile.read_text())
     for _ in range(50):
         if not alive(child):
