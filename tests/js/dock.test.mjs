@@ -1045,6 +1045,78 @@ test('the sidebar + closes the phone drawer first, and a project with no place a
   assert.equal(d.w.run('Shell.sideNew("nope")'), false, 'an unknown project does nothing');
 });
 
+test('every project row also has a New task button beside the +, same size and class: it opens the launcher in task mode for that project, in the repo a task went to last, else where the project works most (like Home\'s + task)', () => {
+  const d = dWorld({ state: stateOf({ s3: { state_at: ISO(1) } }) });
+  stubLauncher(d.w);
+  d.w.run('renderShell(state)');
+  const row = d.q('#sidebar .proj-row');
+  const add = row.querySelectorAll('.tn-add').find((b) => !b.classList.contains('tn-task'));
+  const task = row.querySelector('.tn-task');
+  assert.ok(task, 'the task button is on the project row');
+  assert.equal(task.getAttribute('aria-label'), 'New task in this project');
+  assert.equal(task.getAttribute('title'), 'New task in this project');
+  assert.equal(task.getAttribute('data-project'), 'shop');
+  assert.ok(task.classList.contains('tn-add') && task.classList.contains('icon') && task.classList.contains('small') && task.classList.contains('bp5-button'), 'the + button\'s own classes: the same 24 px (44 px on touch) rule');
+  assert.ok(task.querySelector('.bp5-icon-git-branch'), 'the branch icon of the + menu\'s New task');
+  const kids = row.children.map((c) => (c.classList.contains('tn-task') ? 'task' : c.classList.contains('tn-add') ? 'add' : c.classList.contains('tn-go') ? 'go' : ''));
+  assert.deepEqual(kids.filter(Boolean), ['add', 'task', 'go'], 'session +, task, then the open-project arrow');
+  assert.equal(add.getAttribute('aria-label'), 'New session in this project', 'the + keeps its job');
+  const open0 = row.getAttribute('aria-expanded');
+  const e = click(task);
+  assert.equal(e.prevented > 0 || e.stopped > 0, true, 'the click is its own');
+  assert.deepEqual(launched(d.w), [{ mode: 'task', project: 'shop', repo: 'web', folder: false }], 'web has the newest session');
+  assert.equal(row.getAttribute('aria-expanded'), open0, 'the tree row did not toggle');
+  assert.equal(d.w.location.hash, '', 'and nothing navigated');
+  d.w.localStorage.setItem('ccboard:task:last:shop', 'api');
+  click(task);
+  assert.deepEqual(launched(d.w).at(-1), { mode: 'task', project: 'shop', repo: 'api', folder: false }, 'the repo a task went to last beats the busiest one');
+  assert.equal(launched(d.w).length, 2);
+});
+
+test('the sidebar New task closes the phone drawer first; a project with no place that takes a task gets the repo picker narrowed to it; an unknown project does nothing', () => {
+  const st = stateOf();
+  st.projects.push({ name: 'empty', path: '/srv/projects/empty', root: null, orphan_sessions: [], repos: [] });
+  const d = dWorld({ state: st });
+  stubLauncher(d.w);
+  d.w.run('renderShell(state)');
+  d.w.run('Shell.openDrawer()');
+  assert.equal(d.q('#drawer').open, true);
+  click(d.q('#drawer .tn-task'));
+  assert.equal(d.q('#drawer').open, false, 'the drawer closes so the sheet is not under it');
+  assert.equal(launched(d.w).length, 1);
+  assert.equal(launched(d.w)[0].mode, 'task');
+  d.w.run('Shell.sideNewTask("empty")');
+  assert.equal(launched(d.w).length, 1, 'no place in that project: no launcher call');
+  assert.equal(sheetOpen(d), true, 'the picker (narrowed to it) says so');
+  assert.equal(d.q('#sheet').querySelector('.sheet-title').textContent, 'New task');
+  assert.equal(d.w.run('Shell.sideNewTask("nope")'), false);
+});
+
+test('tap count (real launcher): a new task from a project row of the sidebar is 2 taps: the row\'s task button, then Start task', async () => {
+  const d = dWorld({ state: stateOf({ s3: { state_at: ISO(1) } }) });
+  d.w.run('renderBanner = () => {}; api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true, id: 41 }; }');
+  d.w.run('renderShell(state)');
+  let taps = 0;
+  taps++;                                                                                  // 1: the task button on the project row
+  click(d.q('#sidebar .proj-row .tn-task'));
+  const sh = d.q('#sheet');
+  assert.equal(sh.open, true);
+  assert.equal(sh.querySelector('.sheet-title').textContent, 'New task · shop/web', 'the project and the repo already chosen');
+  const primaries = sh.querySelectorAll('button').filter((b) => b.classList.contains('bp5-intent-primary'));
+  assert.equal(primaries.length, 1, 'one filled primary');
+  assert.match(primaries[0].textContent, /Start task/);
+  assert.deepEqual(plain(d.w.get('__calls')).filter((c) => c.method === 'POST'), [], 'opening sent nothing');
+  sh.querySelector('textarea').value = 'tidy the readme';
+  taps++;                                                                                  // 2: Start task
+  sh.querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle(); await settle();
+  const posts = plain(d.w.get('__calls')).filter((c) => c.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, '/api/tasks');
+  assert.deepEqual([posts[0].body.project, posts[0].body.repo], ['shop', 'web']);
+  assert.equal(taps, 2);
+});
+
 test('the topbar + menu: New session and New task open the launcher with the project and repo of the route; off a project page they ask the repo first, then open it', () => {
   const d = dWorld({ state: stateOf() });
   stubLauncher(d.w);
@@ -1095,6 +1167,7 @@ test('index.html has no #modal (v0.5.13: the diff viewer is a sheet) and shell.c
   const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
   assert.match(css, /dialog#sheet\.right\.wide \{ width:min\(1100px, 100vw\); \}/);
   assert.match(css, /\.tn-row \.tn-add \{/);
+  assert.match(css, /@media \(pointer:coarse\) \{ \.tn-row \.tn-add \{ min-width:var\(--tap\); min-height:var\(--tap\); \} \}/, 'the task button is a .tn-add too: 44 px on touch');
 });
 
 test('tap count (real launcher): a new session from the dock is 2 taps with the remembered defaults: the dock\'s +, then Start & open', async () => {

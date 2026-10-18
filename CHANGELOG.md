@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.101 - 2026-10-18
+
+### Added
+- Command palette: a Create group with the six entries of the Create (+) menu (New session, New task, Schedule, New project, Import from GitHub, Batch prompt), each opening what the menu entry opens, with the chord `c s`, `c t`, `c p` or `c r` on the row. The menu and the palette read one list (#304).
+- Command palette: an Accounts group with "Switch Claude account to <name>" and "Switch Codex account to <name>" for every other saved login, and "Log in again as <name>" for a login the board was told stopped working. They run the same calls as Settings > Accounts (#304).
+- Account chip: a tap now opens a small menu with the Claude and Codex logins in use, a row per other saved login that switches on a tap, "Log in again" when a login stopped working, and links to Usage and Settings > Accounts. Switching an account is two taps from any page (#305).
+- Sidebar: every project row has a New task button next to the + for a new session. It opens the launcher in task mode for that project, so a task is two taps: the button, then Start task. Home's project blocks already had + session and + task at every width (#305).
+
+Upgrade: nothing to do.
+
 ## v0.5.99 - 2026-10-18
 
 ### Fixed

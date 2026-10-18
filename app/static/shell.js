@@ -138,7 +138,8 @@ Shell.buildTopbar = function (bar) {
   R.pCodex.insertBefore(R.pCodex.gl, R.pCodex.pl);
   R.pSpend = Shell.pill('spend', 'SPEND');
   R.acctT = el('b', { class: 'pl' });
-  R.acct = el('a', { class: 'pill acct hidden', 'data-pill': 'acct', href: '#/usage' }, R.acctT);       // v0.5.17b: which subscription account the pills below belong to (only with more than one)
+  R.acct = el('a', { class: 'pill acct hidden', 'data-pill': 'acct', href: '#/usage', role: 'button' }, R.acctT);       // v0.5.17b: which subscription account the pills below belong to (only with more than one); v0.5.101: a tap opens the account menu (Shell.accountItems)
+  Shell.wireAcct(R.acct);
   R.pills = el('div', { id: 'pills', class: 'pills' }, R.acct, R.p5, R.p7, R.pCodex, R.pSpend);
   const g = stateGlyph('waiting');
   g.setAttribute('aria-hidden', 'true'); g.removeAttribute('role'); g.removeAttribute('title');
@@ -162,6 +163,37 @@ Shell.buildTopbar = function (bar) {
   R.refresh = el('button', { class: 'icon minimal refresh', type: 'button', 'aria-label': 'Refresh now', title: 'Refresh now', onclick: () => refreshNow() }, ic('refresh'));
   bar.append(R.navBtn, el('a', { class: 'brand', href: '#/', text: 'ccboard' }), R.crumbs, el('span', { class: 'spacer' }),
     R.pills, R.inbox, R.dots, R.search, R.searchBtn, R.plus, R.bell, R.refresh);
+};
+
+/* The account chip is a menu button (v0.5.101): a plain tap or Enter / Space opens Shell.accountItems; a modified click (new tab) keeps the link, #/usage. */
+Shell.wireAcct = function (chip) {
+  chip.addEventListener('click', (e) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || (typeof e.button === 'number' && e.button > 0)) { e.stopImmediatePropagation(); return; }
+    e.preventDefault();
+  });
+  chip.addEventListener('keydown', (e) => { if (e.key === ' ') { e.preventDefault(); chip.click(); } });         // a link answers Enter by itself, a button also Space
+  Shell.acctMenu = menu(chip, () => Shell.accountItems(typeof state === 'undefined' ? null : state));
+};
+
+/* The rows of the account menu (v0.5.101): Log in again for a login the box was told is no good, the Claude and Codex logins in use, one row per other saved login that
+   switches on a tap (accountSwitch / cxSwitch, the Settings rows' own calls: pages/agents.js acctChoices), then the way to Usage and to Settings > Accounts. */
+Shell.accountItems = function (st) {
+  const choices = typeof acctChoices === 'function' ? acctChoices(st) : [];
+  const who = (c) => (c.agent === 'codex' ? 'Codex' : 'Claude');
+  const row = (c) => Shell.hash('settings', {}, { sec: 'accounts', acct: c.key });
+  const items = [];
+  for (const c of choices) {
+    if (c.flagged && c.canRelogin) items.push({ label: `Log in again as ${c.name}`, sub: `${who(c)} · login not valid any more`, icon: 'log-in', onClick: () => c.relogin() });
+  }
+  for (const c of choices) {
+    if (c.current) items.push({ label: `${who(c)}: ${c.name}`, sub: `in use${c.plan ? ' · ' + c.plan : ''}`, icon: 'tick', current: true, onClick: () => Shell.go(row(c)) });
+  }
+  for (const c of choices) {
+    if (c.switchable) items.push({ label: `Switch to ${c.name}`, sub: `${who(c)}${c.plan ? ' · ' + c.plan : ''}`, icon: 'exchange', onClick: () => c.run() });
+  }
+  items.push({ label: 'Usage', sub: 'per account', icon: 'chart', onClick: () => Shell.go('#/usage') });
+  items.push({ label: 'Settings > Accounts', icon: 'cog', onClick: () => Shell.go(Shell.hash('settings', {}, { sec: 'accounts' })) });
+  return items;
 };
 
 Shell.focusSearch = function () {
@@ -276,8 +308,8 @@ Shell.accountChip = function (st, now) {
     text: letters.charAt(0).toUpperCase() + letters.slice(1),
     hue: move || problem ? 'hue-amber' : chipHue('account', cur.key),
     title: problem ? `${acctProblemText(problem)} · Log in again`
-      : move ? `${move.who} has ${Math.round(move.left)} % of the ${move.win} window left` : `Account: ${name}${cur.plan ? ' (' + cur.plan + ')' : ''} · usage per account`,
-    href: problem ? acctProblemHash(problem) : '#/usage',            // a tap on the amber chip goes to the account's row, where Log in again is the lead action
+      : move ? `${move.who} has ${Math.round(move.left)} % of the ${move.win} window left` : `Account: ${name}${cur.plan ? ' (' + cur.plan + ')' : ''} · switch account or see usage`,
+    href: problem ? acctProblemHash(problem) : '#/usage',            // a modified click (new tab) follows it; a plain tap opens the account menu, whose first row is then Log in again
   };
 };
 
@@ -401,11 +433,13 @@ Shell.projNode = function () {
   const go = el('a', { class: 'tn-go', tabindex: '-1', title: 'Open project', 'aria-label': 'Open project' }, ic('chevron-right'));
   const add = el('button', { class: 'icon minimal small tn-add', type: 'button', tabindex: '-1', title: 'New session in this project', 'aria-label': 'New session in this project' }, ic('plus'));
   add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); Shell.sideNew(add.getAttribute('data-project')); });
+  const addTask = el('button', { class: 'icon minimal small tn-add tn-task', type: 'button', tabindex: '-1', title: 'New task in this project', 'aria-label': 'New task in this project' }, ic('git-branch'));
+  addTask.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); Shell.sideNewTask(addTask.getAttribute('data-project')); });
   const g = Shell.groupRow('proj-row', 1, '', [dot]);
-  g.row.append(add, go);
+  g.row.append(add, addTask, go);
   const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
   const node = el('div', { class: 'tn proj' }, g.row, kids);
-  node._r = { ...g, dot, go, add, kids };
+  node._r = { ...g, dot, go, add, addTask, kids };
   return node;
 };
 
@@ -423,6 +457,7 @@ Shell.patchProj = function (node, p, level) {
   r.dot.classList.toggle('hidden', !p.attn);
   r.go.setAttribute('href', Shell.hash('project', { project: p.name }));
   r.add.setAttribute('data-project', p.name);
+  r.addTask.setAttribute('data-project', p.name);
   r.kids.classList.toggle('hidden', !open);
   if (open) Shell.sync(r.kids, Shell.projKids(p, level), Shell.kidNode, Shell.patchKid);
   else if (r.kids.firstChild) r.kids.textContent = '';
@@ -438,6 +473,19 @@ Shell.sideNew = function (name) {
   const hit = launchPlace(p, 'session');
   if (hit) return launch({ mode: 'session', project: hit.project, repo: hit.repo });
   return Shell.openCreate('session', { project: name });
+};
+
+/* The task twin of the + (v0.5.101): a task from the project's row in two taps, the button, then Start. The launcher opens in task mode where Home's + task starts one
+   (components.js launchPlace: the repo a task went to last, else where the project works most), with the "in" select to change it. The drawer closes first. A project with
+   no place that takes a task gets the repo picker narrowed to it. */
+Shell.sideNewTask = function (name) {
+  Shell.closeDrawer();
+  const st = typeof state === 'undefined' ? null : state;
+  const p = st ? (st.projects || []).find((x) => x.name === name) : null;
+  if (!p) return false;
+  const hit = launchPlace(p, 'task');
+  if (hit) return launch({ mode: 'task', project: hit.project, repo: hit.repo });
+  return Shell.openCreate('task', { project: name });
 };
 
 /* ---------- directories under the current project: the repos and the project folder open into lazily loaded folders ---------- */
@@ -1419,15 +1467,19 @@ Shell.onTermLink = function (e) {
 
 /* ---------- create menu: repo picker sheet, then the launcher sheet (launch(), components.js) ---------- */
 
+/* The six things the + menu creates; chord is the key pair keymap.js binds to the same Shell.openCreate (c s, c t, c p, c r), '' for the two with no key. The command palette's
+   Create group (palette.js) reads this list too, so the menu, the keys and the palette cannot drift apart. */
+Shell.CREATE = [
+  { kind: 'session', label: 'New session', icon: 'console', chord: 'c s' },
+  { kind: 'task', label: 'New task', icon: 'git-branch', chord: 'c t' },
+  { kind: 'schedule', label: 'Schedule', icon: 'time', chord: '' },
+  { kind: 'project', label: 'New project', icon: 'folder-close', chord: 'c p' },
+  { kind: 'import', label: 'Import from GitHub', icon: 'download', chord: 'c r' },
+  { kind: 'batch', label: 'Batch prompt', icon: 'layers', chord: '' },
+];
+
 Shell.createItems = function () {
-  return [
-    { label: 'New session', icon: 'console', onClick: () => Shell.openCreate('session') },
-    { label: 'New task', icon: 'git-branch', onClick: () => Shell.openCreate('task') },
-    { label: 'Schedule', icon: 'time', onClick: () => Shell.openCreate('schedule') },
-    { label: 'New project', icon: 'folder-close', onClick: () => Shell.openCreate('project') },
-    { label: 'Import from GitHub', icon: 'download', onClick: () => Shell.openCreate('import') },
-    { label: 'Batch prompt', icon: 'layers', onClick: () => Shell.openCreate('batch') },
-  ];
+  return Shell.CREATE.map((e) => ({ label: e.label, icon: e.icon, onClick: () => Shell.openCreate(e.kind) }));
 };
 
 /* Shell.openCreate(kind, ctx): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is

@@ -120,7 +120,7 @@ export function installDom(w) {
       ev.target = ev.target || this;
       for (let n = this; n && n.nodeType === 1 && !ev._stopped; n = n.parentNode) {
         ev.currentTarget = n;
-        for (const fn of [...(n._on[ev.type] || [])]) fn(ev);
+        for (const fn of [...(n._on[ev.type] || [])]) { if (ev._stoppedNow) break; fn(ev); }          // stopImmediatePropagation: an event that sets _stoppedNow skips the other listeners of the same node
         if (ev.type === 'close') break;
       }
       return true;

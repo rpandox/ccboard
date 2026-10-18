@@ -59,7 +59,7 @@ test('two accounts: the chip shows the first two letters of the label, in the ac
   assert.ok(shown(c));
   assert.equal(text(c), 'Pe');
   assert.deepEqual(hues(c), [hueOf(w, A1)], 'exactly the hue of this key');
-  assert.equal(c.getAttribute('title'), 'Account: Personal (max) · usage per account');
+  assert.equal(c.getAttribute('title'), 'Account: Personal (max) · switch account or see usage');
   assert.equal(c.getAttribute('aria-label'), c.getAttribute('title'));
   assert.match(pill(w, '5h').getAttribute('title'), /^Personal · 5-hour window: 42% used · resets in /);
   assert.match(pill(w, '7d').getAttribute('title'), /^Personal · weekly window: 71% used · resets in /);
@@ -117,7 +117,7 @@ test('amber: the current account is at 85 % or more of a window and another has 
   // back under 85 %: its own hue again, normal title
   paint(w, { usage: usage(10, 84.9), ...stateOf([acct(A1, { current: true, name: 'Demo', rl_5h: 10, rl_7d: 84.9 }), other()]) });
   assert.deepEqual(hues(chip(w)), [hueOf(w, A1)]);
-  assert.equal(chip(w).getAttribute('title'), 'Account: Demo (max) · usage per account');
+  assert.equal(chip(w).getAttribute('title'), 'Account: Demo (max) · switch account or see usage');
 });
 
 test('amber needs real room elsewhere, window by window: not when the others are as full, not without readings, and the best of several is named', () => {
@@ -286,7 +286,7 @@ test('the account chip does not turn amber for a window that has reset since its
     ...stateOf([acct(A1, { current: true, label: 'Personal', rl_5h: 91, resets_5h: NOW - 3600 }), acct(A2, { label: 'Work', rl_5h: 10 })]) };
   paint(w, st);
   assert.equal(chip(w).classList.contains('hue-amber'), false);
-  assert.equal(chip(w).getAttribute('title'), 'Account: Personal (max) · usage per account');
+  assert.equal(chip(w).getAttribute('title'), 'Account: Personal (max) · switch account or see usage');
   const hot = { usage: usageOf({ used_percentage: 91, resets_at: NOW + 3600 }, { used_percentage: 20, resets_at: NOW + 200000 }, ago(60)),
     ...stateOf([acct(A1, { current: true, label: 'Personal' }), acct(A2, { label: 'Work', rl_5h: 10 })]) };
   paint(w, hot);

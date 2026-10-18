@@ -20,6 +20,10 @@
                 narrows Sessions and the tasks of other nodes to the node `box` (its handle or name, or a unique start of the handle; `@local` is this board) and filters by `fix`
                (issue #142) "Allow / Deny <session> on <node>" for the lead remote permission request and "Reply to <session> on <node>" for a remote session (the peek opens with its send
                 box focused); send mode takes the sessions of the nodes whose pair holds the sessions scope
+   Create     (v0.5.101) the Create (+) menu's six entries, New session, New task, Schedule, New project, Import from GitHub, Batch prompt, each opening what the menu entry opens
+                (Shell.openCreate) with its chord (c s, c t, c p, c r) as the row's kbd; the list is Shell.CREATE, shared with the menu
+   Accounts   (v0.5.101) "Switch Claude account to <name>" / "Switch Codex account to <name>" for each other saved login (accountSwitch / cxSwitch, the Settings rows' own calls) and
+                "Log in again as <name>" for a login the box was told is no good; listed by acctChoices (pages/agents.js)
    Palette.openHelp() draws Keymap.help() grouped. Everything here is built with el() and textContent. */
 'use strict';
 
@@ -398,6 +402,32 @@ Palette.epicGroup = function (query, close) {
   return items.length ? { id: 'epics', title: 'Epics', items, limit: Palette.PER_GROUP } : null;
 };
 
+/* The Create group: Shell.CREATE (shell.js) is the + menu's list, with the chord keymap.js binds to the same Shell.openCreate. null without the shell. */
+Palette.createGroup = function (close) {
+  if (typeof Shell === 'undefined' || !Shell || !Array.isArray(Shell.CREATE) || typeof Shell.openCreate !== 'function') return null;
+  const hints = { session: 'a terminal in a repo', task: 'now, later or scheduled', schedule: 'a run on a timer', project: 'a folder of repos', import: 'repos into a project', batch: 'one prompt over many repos' };
+  const words = { session: 'start agent claude codex terminal', task: 'start work job dispatch', schedule: 'cron recurring later job timer', project: 'folder repos wizard onboarding add', import: 'github clone repos download', batch: 'headless prompt many repos' };
+  return { id: 'create', title: 'Create', items: Shell.CREATE.map((e) => ({ id: 'cr:' + e.kind, label: e.label, hint: hints[e.kind] || '', kbd: e.chord || '', keywords: `create new add ${e.kind} ${words[e.kind] || ''}`,
+    run: () => { close(); Shell.openCreate(e.kind); } })) };
+};
+
+/* The Accounts group: a switch row for every other saved login and a Log in again row for a login the box was told is no good, from acctChoices (pages/agents.js). They run the
+   same accountSwitch / cxSwitch the Settings rows call, and accountLogin for a Claude login (Settings > Accounts, the sign-in started) or open the Codex row there. null with none. */
+Palette.accountGroup = function (close, query) {
+  if (typeof acctChoices !== 'function' || typeof state === 'undefined' || !state) return null;
+  let choices = [];
+  try { choices = acctChoices(state); } catch (e) { console.error('ccboard palette accounts', e); return null; }
+  const items = [];
+  for (const c of choices) {
+    const agent = c.agent === 'codex' ? 'Codex' : 'Claude';
+    if (c.switchable) items.push({ id: `ac:${c.agent}:${c.key}`, label: `Switch ${agent} account to ${c.name}`, hint: [c.plan, 'saved login'].filter(Boolean).join(' · '), keywords: `account switch login ${c.agent} ${c.name}`,
+      run: () => { close(); c.run(); } });
+    if (c.flagged && c.canRelogin) items.push({ id: `ar:${c.agent}:${c.key}`, label: `Log in again as ${c.name}`, hint: `${agent} · login not valid any more`, keywords: `account login sign in again expired ${c.agent} ${c.name}`,
+      run: () => { close(); c.relogin(); } });
+  }
+  return items.length ? { id: 'accounts', title: 'Accounts', items, limit: query ? Palette.PER_GROUP : 4 } : null;
+};
+
 Palette.catalog = function (ctx, query) {
   const groups = [];
   const close = () => Palette.close();
@@ -436,6 +466,10 @@ Palette.catalog = function (ctx, query) {
   if (typeof state !== 'undefined' && state?.restart) routes.push({ id: 'settings:restart', label: 'Restart board', hint: 'Settings > Options, then confirm',
     run: () => { close(); Palette.go('#/settings?sec=options'); } });
   groups.push({ id: 'routes', title: 'Routes', items: routes });
+  const create = Palette.createGroup(close);                    // v0.5.101: the + menu's entries and their chords; the account switches below
+  if (create) groups.push(create);
+  const accounts = Palette.accountGroup(close, query);
+  if (accounts) groups.push(accounts);
   if (hub) {
     const items = [];
     Nodes.list().forEach((r, i) => {
