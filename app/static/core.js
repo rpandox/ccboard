@@ -746,7 +746,8 @@ async function poll(force) {
     state = s;
     if (typeof accountOverlay === 'function') accountOverlay(s);       // an account switch still running, the demo's make-believe login (pages/agents.js)
     ui.offline = false;
-    if (changed || force) render(force);
+    const survived = typeof sessionClosingPrune === 'function' && sessionClosingPrune(s);        // #311: a kill the session outlived
+    if (changed || force || survived) render(force || survived);
     else { renderHeader(); renderUsage(); }
     rememberState(j, changed);
   } catch (e) {

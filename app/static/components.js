@@ -44,18 +44,38 @@ function confirmButton(key, label, action, quiet, onChange) {
   return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => { if (onChange) { ui.confirm = key; repaint(); } else confirmArm(key); }, text: label });
 }
 
-/* #311: Kill paints at once. The tmux names whose DELETE is in flight; a session row (agents.js sessionCard) dims and says "closing…" for as long as its name is here, and a poll that
-   still lists the session does not bring it back. The answer settles it: a refusal puts the row back and says why in the board's words, a success leaves the next poll to drop the row. */
-const sessionClosing = new Set();
+/* #311: Kill paints at once. The tmux names that are closing -> 0 while the DELETE is in flight, then the time the name stops counting. A session row (agents.js sessionCard) dims and says
+   "closing…" for as long as its name is here, and a poll that still lists the session does not bring it back. A refusal puts the row back at once and says why in the board's words.
+   A success keeps the name until a poll no longer lists the session (sessionClosingPrune, called by every poll), or SESSION_CLOSING_TTL later if the session survived the kill. */
+const sessionClosing = new Map();
+const SESSION_CLOSING_TTL = 15000;
 
 function sessionClosingRepaint() { if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); }
 
+/* Drop the settled names the state no longer lists, and the ones past their time. True when a name was dropped by time (the caller repaints: the survivor comes back). */
+function sessionClosingPrune(st) {
+  let expired = false;
+  if (!sessionClosing.size) return expired;
+  const live = new Set();
+  for (const p of ((st && st.projects) || [])) {
+    for (const r of [p.root, ...(p.repos || [])]) for (const x of ((r && r.sessions) || [])) live.add(x.tmux);
+    for (const x of (p.orphan_sessions || [])) live.add(x.tmux);
+  }
+  const now = Date.now();
+  for (const [tmux, until] of Array.from(sessionClosing)) {
+    if (!until) continue;                                                        // the DELETE is still out
+    if (!live.has(tmux)) sessionClosing.delete(tmux);
+    else if (now > until) { sessionClosing.delete(tmux); expired = true; }
+  }
+  return expired;
+}
+
 async function sessionKill(tmux) {
-  sessionClosing.add(tmux);
+  sessionClosing.set(tmux, 0);
   sessionClosingRepaint();
   try {
     await api('DELETE', `/api/sessions/${encodeURIComponent(tmux)}`);
-    sessionClosing.delete(tmux);
+    sessionClosing.set(tmux, Date.now() + SESSION_CLOSING_TTL);
     return true;
   } catch (e) {
     sessionClosing.delete(tmux);

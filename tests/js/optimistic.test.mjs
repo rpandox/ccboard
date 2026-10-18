@@ -62,8 +62,42 @@ test('Confirm Kill: the row is a dimmed "closing…" ghost with its actions off 
   assert.ok(row().classList.contains('closing'), 'still closing: the poll does not resurrect it');
   assert.equal(text(row().querySelector('.rr-meta')), 'closing…');
   await h.release();
-  assert.equal(w.run('sessionClosing.size'), 0, 'settled: nothing is pending any more');
   assert.equal(toasts(w).length, 0);
+  assert.ok(row().classList.contains('closing'), 'the DELETE came back: the row does not un-dim');
+});
+
+/** What a poll does with an answer: the state is replaced, the settled kills are pruned against it, the page is painted. */
+const pollWith = (w, st) => { w.ctx.__poll = st; return w.run('state = __poll; sessionClosingPrune(state); updateCurrentPage(state)'); };
+const withoutSession = (st, tmux) => ({ ...st, projects: st.projects.map((p) => ({ ...p, repos: p.repos.map((r) => ({ ...r, sessions: r.sessions.filter((x) => x.tmux !== tmux) })) })) });
+
+test('a killed row stays closing after the DELETE resolves, through a poll that still lists the session, until a poll without it removes the row and clears the name', async () => {
+  const { w, row, confirm, h } = await killWorld();
+  const st = w.get('state');
+  confirm().click();
+  await h.release();
+  assert.equal(w.run('sessionClosing.size'), 1, 'the name is kept: the board has not shown the session gone');
+  pollWith(w, { ...st });                                              // the DELETE is done, the poll still lists the session
+  assert.ok(row(), 'still listed');
+  assert.ok(row().classList.contains('closing'), 'still a ghost');
+  assert.equal(text(row().querySelector('.rr-meta')), 'closing…');
+  assert.equal(w.run('sessionClosing.size'), 1);
+  pollWith(w, withoutSession(st, S1));                                 // the next poll no longer has it
+  assert.equal(row(), null, 'the row is gone');
+  assert.equal(w.run('sessionClosing.size'), 0, 'and the name is cleared');
+});
+
+test('a session that outlives its kill comes back after the safety expiry; a refused DELETE drops the name at once', async () => {
+  const { w, row, confirm, h } = await killWorld();
+  const st = w.get('state');
+  confirm().click();
+  await h.release();
+  w.run(`sessionClosing.set(${JSON.stringify(S1)}, Date.now() - 1)`);    // 15 s went by
+  assert.equal(w.run('sessionClosingPrune(state)'), true, 'the prune says a name expired, so the poll repaints');
+  pollWith(w, { ...st });
+  assert.equal(row().classList.contains('closing'), false, 'the survivor is back');
+  assert.notEqual(text(row().querySelector('.rr-meta')), 'closing…');
+  assert.equal(w.run('sessionClosing.size'), 0);
+  assert.equal(w.run('sessionClosingPrune(state)'), false);
 });
 
 test('a refused Kill puts the row back, the Kill button too, and says why in the board\'s words', async () => {
