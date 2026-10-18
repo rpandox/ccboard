@@ -45,7 +45,7 @@ The peer side: a wrapper per row, registered under /api/node/ with the row's sco
   board's own routes). The card and state rows reuse the routes that already exist; they audit a call only when it carries an acting user (a hub poll does
   not, or the table would fill with 4000 reads a day per pair).
 
-What a peer's reads show (README): `read` shows task titles, session names and screen tails. The pane row is the last 40 lines at most, control characters out,
+What a peer's reads show (docs/nodes/hub-and-relay.md): `read` shows task titles, session names and screen tails. The pane row is the last 40 lines at most, control characters out,
 anything shaped like a node or device token replaced; a person may have typed a secret into a pane, so give `read` only to a board you trust.
 
 guard_launch(fields) -> [refusal]: see its text. Three rows start or steer an agent (issue #141): `task_create` (scope tasks), `task_dispatch` (scope tasks; a

@@ -281,7 +281,7 @@ def check(device: dict, user: str, folder: str) -> dict:
         fix = "Wake the device and check its Tailscale connection, then Check again."
     elif "permission denied" in diagnostic or "access denied" in diagnostic or "does not permit" in diagnostic:
         message = f"The tailnet rule denied SSH access to {name} as {user}."
-        fix = ("See README → Devices without a board: use an SSH ACL check rule (12-hour check period) "
+        fix = ("See docs/nodes/device-check.md: use an SSH ACL check rule (12-hour check period) "
                "for an untagged board, or accept for a tagged board. Grant only this board access to the dedicated user.")
     elif result["login_url"]:
         message = f"{name} asks for a Tailscale check."

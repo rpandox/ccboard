@@ -3,7 +3,7 @@
 #
 #   scripts/qa_terminal.sh [BASE_URL] [OUT_DIR]
 #
-#   BASE_URL  a board started with the dev bypass, default http://127.0.0.1:8777 (see README "Development"): with
+#   BASE_URL  a board started with the dev bypass, default http://127.0.0.1:8777 (see docs/development.md): with
 #             CCBOARD_DEV_BYPASS_USER set the board serves scripts/dev/fake_tty/ at /tty/, a stand-in for ttyd (window.term,
 #             .xterm-screen, a wheel counter), so the page runs without ttyd. Without the bypass /tty/ is a 404 and the script stops (exit 2).
 #   OUT_DIR   screenshots land here as term-<width>.png, default ${TMPDIR:-/tmp}/ccboard-qa-terminal
@@ -115,7 +115,7 @@ http_code() { curl -s -o /dev/null -w '%{http_code}' ${CURL_H[@]+"${CURL_H[@]}"}
 code="$(http_code "$BASE/")"
 case "$code" in
   200) ;;
-  000|"") echo "qa_terminal: $BASE is not reachable (start the board with CCBOARD_DEV_BYPASS_USER, see README Development)" >&2; exit 2 ;;
+  000|"") echo "qa_terminal: $BASE is not reachable (start the board with CCBOARD_DEV_BYPASS_USER, see docs/development.md)" >&2; exit 2 ;;
   403) echo "qa_terminal: $BASE answered 403: start the board with CCBOARD_DEV_BYPASS_USER=<user> or pass QA_HEADER" >&2; exit 2 ;;
   *) echo "qa_terminal: warning: GET $BASE/ answered $code" >&2 ;;
 esac
@@ -124,7 +124,7 @@ esac
 if [ "$REAL" != 1 ]; then
   sandboxed="$(curl -s ${CURL_H[@]+"${CURL_H[@]}"} "$BASE/api/state" 2>/dev/null | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("dev",{}).get("sandboxed") is True else "no")' 2>/dev/null || true)"
   if [ "$sandboxed" != yes ]; then
-    echo "qa_terminal: $BASE does not report dev.sandboxed=true in /api/state: refusing to run against it. Start the dev board with PROJECTS_DIR, CCBOARD_DATA_DIR, CLAUDE_CONFIG_DIR and CODEX_HOME on temp paths and scripts/dev/fake_agents first on PATH (README, Development)" >&2
+    echo "qa_terminal: $BASE does not report dev.sandboxed=true in /api/state: refusing to run against it. Start the dev board with PROJECTS_DIR, CCBOARD_DATA_DIR, CLAUDE_CONFIG_DIR and CODEX_HOME on temp paths and scripts/dev/fake_agents first on PATH (docs/development.md)" >&2
     exit 2
   fi
 fi
@@ -610,7 +610,7 @@ font_spike_fake() {
 }
 
 # The spike against a real ttyd (QA_FONT=1): the numbers the verdict needs. Cursor and box-drawing alignment, iOS Safari PWA and Android
-# Chrome stay by-eye checks on the device (README, "Font spike").
+# Chrome stay by-eye checks on the device (docs/guide/terminal.md).
 font_spike_real() {
   local tag="$FW(font spike, real ttyd)" got base
   font_load 0 "" || { fail "$tag: the page did not settle for the baseline load"; return; }
@@ -867,7 +867,7 @@ fi
 "$B" goto about:blank >/dev/null 2>&1
 
 echo
-if [ -n "$FONT_LINES" ]; then echo "font spike at ${FW}px wide (cols x rows after fit at 13 and 11 px; the cursor / box-drawing alignment and the phones are by-eye checks, see README):"; printf '%s' "$FONT_LINES"; echo; fi
+if [ -n "$FONT_LINES" ]; then echo "font spike at ${FW}px wide (cols x rows after fit at 13 and 11 px; the cursor / box-drawing alignment and the phones are by-eye checks, see docs/guide/terminal.md):"; printf '%s' "$FONT_LINES"; echo; fi
 if [ "$idx" -eq 0 ]; then echo "qa_terminal: no viewport matched QA_WIDTHS='${QA_WIDTHS:-}'" >&2; exit 2; fi
 if [ "$FAILS" -gt 0 ]; then
   echo "FAIL: $FAILS assertion(s) failed"

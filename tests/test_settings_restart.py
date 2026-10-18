@@ -9,6 +9,7 @@ import pytest
 from starlette.requests import Request
 
 from app import config, main, nodes, restart
+from tests.docs_util import CONFIGURATION, read_doc
 
 URL = '/api/settings/restart'
 PERSON = {'Tailscale-User-Login': 'alice', 'X-CCBoard': '1'}
@@ -272,7 +273,7 @@ def test_old_docker_hint_refreshes_installed_compose_first(board):
     assert 'deploy/docker-compose.yml' in info['why']
     assert info['hint'].index('./install.sh') < info['hint'].index('force-recreate')
     assert response.json()['hint'] == info['hint']
-    readme = Path('README.md').read_text().split('- **Docker:**', 1)[1].split('\n', 1)[0]
+    readme = read_doc(CONFIGURATION).split('- **Docker:**', 1)[1].split('\n', 1)[0]
     assert 'refresh the installed compose file first' in readme
     assert './install.sh' in readme and 'deploy/docker-compose.yml' in readme
 

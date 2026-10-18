@@ -4,7 +4,7 @@
 #
 #   CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 #
-# CCBOARD_RUNTIME=docker runs the board as a container (ghcr.io/rpandox/ccboard) instead of ccboard.service; see the README.
+# CCBOARD_RUNTIME=docker runs the board as a container (ghcr.io/rpandox/ccboard) instead of ccboard.service; see docs/install/docker.md.
 #
 # Every setting is an environment variable; previous values are kept in /etc/ccboard/env.
 set -euo pipefail
@@ -58,7 +58,7 @@ wsl_systemd_guard() { # refuse early: the units, the tmux server and the backup 
       [boot]
       systemd=true
   then run 'wsl --shutdown' in Windows PowerShell, open the distro again and check: systemctl is-system-running
-  (needs WSL 0.67.6 or newer; [boot] is documented for Windows 11 and Server 2022, on Windows 10 it is unverified). See the README, Windows (WSL2)."
+  (needs WSL 0.67.6 or newer; [boot] is documented for Windows 11 and Server 2022, on Windows 10 it is unverified). See docs/install/windows-wsl2.md."
 }
 wsl_drive_warn() { # label path -> a warning when the path is below /mnt/ (a Windows drive: no real owners or modes, weak change stamps, slow)
   case "$2" in /mnt/*) warn "$1 is on a Windows drive ($2): file owners and modes are not real there, change stamps are weak and it is slow. Keep it inside the distro (for example under /home/<user>).";; esac
@@ -74,7 +74,7 @@ wsl_resolve_placement() { # sets CCBOARD_TAILSCALE_PLACEMENT (wsl|host) and, for
   local where url port
   case "${CCBOARD_TAILSCALE_PLACEMENT:-}" in
     wsl|host) ;;
-    "") have tailscale || die "tailscale is not installed in this distro. Install it here (recommended: https://tailscale.com/download/linux), or, only if you accept that every program on this Windows PC (and every other Windows user signed in to it) can reach the board through Windows' localhost forwarding and claim to be any allowed user, because the board trusts the Tailscale-User-Login header on its loopback port, run Tailscale on Windows with CCBOARD_TAILSCALE_PLACEMENT=host (README, Windows (WSL2))"
+    "") have tailscale || die "tailscale is not installed in this distro. Install it here (recommended: https://tailscale.com/download/linux), or, only if you accept that every program on this Windows PC (and every other Windows user signed in to it) can reach the board through Windows' localhost forwarding and claim to be any allowed user, because the board trusts the Tailscale-User-Login header on its loopback port, run Tailscale on Windows with CCBOARD_TAILSCALE_PLACEMENT=host (docs/install/windows-wsl2.md)"
         CCBOARD_TAILSCALE_PLACEMENT=wsl;;
     *) die "CCBOARD_TAILSCALE_PLACEMENT must be wsl or host (got '$CCBOARD_TAILSCALE_PLACEMENT')";;
   esac
@@ -288,7 +288,7 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_AUTOCLOSE_GRACE:=45}"     # seconds between a task session's Stop and the board closing it (the app reads an empty value as 45)
 : "${CCBOARD_CODEX_HOOKS_ASYNC:=1}"    # 0 = write every Codex hook synchronous, for a Codex build that skips async hooks (scripts/codex_hooks.py reads it below)
 : "${CCBOARD_CLAUDE_ULTRACODE_FLAG:=}" # empty = ask `claude --help`; 1 or 0 records the box check whether `claude --effort ultracode` works
-: "${CCBOARD_PRICE_TABLE:=}"           # empty = the built-in list prices behind the Usage page's estimates; a JSON file adds to or replaces them (README, Cost)
+: "${CCBOARD_PRICE_TABLE:=}"           # empty = the built-in list prices behind the Usage page's estimates; a JSON file adds to or replaces them (docs/guide/usage-and-cost.md)
 : "${CCBOARD_SUBAGENT_MODEL:=}"        # empty = subagents use the main model; haiku, sonnet, opus or a full model id sets CLAUDE_CODE_SUBAGENT_MODEL on sessions and runs the board starts
 : "${CCBOARD_HEADLESS_FABLE_CAP:=}"    # empty = 25; the most Max $ a scheduled or batch Claude run that resolves to Fable may carry (it also needs an acknowledgement)
 : "${CCBOARD_TAILSCALE_PLACEMENT:=}"   # WSL only: wsl = Tailscale inside this distro, host = on Windows (empty = wsl when the distro has tailscale, else host); stays empty elsewhere
@@ -722,7 +722,7 @@ mem_service_setup() { # after the other units are enabled: ccboard-mem.service o
       sudo systemctl disable --now "$u" >/dev/null 2>&1 || warn "could not disable $u"
       note "$u disabled: the claude-mem worker is started by Claude's hooks again (the unit file stays)"
     elif [ "$CCBOARD_CLAUDE_MEM" = 1 ]; then
-      note "$u is off (CCBOARD_MEM_SERVICE=1 runs the worker from a clean environment; see the README)"
+      note "$u is off (CCBOARD_MEM_SERVICE=1 runs the worker from a clean environment; see docs/guide/claude-mem.md)"
     fi
     return 0
   fi
@@ -759,7 +759,7 @@ mem_service_setup() { # after the other units are enabled: ccboard-mem.service o
     note "$u running (worker pid $(systemctl show -p MainPID --value "$u" 2>/dev/null || echo '?'))"
     mem_autostart_hint "$u" "$bun" "$worker" "$data"
   else
-    warn "$u is not running: journalctl -u ccboard-mem -n 30. A worker a hook started in the meantime would be the cause (see the README, claude-mem)"
+    warn "$u is not running: journalctl -u ccboard-mem -n 30. A worker a hook started in the meantime would be the cause (see docs/guide/claude-mem.md)"
   fi
   return 0
 }

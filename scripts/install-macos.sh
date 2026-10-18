@@ -7,7 +7,7 @@
 #   CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 ./install.sh
 #
 # Every setting is an environment variable; previous values are kept in <data dir>/env (mode 0600, read by the board itself because launchd
-# has no EnvironmentFile). Settings are the keys `python -m app.config keys` lists; the README has the table. Installer-only switches,
+# has no EnvironmentFile). Settings are the keys `python -m app.config keys` lists; docs/configuration.md has the table. Installer-only switches,
 # none of them remembered:
 #   CCBOARD_LAUNCHD_DOMAIN=user    the experimental Background-session layout (jobs in user/<uid> instead of gui/<uid>)
 #   CCBOARD_KEEP_AWAKE=1           also run dev.ccboard.awake (caffeinate: no idle sleep)

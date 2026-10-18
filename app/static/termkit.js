@@ -36,7 +36,7 @@ const TermKit = (() => {
   /* The opt-in terminal font (v0.5.8, frozen in v0.5.21: OFF by default, kept as is). ttyd's own page asks for system fonts, which differ
      per device (a phone has no Menlo, no Consolas), so cell width, cursor and box drawing vary. bind() can load the vendored JetBrains
      Mono into the iframe instead. No phone or laptop was measured, so the board keeps ttyd's own fonts; ccboard:term:font=1 (or bind's
-     `font: true`, or ?font=1 on the page URL) turns it on per browser; see TermKit.fontState and the README, "The terminal page". */
+     `font: true`, or ?font=1 on the page URL) turns it on per browser; see TermKit.fontState and docs/guide/terminal.md. */
   const FONT_FLAG = 'ccboard:term:font';
   const FONT_FAMILY = 'JetBrains Mono';
   const FONT_URL = '/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2';

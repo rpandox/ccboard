@@ -14,7 +14,7 @@
 #   * NO live home, NO tmux socket, NO tailscale socket, NO /etc/ccboard, NO env_file (none of the live settings are inherited), NO docker socket,
 #     NO Watchtower, and the entrypoint skips every host mutation (CCBOARD_SHADOW=1): no hooks, no tmux.conf, no MCP registration;
 #   * no claude-mem worker, no restic repository, no recovery of sessions, no notifications, no scheduled job (the database is new).
-# Restored data is tried here by copying a restored ccboard.db into ~/.local/share/ccboard-shadow (README, "Restoring from a backup").
+# Restored data is tried here by copying a restored ccboard.db into ~/.local/share/ccboard-shadow (docs/backup-and-restore.md).
 name: ccboard-shadow
 
 services:

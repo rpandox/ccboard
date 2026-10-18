@@ -33,7 +33,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$(id -u)" -ne 0 ] || die "run as the user who installed ccboard, not as root"
-[ "$(uname -s)" = Darwin ] || die "this script is for macOS (found $(uname -s)); on Ubuntu see the Uninstall section of the README"
+[ "$(uname -s)" = Darwin ] || die "this script is for macOS (found $(uname -s)); on Ubuntu see docs/uninstall.md"
 UID_N=$(id -u)
 HOME_DIR=$HOME
 LA_DIR=$HOME_DIR/Library/LaunchAgents

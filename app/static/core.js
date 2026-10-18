@@ -131,7 +131,7 @@ function svg(tag, attrs, ...children) {
    storage reads as "not demo". */
 /* Demo mode (?demo=1, or localStorage ccboard:demo = 1) is the board's QA harness: demoApi() below answers GETs from app/static/demo/*.json and
    every write with {ok:true}, so each screen renders with realistic data and no tmux. Decision v0.5.21: kept (scripts/qa-ui.sh and the
-   screenshot rule depend on it). README, "Demo mode" says what is faked and how the fixtures are refreshed. */
+   screenshot rule depend on it). docs/development.md says what is faked and how the fixtures are refreshed. */
 let demoFlag = null;
 function demoOn() {
   if (demoFlag === null) { try { demoFlag = /[?&]demo=1/.test(location.search) || localStorage.getItem('ccboard:demo') === '1'; } catch (_) { demoFlag = false; } }

@@ -23,7 +23,7 @@ Severity scale:
 
 ## Settings follow-up (v0.5.83)
 
-Settings writes now require a signed-in person, the CSRF header and a matching Origin when present. Hook, hub, node and MCP callers cannot use them. The file-only `CCBOARD_PAGE_WIDEN` switch gates confirmed changes; bypass and other access controls remain file/installer-only. See [Settings permission classes](../README.md#settings-permission-classes) and `tests/test_settings_widen.py` for the threat boundary, legacy page migration and pinned keys. This supersedes the broad hook-token route statements below for Settings writes.
+Settings writes now require a signed-in person, the CSRF header and a matching Origin when present. Hook, hub, node and MCP callers cannot use them. The file-only `CCBOARD_PAGE_WIDEN` switch gates confirmed changes; bypass and other access controls remain file/installer-only. See [Settings permission classes](security.md#settings-permission-classes) and `tests/test_settings_widen.py` for the threat boundary, legacy page migration and pinned keys. This supersedes the broad hook-token route statements below for Settings writes.
 
 ## Route table
 

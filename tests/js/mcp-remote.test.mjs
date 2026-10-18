@@ -2,13 +2,10 @@
 // the one-time token dialog with the Claude Code and Codex commands, and the empty-URL warning. Real core.js, components.js, router.js and pages/*.js on minidom's
 // DOM through tests/js/world.mjs; api() is the recorder from world.mjs, answered by a small fake of the /api/mcp routes.
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { MCP_PAGE, readDoc } from './docs-util.mjs';
 import { calls, fakeState, homeWorld, page, plain, text, tick } from './world.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TOKEN = 'ccbmcp_' + 'T3st'.repeat(10) + 'abc';                 // the shape of a real one; only ever in tests
 const URL0 = 'https://board.example';
 const row = (over = {}) => ({ id: 'a1b2c3d4e5f6', name: 'laptop', scopes: ['read', 'tasks'], created_at: '2026-10-01T10:00:00Z', last_used_at: null, last_user: null,
@@ -219,13 +216,13 @@ test('no public URL: a visible warning, and the dialog offers no command with a 
   btn(d, 'Done').click();
 });
 
-test('the command templates are the README\'s, word for word', () => {
+test('the command templates are the MCP page\'s, word for word', () => {
   const { w } = mcpWorld();
-  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const readme = readDoc(MCP_PAGE);
   const url = 'https://<board-host>:<port>/mcp';
   for (const kind of ['claude', 'codex']) {
     const cmd = w.run(`mcpCommand(${JSON.stringify(kind)}, '<token>', ${JSON.stringify(url)})`);
-    assert.ok(readme.includes(cmd), `README.md lacks the ${kind} command:\n${cmd}`);
+    assert.ok(readme.includes(cmd), `${MCP_PAGE} lacks the ${kind} command:\n${cmd}`);
   }
   assert.equal(w.run("mcpUrl({ config: { public_url: 'https://board.example/' } })"), 'https://board.example/mcp');
   assert.equal(w.run("mcpUrl({ config: { public_url: '' } })"), '');
