@@ -437,6 +437,20 @@ async function api(method, path, body) {
   return data;
 }
 
+/* An error from api() or a bare fetch, in words for a panel (#309). The board's own sentence (body {detail|error}) is kept as written; a failure with no
+   such sentence says what happened instead of the transport text: no response at all (TypeError 'Failed to fetch', Safari's 'Load failed', Firefox's
+   'NetworkError ...') is 'the board did not answer', an HTTP status without a board sentence ('503 Service Unavailable' from a proxy) names the status.
+   Any other error (one a caller threw itself) keeps its message. api()'s own throw contract is unchanged. */
+function errorText(e) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : null;
+  const said = b && [b.detail, b.error].find((x) => typeof x === 'string' && x.trim());
+  if (said) return said;
+  const msg = String((e && e.message) || '').trim();
+  if (e && e.status && (!msg || /^\d{3}(\s|$)/.test(msg))) return `the board answered with an error (HTTP ${e.status})`;     // api()'s own fallback message is '<status> <statusText>'
+  if (!e || e instanceof TypeError || /failed to fetch|load failed|networkerror|network request failed/i.test(msg)) return 'the board did not answer';
+  return msg || 'the board did not answer';
+}
+
 const ui = { openForm: null, confirm: null, error: null, notice: null, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
 let state = null;
 let pollTimer = null;

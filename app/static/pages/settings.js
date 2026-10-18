@@ -601,7 +601,7 @@ function settingsOptions(p) {
   }, (err) => {
     if (p.ccOptionsRequest !== request) return;
     p.textContent = '';
-    p.append(el('p', { class: 'bad', role: 'alert', text: 'Could not load options: ' + err.message }),
+    p.append(el('p', { class: 'bad', role: 'alert', text: 'Could not load options: ' + errorText(err) }),
       el('button', { type: 'button', text: 'Retry', onclick: () => settingsOptions(p) }));
   });
 }
@@ -1047,7 +1047,7 @@ function settingsNdRemoveSheet(opener, rec) {
     let pv = null;
     try { pv = await api('POST', `/api/nodes/${encodeURIComponent(p.id)}/remove-preview`); } catch (e) {
       if (shell !== s.shell) return;
-      info.textContent = `Could not check which other pairs would stay (${e.message}). Removing still works; look at Who can control this node afterwards.`;
+      info.textContent = `Could not check which other pairs would stay (${errorText(e)}). Removing still works; look at Who can control this node afterwards.`;
       go.disabled = false;
       return;
     }
@@ -1976,7 +1976,7 @@ async function settingsBareLoad() {
   const seq = ++B.seq;
   B.busy = true; B.err = ''; settingsBarePaint();
   try { const data = await api('GET', '/api/bare'); if (seq === B.seq) B.data = data; }
-  catch (e) { if (seq === B.seq) B.err = e.message || 'Could not read the devices. Try Refresh devices.'; }
+  catch (e) { if (seq === B.seq) B.err = `Could not read the devices: ${errorText(e)}`; }
   finally { if (seq === B.seq) { B.busy = false; settingsBarePaint(); } }
 }
 
@@ -2441,7 +2441,7 @@ function settingsMcpRepaint() { if (settingsMcp.paint) settingsMcp.paint(); }
 async function settingsMcpLoad(force) {
   if (!force && settingsMcp.at && Date.now() - settingsMcp.at < 15000) return;
   settingsMcp.at = Date.now();
-  try { settingsMcpAdopt(await api('GET', '/api/mcp/tokens')); settingsMcp.err = ''; } catch (e) { settingsMcp.at = 0; settingsMcp.err = `Could not read the device tokens: ${e.message}`; }
+  try { settingsMcpAdopt(await api('GET', '/api/mcp/tokens')); settingsMcp.err = ''; } catch (e) { settingsMcp.at = 0; settingsMcp.err = `Could not read the device tokens: ${errorText(e)}`; }
   settingsMcpRepaint();
 }
 

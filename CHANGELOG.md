@@ -12,6 +12,14 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.103 - 2026-10-18
+
+### Fixed
+- The banner for a stopped tmux server now names the start command for this box (`launchctl kickstart ...` on a Mac, `sudo systemctl start ccboard-tmux` on Linux), the same command Doctor shows, instead of the Linux one everywhere. It also has an Open Doctor button that goes to Settings > Doctor (#309).
+- Panels no longer show raw transport text when the board is unreachable. Usage ("Could not load the usage summary", "... the limit series", "... the session series"), Doctor, the Agents outside threads, the team page saves, and the Settings reads of options, devices, device tokens and the node removal preview now say "the board did not answer" when nothing came back, and "the board answered with an error (HTTP 503)" when a proxy answered without a sentence of its own. A reason the board wrote itself is shown as written (#309).
+
+Upgrade: nothing to do.
+
 ## v0.5.102 - 2026-10-18
 
 ### Added

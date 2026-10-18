@@ -215,7 +215,7 @@ Usage.points = function (P) {
   return Math.max(120, Math.min(400, Math.round(w / 3 / 20) * 20));
 };
 
-Usage.errText = function (e) { return String((e && e.message) || e || 'request failed'); };
+Usage.errText = function (e) { return errorText(e); };
 
 /* ---------- live sessions (for the Open button) ---------- */
 

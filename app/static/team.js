@@ -238,7 +238,7 @@ async function teamShare(block, on) {
     else { swap(before); teamStore.errors[key] = 'Not saved: the board answered without the repository.'; }
   } catch (e) {
     swap(before);
-    teamStore.errors[key] = `Not saved: ${(e && e.message) || 'the board did not answer'}`;
+    teamStore.errors[key] = `Not saved: ${errorText(e)}`;
   }
   delete teamStore.saving[key];
   teamNotify();
@@ -250,7 +250,7 @@ async function teamShare(block, on) {
 async function teamRefresh() {
   let r = null;
   try { r = await api('POST', '/api/team/refresh'); } catch (e) {
-    if (typeof pageToast === 'function') pageToast(`Could not ask for a new read: ${(e && e.message) || 'the board did not answer'}`, 'bad');
+    if (typeof pageToast === 'function') pageToast(`Could not ask for a new read: ${errorText(e)}`, 'bad');
     return false;
   }
   teamSoon([2000, 6000]);
@@ -290,7 +290,7 @@ async function teamPresPut(block, payload, optimistic) {
     const b = e && e.body && typeof e.body === 'object' ? e.body : null;
     if (e && e.status === 409 && b && b.needs_confirm === true && payload.confirm_public !== true) {
       teamStore.confirm[key] = { text: teamText(b.error, 300), lists: (Array.isArray(b.public_lists) ? b.public_lists : []).map((x) => teamText(x, 200)).filter(Boolean).slice(0, 8), body: teamBody(b.next_body) };
-    } else teamStore.presErrors[key] = `Not saved: ${(e && e.message) || 'the board did not answer'}`;
+    } else teamStore.presErrors[key] = `Not saved: ${errorText(e)}`;
   }
   delete teamStore.presSaving[key];
   teamNotify();
@@ -326,7 +326,7 @@ async function teamPause(on) {
     else { teamStore.pres = before; teamStore.presErrors['*'] = 'Not saved: the board answered without the presence settings.'; }
   } catch (e) {
     teamStore.pres = before;
-    teamStore.presErrors['*'] = `Not saved: ${(e && e.message) || 'the board did not answer'}`;
+    teamStore.presErrors['*'] = `Not saved: ${errorText(e)}`;
   }
   delete teamStore.presSaving['*'];
   teamNotify();
