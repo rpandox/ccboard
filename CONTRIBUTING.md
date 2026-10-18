@@ -1,6 +1,29 @@
 # Contributing
 
-This guide takes an issue from pick-up to a merged phase. It is written for people and for agents (Claude Code, Codex). The repository is public: no emails, tokens, host names or personal paths anywhere.
+Thank you for helping. The first half of this file is the short path for a person: fork, run the tests, try the board, open a pull request. The second half, from "For agents and the maintainer's workflow", is how the maintainer runs Claude Code and Codex on issues; you can skip it. The repository is public: no emails, tokens, host names or personal paths anywhere.
+
+## The short path
+
+1. **Fork and clone.** Fork <https://github.com/rpandox/ccboard> on GitHub, then `git clone https://github.com/<you>/ccboard`, `cd ccboard` and `git switch -c my-change`.
+2. **Python environment.** CI uses Python 3.14: `python3.14 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock`. The lock file holds the exact versions with hashes; [docs/development.md](docs/development.md) says how it is regenerated.
+3. **Run the tests.** The command CI uses is `CCBOARD_TEST_NO_CLAUDE=1 .venv/bin/pytest -q`. While you work, run only the files for what you touched, for example `.venv/bin/pytest -q tests/test_docs.py`. The tests use temp directories and cannot reach your real home, and they never run the real `claude` or `codex`. A test that needs a real tmux, systemd or a Mac is skipped on a machine that has none.
+4. **Run the JavaScript tests.** `node --test tests/js/*.test.mjs` (CI uses Node 22). There is nothing to install: the frontend is plain scripts with no build step.
+5. **Try the board without Tailscale.** The demo mode draws every screen from fixtures, with no tmux, no agent and no login. Start a board on temporary folders with the stand-in agents first on `PATH`:
+
+   ```sh
+   T=$(mktemp -d)
+   PATH=$PWD/scripts/dev/fake_agents:$PATH PROJECTS_DIR=$T/projects CCBOARD_DATA_DIR=$T/data CLAUDE_CONFIG_DIR=$T/claude CODEX_HOME=$T/codex \
+     CCBOARD_DEV_BYPASS_USER=dev .venv/bin/uvicorn app.main:app --port 8000
+   ```
+
+   Then open `http://127.0.0.1:8000/?demo=1`. `CCBOARD_DEV_BYPASS_USER` skips the identity check and is for development only: it is ignored under systemd and in the container. [docs/development.md](docs/development.md#demo-mode) lists what the demo fakes.
+6. **Change one thing, and add its test.** A change that alters behavior comes with a test that fails without it. A change to the interface needs screenshots at 1280 and at 390 pixels wide ([Screenshots](#screenshots)). A new setting touches four places ([A new setting](#a-new-setting)).
+7. **Add a CHANGELOG entry.** At the top of `CHANGELOG.md`, newest first: a heading `## vX.Y.Z - YYYY-MM-DD` with the next version number after the newest entry, up to five bullets under `### Added`, `### Changed` or `### Fixed`, then one last line `Upgrade: nothing to do.` The line says `Upgrade: rerun ./install.sh.` instead only when your change touched `install.sh`, a systemd unit, `tmux.conf` or the Claude settings. `tests/test_changelog.py` checks the shape.
+8. **Open a pull request.** Push your branch to your fork and open a pull request against `main` of the original repository. The template asks for what changed, the issue it closes and the two test commands. Pull request CI runs the full suite and a docker build that does not push. Keep one change to a pull request.
+
+## For agents and the maintainer's workflow
+
+The rest of this file takes an issue from pick-up to a merged phase. It is written for agents (Claude Code, Codex) and for the maintainer who runs them.
 
 ## Pick an issue
 

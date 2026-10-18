@@ -47,7 +47,7 @@ def test_the_memory_api_doc_states_the_13_35_findings():
 
 def test_the_readme_says_why_the_worktree_hooks_stay_unregistered():
     text = read(HOOKS)
-    hooks = section(text, "### Hooks v2 (v0.5.7)")
+    hooks = section(text, "### Hooks v2")
     assert "WorktreeCreate and WorktreeRemove are deliberately not registered, and they stay that way" in hooks
     assert "hook succeeded but returned no worktree path" in hooks and "**replaces**" in hooks and "never fired" in hooks and "2.1.294" in hooks
     assert "until V9" not in readme_text() and "until V9" not in read("scripts/claude_settings.py")

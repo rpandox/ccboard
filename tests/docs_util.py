@@ -84,3 +84,14 @@ def settings_span(text):
 def settings_rows(text):
     """Names that open a row of any settings table (all the groups and the advanced table): a line that starts with a back-ticked NAME in the first cell."""
     return set(re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", settings_span(text), re.M))
+
+
+def headings(text):
+    """The heading lines of a Markdown text (`#` to `######`), leaving out lines inside fenced code blocks."""
+    out, fenced = [], False
+    for line in text.splitlines():
+        if re.match(r"^(```|~~~)", line.strip()):
+            fenced = not fenced
+        elif not fenced and re.match(r"^#{1,6}\s+\S", line):
+            out.append(line)
+    return out

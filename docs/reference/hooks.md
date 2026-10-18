@@ -4,9 +4,11 @@ For people who need to know what the Claude Code hooks do.
 
 [Back to the documentation index](../README.md)
 
-### Hooks v2, notifications with context, /command /prompt /resize (v0.5.7)
+In this page, "the box" means the machine that runs the board.
 
-### Hooks v2 (v0.5.7)
+### Hooks v2, notifications with context, /command /prompt /resize
+
+### Hooks v2
 
 ccboard now registers 15 Claude Code hook events (it was 6): SessionStart, UserPromptSubmit, Notification, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact, PostCompact, PostModelSwitch, TaskCreated, TaskCompleted, PostToolBatch, ConfigChange (all async, timeout 5, via `bin/ccboard-hook`) and SessionEnd (via `bin/ccboard-hook-fast`: not async, timeout 3, a 2 s curl cap, so the event lands before the process exits). PermissionRequest is unchanged. WorktreeCreate and WorktreeRemove are deliberately not registered, and they stay that way (probe on the box, Claude Code 2.1.294, 2026-10-09, a scratch repo and a scratch settings file): a WorktreeCreate hook **replaces** Claude's own worktree creation and has to create the worktree and print its path, so a hook that prints nothing (the async, no-output one the board would register) makes `claude --worktree` fail with "hook succeeded but returned no worktree path" and no worktree is made, and `async: true` does not help because Claude waits for the hook and uses its output; WorktreeRemove on its own is harmless but it never fired for the removals Claude does itself (`ExitWorktree` with remove, print mode). Task worktrees keep working as they do today: Claude creates `.claude/worktrees/<slug>` itself and the board adds the folder to `.git/info/exclude`. Not tried: other Claude Code versions, and the cleanup when an interactive session ends.
 
@@ -21,7 +23,7 @@ What the board now does with them:
 - Stop uses Claude's own closing message for the row text (first 300 characters) and keeps the full text in `flags.last_result`. A resume records how long it sat and how big it is in `flags.resumed`. /clear and /resume no longer flash the session as ended. A compaction restart no longer flips a working turn to idle.
 - The statusline adds effort, fast mode, thinking, session name, prompt-cache state, PR, worktree, repo and the over-200k flag to each session's stats. The newest raw statusline payload is kept in kv `statusline_sample` (at most 8 KB) so the doctor can show the real shape on the box.
 
-### What the hook scripts need (issue #121)
+### What the hook scripts need
 
 The hook scripts in `bin/` are POSIX `sh` and call two programs, so `sh`, `curl` and `python3` must be on the PATH the hooks run under. `curl` posts the event to the board; `python3` builds the permission reply and the statusline text. Every script fails soft: with no `curl` nothing reaches the board, and with no `python3` the permission hook prints nothing (the normal terminal prompt appears, so Allow and Deny do not show on Needs you) and the statusline shows nothing. Nothing is blocked, but nothing says so either, which is why Settings > Doctor has a **Hook helpers** check (group Claude): it runs `curl --version` and `python3 -c pass` under the board's PATH plus the login shell's, 3 seconds each, and names the missing one, the effect above and the install command for your system. On a Mac without the Command Line Tools `/usr/bin/python3` is a stub; the check says so and gives `xcode-select --install` or `brew install python`. A probe that times out reads as unknown, not as a failure.
 
@@ -61,3 +63,5 @@ sqlite3 <data dir>/ccboard.db "select tmux_name, event, kind from events order b
 ```
 
 There is nothing to configure. To test the child guard, run a nested `claude -p` inside a scratch board session and watch its hooks answer `ignored: child`. Do not do it against the live box.
+
+**Background.** Hooks v2: v0.5.7; What the hook scripts need: issue #121.

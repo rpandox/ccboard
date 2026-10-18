@@ -4,6 +4,8 @@ For people with more than one Claude or Codex login.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ### Several Claude accounts
 
 Claude Code keeps one login per config dir, so using more than one subscription means putting the right login in place when you want it. The board saves each login and swaps them for you, where Claude keeps that login in a file it can swap. That is Linux and WSL2 on ext4. It is not macOS or native Windows, and there Settings says why and the account calls answer 409 with the same sentence.

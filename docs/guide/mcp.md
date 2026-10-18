@@ -4,6 +4,8 @@ For people who call the board's tools from another machine.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ### MCP from other devices
 
 Claude Code and Codex on a laptop or another machine of your tailnet can use the board's MCP tools (`list_projects`, `create_task`, `list_tasks`, `get_task_status`, `dispatch_task`, `get_task_result`, `list_nodes`, `epic_status` and `epic_run`) through `/mcp`, the board's remote MCP endpoint, each device with a token of its own. On the box itself nothing is needed: `install.sh` registers the stdio `ccboard` server there, and it stays box-only.
@@ -29,7 +31,7 @@ Check it with `codex mcp list` (or `/mcp` in the Codex TUI). Codex reads the var
 
 **Revoke.** Revoke on the device's row (two taps) and the token fails on its very next request. A client then reports the server as failing or as needing authentication: that means the token is wrong, revoked or expired; mint a new one in Settings > Agents. The board's answer says the same (`401`, "mint a new token in Settings > Agents"). Both clients also know OAuth for remote servers; this endpoint has none, so a "log in" or "authenticate" offer in the client's `/mcp` panel leads nowhere. How each client words a `401` here is unverified until both have been run against the box.
 
-**What a token can do.** Exactly these nine tools (`list_nodes` and `epic_status` are `read` tools; `epic_run` needs `tasks`; the other six take an optional `node`, which stays on this board unless the board allows more, see [Using nodes from an agent](../nodes/agents-and-mcp.md#using-nodes-from-an-agent-issue-152-phase-p10)), as the scopes allow: `read` (list projects and tasks, task status and results, read an epic), `tasks` (`create_task`, `dispatch_task` into a new session of its own, and `epic_run` for an epic whose owner allowed it) and `sessions` (`dispatch_task` with a `session`, which types the task's prompt into a session that is already running). A new token gets `read` and `tasks`; `sessions` is an explicit choice. A call outside the token's scopes is a JSON-RPC error and nothing runs. The tools cannot loosen permissions: no tool takes a permission mode, sandbox, bypass, model or extra-arguments argument, any argument a tool does not list is refused, and the tasks API's refusal of `bypassPermissions` for tasks applies as everywhere. Titles are at most 120 characters, prompts at most 20000.
+**What a token can do.** Exactly these nine tools (`list_nodes` and `epic_status` are `read` tools; `epic_run` needs `tasks`; the other six take an optional `node`, which stays on this board unless the board allows more, see [Using nodes from an agent](../nodes/agents-and-mcp.md#using-nodes-from-an-agent)), as the scopes allow: `read` (list projects and tasks, task status and results, read an epic), `tasks` (`create_task`, `dispatch_task` into a new session of its own, and `epic_run` for an epic whose owner allowed it) and `sessions` (`dispatch_task` with a `session`, which types the task's prompt into a session that is already running). A new token gets `read` and `tasks`; `sessions` is an explicit choice. A call outside the token's scopes is a JSON-RPC error and nothing runs. The tools cannot loosen permissions: no tool takes a permission mode, sandbox, bypass, model or extra-arguments argument, any argument a tool does not list is refused, and the tasks API's refusal of `bypassPermissions` for tasks applies as everywhere. Titles are at most 120 characters, prompts at most 20000.
 
 **Security.**
 - Off by default (`CCBOARD_MCP_REMOTE`, then the Settings switch). Off, `/mcp` answers 404 to everything.
@@ -44,6 +46,6 @@ Check it with `codex mcp list` (or `/mcp` in the Codex TUI). Codex reads the var
 
 Not verified yet (it needs a second device and the real clients): the two commands end to end (list the tools, create a Backlog task, see it on the board, revoke, the next call refused), whether `--header` may be repeated, how each client shows a 401, whether either sends `Origin`, and what a tagged device gets.
 
-## What v0.4 adds: autonomy & fleet
+## The MCP shim for sessions on the same machine
 
 - **MCP server**: `scripts/ccboard_mcp.py` is registered at user scope by `install.sh`, so any Claude session on the box can call `list_projects`, `create_task`, `list_tasks` and `get_task_status`. The shim is box-only: it sends the box's hook token, so it talks only to plain `http` on a loopback address (`127.0.0.0/8`, `::1` or `localhost`) and never follows a redirect. Pointed anywhere else (`https://`, a LAN address, a tailnet name, any other name) it answers every tool call with an error and sends nothing. Another device needs the board's remote MCP endpoint with a token of its own, not a copy of the shim and the token file.

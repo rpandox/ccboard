@@ -4,6 +4,8 @@ For people who want the board in its own window or on a Home Screen.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ### Install as an app
 
 The board is a PWA, so it can live in its own window on a laptop and on the Home Screen of an iPad or phone (open it from a tailnet device over the HTTPS URL `install.sh` printed; installation needs HTTPS). **Settings › App** shows whether this window is installed, has the Install button where the browser offers one, lists these steps, shows the build id and has a *Reload app* button (an installed app has no browser reload).
@@ -20,7 +22,3 @@ What the installed app adds:
 - **Skills in the palette (issue #102).** For a Claude session the palette has a *Skills* group under the nudges and controls: the skills installed on the box, most used first, five rows and *All skills…* to open the rest (type to filter). A row shows the name, one line of its description and *Insert*; Enter puts `/<name> ` into the composer you came from (or the peek's send box) and never sends. `GET /api/skills` lists the user's `<Claude config>/skills/*/SKILL.md` and the installed plugins' (`installed_plugins.json` decides which version; a plugin skill is `/<plugin>:<skill>`), reading only the front matter (8 KB at most per file), names matching `^[a-z0-9][a-z0-9:_-]{0,63}$`, at most 300, cached for 60 s, no symlink followed out of the skills folder. The *seen N×* count is what this board saw typed (a `UserPromptSubmit` that starts with `/<skill>` of a known skill, kept in `kv skill_uses`), not lifetime use; a skill never seen has no count. The group is hidden for Codex and shell sessions (no Codex list is verified), and a scan that fails or finds nothing leaves it out without a toast. Not verified: that Claude hands a typed skill command to the hook as the typed text (the count depends on it), and the layout of the `skills/synced/` folders some boxes have (they are not scanned).
 - **Share target** (Chrome and Edge, desktop and Android): once installed, *ccboard* appears in the system share sheet; sharing a page or a text snippet opens the board with the palette's *send to session* list and the shared text prefilled, so it can go to a session as a prompt. Safari does not support share targets: on iPadOS copy the text and paste it into a session's send box instead.
 - **Fast and never stale**: the app shell is cached by a service worker whose cache name changes with every deploy, vendored fonts and Blueprint are served `immutable`, and an open window reloads itself when the box is updated.
-
-## What v0.2 adds: the attention layer
-
-- **PWA**: installable (Add to Home Screen), works offline showing the last known state.

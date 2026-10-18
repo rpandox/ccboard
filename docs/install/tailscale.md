@@ -35,7 +35,7 @@ A request that does not come through the tailnet https name, such as plain `http
 - Port 443 is never taken from another service: it is never touched unless it is the board's own HTTPS port. The installer never runs `tailscale serve reset` and never touches a port you did not name.
 - A port that is already a Funnel is never replaced unless you set `CCBOARD_REPLACE_SERVE=1`.
 
-## Tailscale on each system (issue #126)
+## Tailscale on each system
 
 Everything the board knows about the `tailscale` command lives in `app/tailscale.py`: which command to run, which variant is installed (from the file layout, no network call), and how `tailscale serve` is run for preview links, the macOS installer and the Doctor. Linux behaves exactly as before. `scripts/tailscale_serve.py` is the command line over the same module for the macOS installer (`status`, `check`, `apply`, `off`; there is no `reset`).
 

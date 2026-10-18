@@ -4,7 +4,9 @@ For people who let an agent session call other nodes.
 
 [Back to the documentation index](../README.md)
 
-#### Using nodes from an agent (issue #152; phase P10)
+In this page, "the box" means the machine that runs the board.
+
+#### Using nodes from an agent
 
 An agent session on this board (Claude Code or Codex, through the stdio `ccboard` server or through `/mcp`) can list the paired nodes, read their projects and tasks and, at the higher level, create a task on one and start it in a new session there. It is **off** until the board's owner sets `CCBOARD_MCP_NODES`; Settings > Agents shows the level in words, read-only, with the env value, next to the MCP block.
 
@@ -40,3 +42,5 @@ For an epic (after you turned on **Let MCP run this epic** on its page, and with
 ```
 
 To verify in the two-node check (#155): a Claude session on the Mac creating a task on the box through the tools, `list_nodes`, `epic_status` and `epic_run`, and Codex against a remote `/mcp`; neither client has been run against a node yet.
+
+**Background.** Using nodes from an agent: issue #152 (phase P10).

@@ -4,7 +4,9 @@ For people using the terminal page, the quad and a phone.
 
 [Back to the documentation index](../README.md)
 
-### Terminal commands (v0.5.7)
+In this page, "the box" means the machine that runs the board.
+
+### Terminal commands
 
 Three endpoints let the board type into an agent's pane safely. `POST /api/sessions/{name}/command {cmd, arg?, wait_ms?, confirm?}` types one slash command from the agent's allowlist (Claude: /clear /compact /usage /effort /model /rename /context /status /cost /fast; the board never types anything else). It clears the composer with C-u first. A command that takes an argument (/model, /effort, /rename) needs one, as one line of at most 200 characters. The read commands (/usage /context /status /cost) wait `wait_ms` (default 1200, at most 4000) and return the pane in `screen`. /clear is destructive and needs `confirm: true`. `POST /api/sessions/{name}/prompt {text, enter=true, queue=false}` pastes up to 20000 characters with bracketed paste, so newlines stay inside the prompt. It does not set `last_prompt`: the UserPromptSubmit hook does that, which also proves the paste landed.
 
@@ -62,7 +64,9 @@ Each chip is one `POST /api/sessions/<name>/command`.
 
 **Dock on tablets (v0.5.21).** The terminal dock exists from a 1024 px window. On a touch screen (a coarse primary pointer) under 1180 px, such as an iPad in portrait, an Open link opens the terminal page and not the dock, because the dock would leave the page about 525 px. The dock still opens on purpose (`Ctrl/Cmd+J`, or Add to dock in a session's menu) and then comes back on the next load. On touch its default width is 38 vw (560 px at most). To resize it by touch, drag the 44 px grabber on the dock's left edge (a pill in the middle of the edge); a double tap resets the width, and the width is kept in `ccboard:dock:w`. To switch the dock off in a browser, set `ccboard:dock:off` to `1` in localStorage. A mouse and any window of 1180 px or more behave as before.
 
-## What v0.2 adds: the attention layer
+## The mobile terminal page
 
 - **Mobile terminal** `/term/<session>`: the terminal with a header (project, session, state, model, context %), a collapsible strip with the task, the last prompt and what Claude is asking, a 44 px key bar (Esc, Tab, Shift+Tab, Ctrl-C, Enter, arrows, ⌫, PgUp, PgDn, Top, Bottom, Ctrl+O), swipe and button scrolling that works on a phone, A−/A+ font size, editable quick replies and a multi-line text box that rides above the soft keyboard. Attach links open it.
-- **Live** grid: the last 20 lines of every session, refreshed every 2 s over SSE.
+- **Live grid**: the Quad and the Agents view show the last 12 lines of each session in its tile, checked every 2 seconds over SSE (the stream allows 1 to 40 lines).
+
+**Background.** Terminal commands: v0.5.7.

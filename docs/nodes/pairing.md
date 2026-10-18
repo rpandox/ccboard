@@ -4,7 +4,7 @@ For people pairing two boards.
 
 [Back to the documentation index](../README.md)
 
-#### Pairing two boards (issue #135; phase P3)
+#### Pairing two boards
 
 Pairing connects two boards with a one-time code that you read on one and type on the other. From then on the second board can call the first with its own token, limited to what you chose. A token belongs to one pair, shows once, and can be rotated or cut at any time. The token and, for keyed pairs, a pinned signature open only the [scoped node routes](../security.md#node-scopes-and-routes).
 
@@ -32,7 +32,7 @@ For unkeyed pairing, a missing or unreachable callback keeps the **callback not 
 
 **Audit.** `node_audit` holds one row per pair event (code created, cancelled and burned, a pair made, refused and revoked, rotated, removed), per refused node call and, from the relay, per relayed call on both boards, with the time, direction (`in` or `out`), the other board's name, the acting user, the action, the target (`task 42`), the status (`ok`, `failed`, `refused`) and a short detail. Settings > Nodes > Activity lists the rows newest first and filters them by direction (Sent or Received), node, action and Failed. Rows are kept 90 days. It also lists the rows each paired node keeps **about this board**, next to this board's own, marked with the node's chip ("on build-box"), the direction as that node saw it ("it received", "it sent") and the time this board received them next to the row's own time: `GET /api/nodes/<handle>/audit?limit=25` (the relay row `audit`, a signed-in person's read; the node's side is `GET /api/node/audit`, scope `read`) answers the newest rows whose pair is the caller's, at most 50, with no other pair's rows, no prompt text and no token (every field is rebuilt on the hub and cleaned again), and leaves out its own reads of this list. The page reads them when the tab opens and when **Reload** is pressed, one call per node you call that holds `read`, at most 12, never from a poll or a filter; a node that cannot be read keeps its last rows and the page says why under the list. The filters apply to those rows too. A row may show a short public key id, but never a token, a code, a full digest, a seed, a signature or a prompt: anything shaped like one is replaced before it is written.
 
-**`CCBOARD_NODES` and the hub token (deprecated).** Each entry is read into the registry at start as a **legacy** row ("read only, pair to enable actions"). The hub polls it with `CCBOARD_HUB_TOKEN` on `GET /api/node/summary`, exactly as before (since v0.5.36 by the hub read model's threads, [below](hub-and-relay.md#the-hub-read-model-issue-138-phase-p4)); the hub token is accepted on that one route and nowhere else. Pairing the same address replaces the legacy row and the hub stops asking it with the hub token. A board with no `CCBOARD_NODES` and no pair starts no thread, makes no request, and adds no key to `/api/state`.
+**`CCBOARD_NODES` and the hub token (deprecated).** Each entry is read into the registry at start as a **legacy** row ("read only, pair to enable actions"). The hub polls it with `CCBOARD_HUB_TOKEN` on `GET /api/node/summary`, exactly as before (since v0.5.36 by the hub read model's threads, [below](hub-and-relay.md#the-hub-read-model)); the hub token is accepted on that one route and nowhere else. Pairing the same address replaces the legacy row and the hub stops asking it with the hub token. A board with no `CCBOARD_NODES` and no pair starts no thread, makes no request, and adds no key to `/api/state`.
 
 **Doctor row (group Box, read only).** `nodes-pairs` warns for a pair that nobody has used for 90 days, a token made or rotated more than 180 days ago (judged for a pair that calls this board; a node this board calls does not record its rotations yet, so its token's age is not judged), and a pair marked `needs_repair` (the other board stopped taking the saved token); each fix names the button (Remove then Add node, Rotate token, Revoke).
 
@@ -89,6 +89,8 @@ This closes #135's unsigned-confirm hole for keyed pairs: both boards must prove
 
 Upgrade: rerun `./install.sh` only to set `CCBOARD_NODE_KEYS`; nothing is needed to get the default.
 
-## What v0.4 adds: autonomy & fleet
+## The fleet view and the older CCBOARD_NODES path
 
 - **Fleet**: every board shows its own cpu / ram / disk / uptime. Pair boards in Settings > Nodes to see their sessions, start work and answer permissions from a hub. Any board can be the hub. See [Several devices (nodes)](overview.md#several-devices-nodes). `CCBOARD_NODES` with `CCBOARD_HUB_TOKEN` remains a legacy, read-only summary path; use pairing for new nodes.
+
+**Background.** Pairing two boards: issue #135 (phase P3).

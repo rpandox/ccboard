@@ -4,7 +4,9 @@ For people who back up the board, and for anyone who has to restore it.
 
 [Back to the documentation index](README.md)
 
-### Backup on each system (issue #129)
+In this page, "the box" means the machine that runs the board.
+
+### Backup on each system
 
 What is backed up does not change (the DB snapshot, claude-mem's snapshot, the transcripts, the Codex rollouts, `CCBOARD_BACKUP_EXTRA`, and the unpushed work copied to `ccboard-backup/<node>/<branch>`); only the job that runs it differs. Linux keeps its timer, unit and wording exactly as they were.
 
@@ -89,6 +91,8 @@ A workflow that says `on: [push, pull_request]` is rewritten into the mapping fo
 
 The other choice is `CCBOARD_BACKUP_PUSH=0` ([settings table](configuration.md#settings)). It turns the branch copies off on this box, so unpushed work then has no copy outside the box.
 
-## What v0.4 adds: autonomy & fleet
+## What the nightly backup contains
 
-- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default; on a Mac the launchd job `dev.ccboard.backup`, see [Backup on each system](#backup-on-each-system-issue-129)): a consistent snapshot of the board's SQLite DB, your `~/.claude/projects` transcripts, the Codex rollouts (`~/.codex/sessions`) and a consistent snapshot of claude-mem's `claude-mem.db` (`<claude-mem dir>`, taken through SQLite's backup API from a read-only connection, so claude-mem's database is never written; only that one file, never the directory) go into a restic repository (plus anything in `CCBOARD_BACKUP_EXTRA`; the saved logins are never in it, and neither is a laptop's claude-mem database, which is a different file on a different machine), then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
+- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default; on a Mac the launchd job `dev.ccboard.backup`, see [Backup on each system](#backup-on-each-system)): a consistent snapshot of the board's SQLite DB, your `~/.claude/projects` transcripts, the Codex rollouts (`~/.codex/sessions`) and a consistent snapshot of claude-mem's `claude-mem.db` (`<claude-mem dir>`, taken through SQLite's backup API from a read-only connection, so claude-mem's database is never written; only that one file, never the directory) go into a restic repository (plus anything in `CCBOARD_BACKUP_EXTRA`; the saved logins are never in it, and neither is a laptop's claude-mem database, which is a different file on a different machine), then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
+
+**Background.** Backup on each system: issue #129.

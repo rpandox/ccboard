@@ -58,7 +58,7 @@ Further lines appear for ntfy, Codex, the backup and, in container mode, the run
 
 ### Open the board
 
-Open the printed Dashboard address on another device on your tailnet, then click *Log in* to sign in to Claude Code. Plain `http://localhost` carries no Tailscale identity. The tailnet https name should carry it even when you open it from the machine that runs the board, but the one measurement of that was on a Mac, with curl, not a browser ([Tailscale](tailscale.md#tailscale-on-each-system-issue-126)).
+Open the printed Dashboard address on another device on your tailnet, then click *Log in* to sign in to Claude Code. Plain `http://localhost` carries no Tailscale identity. The tailnet https name should carry it even when you open it from the machine that runs the board, but the one measurement of that was on a Mac, with curl, not a browser ([Tailscale](tailscale.md#tailscale-on-each-system)).
 
 ### Verify
 
