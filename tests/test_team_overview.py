@@ -227,6 +227,30 @@ def test_free_issues_are_capped_and_say_so():
     assert f["state"] == "ok" and len(f["issues"]) == team.FREE_MAX and f["count"] == 119 and f["truncated"] is True
 
 
+def test_an_unassigned_issue_with_a_linked_branch_and_no_status_line_is_not_free_whoever_linked_it():
+    """Issue #200: linked branches used to be read only for assigned issues, so an unassigned issue with a linked branch and no status line showed as free."""
+    rd = read(linked={4: [{"name": "carol/four", "at": RECENT, "author": CAROL}], 5: [{"name": "mystery/five", "at": RECENT, "author": None}],
+                      6: [{"name": "alice/six", "at": RECENT, "author": ALICE}]},
+              open_issues=[open_issue(n) for n in range(1, 8)])
+    f = free_of_read(rd)
+    assert [i["number"] for i in f["issues"]] == [1, 2, 3, 7], "4 (a teammate's branch), 5 (a branch of nobody known) and 6 (the owner's own) are taken"
+    assert f["held"] == [4, 5, 6] and f["count"] == 4 and f["state"] == "ok"
+    body = team.build([entry()], {KEY: rd}, "alice", 1, NOW)
+    w = body["repos"][0]["warnings"]["issues"]
+    assert "4" in w and w["4"][0]["person"]["login"] == "carol" and "5" not in w, "a branch with a known author is a warning that names her; one with none still holds the issue"
+    assert any(r["login"] == "carol" and r["kind"] == "branch" and r["issue"] == 4 for r in body["overview"]["rows"]), "the team view shows it as carol's branch"
+
+
+def test_a_full_page_of_unassigned_issues_in_the_link_read_lists_only_the_ones_it_covered():
+    open_ = [open_issue(n) for n in range(1, 6)]
+    full = free_of_read(read(open_issues=open_, open_cover={"numbers": [1, 2, 3], "full": True}))
+    assert [i["number"] for i in full["issues"]] == [1, 2, 3] and full["truncated"] is True, "4 and 5 may have a linked branch the read never reached: not free"
+    part = free_of_read(read(open_issues=open_, open_cover={"numbers": [1, 2, 3], "full": False}))
+    assert [i["number"] for i in part["issues"]] == [1, 2, 3, 4, 5] and part["truncated"] is False, "a page that was not full saw every unassigned issue"
+    old = free_of_read(read(open_issues=open_))
+    assert [i["number"] for i in old["issues"]] == [1, 2, 3, 4, 5], "a read with no cover (made before this check) is judged as before"
+
+
 def test_a_read_with_no_list_of_open_issues_yet_makes_free_unread_with_the_held_numbers():
     f = free_of_read(read(issues=[issue(1, BOB), issue(3, ALICE)]))
     assert f["state"] == "unread" and f["issues"] == [] and f["count"] == 0 and f["held"] == [1, 3] and f["reason"] == "unread" and "have not been read yet" in f["message"]
@@ -767,6 +791,21 @@ def test_an_issue_somebody_takes_leaves_the_free_list_and_one_that_opens_joins_i
     tw.gh.add_issue(REPO, 8, "Eight")
     tw.run_for(700)
     assert [i["number"] for i in free_block(tw)["issues"]] == [8]
+
+
+def test_an_unassigned_issue_with_a_linked_branch_is_not_free_on_a_live_board(tw):
+    seed(tw.gh)
+    tw.gh.add_issue(REPO, 9, "Nine, nobody assigned")
+    tw.gh.linked(f"{REPO}#9", "bob/nine", author="bob")
+    tw.gh.add_issue(REPO, 10, "Ten, nobody assigned, branch of nobody known")
+    tw.gh.linked(f"{REPO}#10", "ghost/ten", author=None)
+    tw.share()
+    tw.settle()
+    f = free_block(tw)
+    assert f["state"] == "ok" and [i["number"] for i in f["issues"]] == [2], "9 and 10 have a linked branch and no assignee or status line: taken"
+    assert f["held"] == [1, 3, 9, 10]
+    bob = next(r for r in tw.body()["overview"]["rows"] if r["login"] == "bob" and r["issue"] == 9)
+    assert bob["kind"] == "branch" and bob["branch"] == "bob/nine", "the team view says whose branch it is"
 
 
 def test_free_says_so_when_the_unassigned_page_was_full(tw):

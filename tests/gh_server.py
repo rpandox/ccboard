@@ -437,6 +437,9 @@ def handle_graphql(world: dict, owner: str, name: str) -> tuple[Resp, bool]:
     issues = []
     for k in sorted((k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and it.get("assignees")), key=lambda k: int(k.split("#")[1])):
         issues.append({"number": int(k.split("#")[1]), "linkedBranches": {"nodes": [{"ref": tip(t)} for t in (world.get("linked") or {}).get(k, [])]}})
+    unassigned = []                                                  # the `unassigned:issues` connection: the open issues nobody is assigned to, with their linked branches
+    for k in sorted((k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and not it.get("assignees")), key=lambda k: int(k.split("#")[1])):
+        unassigned.append({"number": int(k.split("#")[1]), "linkedBranches": {"nodes": [{"ref": tip(t)} for t in (world.get("linked") or {}).get(k, [])][:1]}})
     prs = []
     for pk, pr in sorted(((k, v) for k, v in (world.get("pulls") or {}).items() if k.startswith(slug + "#")), key=lambda kv: int(kv[0].split("#")[1])):
         prs.append({"number": int(pk.split("#")[1]), "isDraft": bool(pr.get("draft")), "isCrossRepository": pr.get("head_repo", slug) != slug, "headRefName": pr.get("head_ref", "feature"),
@@ -444,7 +447,7 @@ def handle_graphql(world: dict, owner: str, name: str) -> tuple[Resp, bool]:
                     "closingIssuesReferences": {"nodes": [{"number": c} for c in pr.get("closes", [])]}})
     refs = [tip(t) for t in (world.get("tips") or {}).get(slug, [])][:100]
     data = {"rateLimit": {"cost": cost, "remaining": rate["remaining"], "resetAt": "2027-01-15T10:00:00Z"},
-            "repository": {"nameWithOwner": slug, "isPrivate": False, "isFork": False, "parent": None, "issues": {"nodes": issues}, "pullRequests": {"nodes": prs},
+            "repository": {"nameWithOwner": slug, "isPrivate": False, "isFork": False, "parent": None, "issues": {"nodes": issues}, "unassigned": {"nodes": unassigned[:100]}, "pullRequests": {"nodes": prs},
                            "refs": {"pageInfo": {"hasNextPage": bool(world.get("tips_more"))}, "nodes": refs}}}
     return Resp(200, headers, {"data": data}), True
 

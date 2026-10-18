@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.99 - 2026-10-18
+
+### Fixed
+- Epic page: work an epic started on a paired node now shows the same phases as work on this board ("waiting for a person", "pull request opened" with its number, done, failed, claim lost). The node adds `epic_phase` (and `epic_pr`) to the task rows of `GET /api/node/state`, which the hub already polls; no new request, and an older node shows the task's phase as before (#149).
+- Team: an unassigned issue with a linked branch and no status line is no longer shown as Free. The GraphQL query also reads the linked branches of the first 100 unassigned open issues; the issue is held, shown as taken by the branch's author, and a branch with no known author still holds it (#200).
+- Epic Work: a test now pins that an allowed author's issue, or its epic, last edited by someone not on the allowed list is refused before any claim, task or GitHub write, with the editor named. The edit-history guard of v0.5.72 already covered this (#149).
+- Docs: `docs/nodes/epics.md`, `docs/nodes/hub-and-relay.md` and `docs/team.md` say all three.
+
+Upgrade: nothing to do.
+
 ## v0.5.98 - 2026-10-18
 
 ### Changed

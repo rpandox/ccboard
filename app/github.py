@@ -425,13 +425,16 @@ def api(path: str, etag: str | None = None) -> tuple[int, dict, Any]:
 
 # ---- GraphQL, read only (issue #197). GitHub's GraphQL endpoint takes every query as a POST on the wire, and `gh api graphql -f query=...` is how gh sends one; that is
 # unavoidable and it writes nothing: the ONE query below is a constant (it has no mutation and no variable that is not a plain owner or repository name, checked against
-# GitHub's rules first), no `--method` flag is built, and `graphql_argv` builds nothing else. The linked branches of assigned issues, the closing issues of open pull
+# GitHub's rules first), no `--method` flag is built, and `graphql_argv` builds nothing else. The linked branches of assigned issues and of the (first 100) unassigned ones, so
+# an unassigned issue with a linked branch is not shown as free (issue #200), the closing issues of open pull
 # requests and the branch tips come from it, because REST has no 304 path for them and no linked-branch list at all.
 GQL_TEAM = (
     "query($owner:String!,$name:String!){rateLimit{cost remaining resetAt}"
     "repository(owner:$owner,name:$name){nameWithOwner isPrivate isFork parent{nameWithOwner}"
     "issues(states:OPEN,first:30,filterBy:{assignee:\"*\"},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number "
     "linkedBranches(first:3){nodes{ref{name target{... on Commit{committedDate author{user{login databaseId}}}}}}}}}"
+    "unassigned:issues(states:OPEN,first:100,filterBy:{assignee:null},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number "
+    "linkedBranches(first:1){nodes{ref{name target{... on Commit{committedDate author{user{login databaseId}}}}}}}}}"
     "pullRequests(states:OPEN,first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number isDraft isCrossRepository headRefName "
     "author{login ... on User{databaseId}} closingIssuesReferences(first:3){nodes{number}}}}"
     "refs(refPrefix:\"refs/heads/\",first:100){pageInfo{hasNextPage} nodes{name target{... on Commit{committedDate author{user{login databaseId}}}}}}}}"
