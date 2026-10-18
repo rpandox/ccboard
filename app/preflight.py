@@ -110,9 +110,10 @@ def _short(text: str) -> str:
     return ""
 
 
-def ls_remote(url: str, timeout: float = TIMEOUT, pin: tuple[str, int, tuple[str, ...]] | None = None) -> dict:
+def ls_remote(url: str, timeout: float | None = None, pin: tuple[str, int, tuple[str, ...]] | None = None) -> dict:
     """{reachable, default_branch, needs_auth, heads, error} for one remote. Never raises for a remote that is merely down. `pin` (host, port,
     addresses) adds `-c http.curloptResolve=...` so git connects to those addresses only."""
+    timeout = TIMEOUT if timeout is None else timeout
     out = {"reachable": False, "default_branch": None, "needs_auth": False, "heads": [], "error": None}
     argv = ["git", "-c", "http.followRedirects=false"] + (["-c", pin_option(pin)] if pin else []) + ["ls-remote", "--symref", "--", url]
     try:

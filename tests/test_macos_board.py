@@ -15,6 +15,7 @@ import pytest
 from app import config, doctor, doctor_macos as dm, projects
 from app import platform as plat
 from app.config import ENV_FILE_KEYS, Settings, settings
+from tests.conftest import production_timeout
 
 ROOT = Path(__file__).resolve().parent.parent
 REAL_LOGIN_LOOKUP = plat._login_shell_lookup      # conftest swaps the module attribute for None in every test; these tests put it back when they need it
@@ -530,15 +531,17 @@ def test_every_probe_goes_through_the_doctors_run_with_a_timeout(mac, monkeypatc
     seen = []
     real = doctor._run
 
-    def spy(argv, timeout=doctor.CMD_TIMEOUT):
+    shipped = production_timeout("app.doctor", "CMD_TIMEOUT")        # the live limit is lifted for every test (issue #293)
+
+    def spy(argv, timeout=shipped):
         seen.append((argv[0], timeout))
-        return real(argv, timeout)
+        return real(argv, None if timeout == shipped else timeout)       # a probe that took the default runs under the live (lifted) default
     monkeypatch.setattr(doctor, "_run", spy)
     (Path.home() / "Library" / "Logs" / "ccboard").mkdir(parents=True)
     for _id, _g, _l, fn in dm.CHECKS:
         fn(None)
     assert {a for a, _t in seen} == {"launchctl", "fdesetup", "defaults", "pmset"}
-    assert all(t and t <= doctor.CMD_TIMEOUT for _a, t in seen)
+    assert all(t and t <= shipped for _a, t in seen)
 
 
 def test_survival_names_the_reboot_limit(mac):

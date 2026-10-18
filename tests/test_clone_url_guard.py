@@ -10,6 +10,7 @@ import pytest
 
 from app import config, preflight, projects
 from app.config import settings
+from tests.conftest import production_timeout
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 WHY = "that host is not allowed for clones"
@@ -293,7 +294,7 @@ def test_the_probe_command_and_environment_are_locked_down(monkeypatch):
     monkeypatch.setattr(preflight, "_run", fake)
     assert preflight.ls_remote("https://github.com/o/r.git")["reachable"] is True
     assert "-c" in seen["argv"] and "http.followRedirects=false" in seen["argv"] and seen["argv"][-2:] == ["--", "https://github.com/o/r.git"]
-    assert seen["env"]["GIT_ALLOW_PROTOCOL"] == "https:ssh" and seen["timeout"] == preflight.TIMEOUT == 12
+    assert seen["env"]["GIT_ALLOW_PROTOCOL"] == "https:ssh" and seen["timeout"] == preflight.TIMEOUT and production_timeout("app.preflight", "TIMEOUT") == 12
 
 
 def make_fake_git(tmp_path, body):

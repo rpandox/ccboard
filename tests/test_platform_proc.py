@@ -15,6 +15,7 @@ from packaging.requirements import Requirement
 from app import doctor, health, memory, platform
 from app import codex_accounts as cx
 from app.agents import codex as codex_agent
+from tests.conftest import production_timeout
 from tests.proc_fake import FakePsutil, fake_proc, no_psutil, use_fake_proc, use_fake_psutil
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -122,7 +123,8 @@ def test_listening_ports_on_linux_is_ss_ltnpH_parsed_as_before(monkeypatch):
     monkeypatch.setattr(platform.shutil, "which", lambda name: "/usr/bin/ss" if name == "ss" else None)
     monkeypatch.setattr(platform.subprocess, "run", run)
     assert platform.listening_ports(None) == {4242: {5173}, 77: {3000}, 78: {3000}, 900: {22}}
-    assert run.argv == ["/usr/bin/ss", "-ltnpH"] and run.kw["timeout"] == 5 and run.kw["capture_output"] and run.kw["text"]
+    assert run.argv == ["/usr/bin/ss", "-ltnpH"] and run.kw["timeout"] == platform.LISTEN_TIMEOUT and run.kw["capture_output"] and run.kw["text"]
+    assert production_timeout("app.platform", "LISTEN_TIMEOUT") == 5            # the live limit is lifted for tests (issue #293)
     assert platform.listening_ports([77, 900, 5]) == {77: {3000}, 900: {22}}, "only the pids asked for"
     assert platform.listening_ports([]) == {}
 
@@ -245,7 +247,8 @@ def test_without_psutil_lsof_is_the_last_resort(monkeypatch):
     monkeypatch.setattr(platform.shutil, "which", lambda name: "/usr/sbin/lsof" if name == "lsof" else None)
     monkeypatch.setattr(platform.subprocess, "run", run)
     assert platform.listening_ports(None) == {4242: {5173}, 77: {3000, 3001}, 90: {8080}}
-    assert run.argv == ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"] and run.kw["timeout"] == 5
+    assert run.argv == ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"] and run.kw["timeout"] == platform.LISTEN_TIMEOUT
+    assert production_timeout("app.platform", "LISTEN_TIMEOUT") == 5            # the live limit is lifted for tests (issue #293)
     assert platform.listening_ports([77, 91]) == {77: {3000, 3001}}
 
 

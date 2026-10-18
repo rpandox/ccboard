@@ -27,6 +27,9 @@ SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 KEYCHAIN_EVERY = 30.0          # the Keychain item's attributes are asked for at most this often
 KEYCHAIN_TIMEOUT = 3.0         # seconds `security` may take (it asks nobody: no -w, no -g)
+VERSION_TIMEOUT = 10.0         # seconds `claude --version` may take
+STATUS_TIMEOUT = 10.0          # seconds `claude auth status --json` may take
+LOGOUT_TIMEOUT = 20.0          # seconds `claude auth logout` may take
 SECURITY_NOT_FOUND = 44        # `security` exit status for "the specified item could not be found"
 MDAT_RE = re.compile(r'"mdat"<timedate>=\S+\s+"(\d{14})Z')
 
@@ -117,7 +120,7 @@ def version() -> str | None:
     if not exe:
         return None
     try:
-        cp = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
+        cp = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=VERSION_TIMEOUT)
         _version_cache = cp.stdout.strip().split("\n")[0] if cp.returncode == 0 else ""
     except (subprocess.TimeoutExpired, OSError):
         _version_cache = ""
@@ -137,7 +140,7 @@ def status() -> dict:
             return c[2]
     out: dict = {"installed": True, "version": version(), "loggedIn": False}
     try:
-        cp = subprocess.run([exe, "auth", "status", "--json"], capture_output=True, text=True, timeout=10)
+        cp = subprocess.run([exe, "auth", "status", "--json"], capture_output=True, text=True, timeout=STATUS_TIMEOUT)
         data = json.loads(cp.stdout or "{}")
         for k in ("loggedIn", "email", "subscriptionType", "authMethod", "orgName"):
             if k in data:
@@ -227,6 +230,6 @@ def logout() -> dict:
         tmux.kill_session(tmux.LOGIN_SESSION)
     except tmux.TmuxDown:
         pass
-    cp = subprocess.run([exe, "auth", "logout"], capture_output=True, text=True, timeout=20)
+    cp = subprocess.run([exe, "auth", "logout"], capture_output=True, text=True, timeout=LOGOUT_TIMEOUT)
     invalidate()
     return {"ok": cp.returncode == 0, "output": (cp.stdout + cp.stderr).strip()[-500:]}
