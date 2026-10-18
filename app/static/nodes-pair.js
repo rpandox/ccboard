@@ -339,6 +339,7 @@ NodeView.AUDIT_WORDS = [
   [/^read_task/, 'Task read', 'Task read failed'],
   [/^read_pane/, 'Screen tail read', 'Screen tail read failed'],
   [/^read_agents/, 'Agents read', 'Agents read failed'],
+  [/^read_audit/, 'Activity read', 'Activity read failed'],
   [/burn/, 'Pairing code burned', 'Pairing code burned'],
   [/code.*(cancel|delete|revoke)|(cancel|delete).*code/, 'Pairing code cancelled', 'Pairing code not cancelled'],
   [/code.*(creat|mint|issue|new)|(creat|mint|issue).*code/, 'Pairing code created', 'Pairing code not created'],
@@ -367,6 +368,39 @@ NodeView.auditWord = function (action, ok) {
 };
 
 /* One audit row in the words the list shows: { key, at, word, dir: 'to' | 'from' | '', who, ok, detail }. `ok` is the row's ok, else true for a status below 400. */
+/* The rows a paired node keeps about this board (issue #153, GET /api/nodes/<handle>/audit), as rows of the Activity list: the node's own direction is turned round (what it received
+   is what this board sent), its name stands for the node, and `remote` marks the row so it is drawn with the node's chip. The ids are made unique across nodes. */
+NodeView.REMOTE_AUDIT_LIMIT = 25;
+NodeView.remoteAudit = function (handle, name, row) {
+  const r = row && typeof row === 'object' ? row : {};
+  const theirs = r.direction === 'out' ? 'out' : 'in';
+  const got = NodeView.epoch(r.received_at), said = NodeView.epoch(r.at);
+  const late = got !== null && said !== null && said > got;             // a row dated after the board read it (the board clamps these too; an older board might not): never later than the receipt
+  return { id: `${NodeView.str(handle, 40)}:${r.id !== undefined && r.id !== null ? NodeView.str(String(r.id), 20) : NodeView.str(r.at, 40)}`, at: late ? r.received_at : r.at, peer_at: r.peer_at !== undefined && r.peer_at !== null ? r.peer_at : late ? r.at : undefined, received_at: r.received_at, direction: theirs === 'in' ? 'out' : 'in',
+    peer: NodeView.str(handle, 40), node_name: NodeView.str(name, 60), user: r.user, action: r.action, target: r.target, status: r.status, detail: r.detail, remote: true, remote_dir: theirs };
+};
+/* This board's rows and the nodes' rows in one list, newest first by the row's own time (a row without a readable time goes last); equal times keep their order, this board's first. */
+NodeView.mergeAudit = function (own, remote) {
+  const all = [...own, ...remote].map((r, i) => {
+    let t = NodeView.epoch(r && r.at);
+    if (r && r.remote === true) { const got = NodeView.epoch(r.received_at); if (t !== null && got !== null && t > got) t = got; }          // a node's row is never later than this board's receipt of it
+    return { r, i, t };
+  });
+  all.sort((a, b) => (b.t === null ? -Infinity : b.t) - (a.t === null ? -Infinity : a.t) || a.i - b.i);
+  return all.map((x) => x.r);
+};
+
+/* The rows to show, at most `limit` of the sorted list: this board's own rows keep at least half of the slots (or all they have), so a node's rows, however many, never push them out. Order is kept. */
+NodeView.capAudit = function (rows, limit) {
+  const list = Array.isArray(rows) ? rows : [];
+  const n = Number.isInteger(limit) && limit > 0 ? limit : 0;
+  const keep = new Set();
+  let ownLeft = Math.ceil(n / 2);
+  list.forEach((r, i) => { if (!(r && r.remote === true) && ownLeft > 0) { keep.add(i); ownLeft -= 1; } });          // this board's first half-or-fewer rows are held
+  list.forEach((r, i) => { if (keep.size < n && !keep.has(i)) keep.add(i); });
+  return list.filter((_, i) => keep.has(i));
+};
+
 NodeView.audit = function (row, index) {
   const r = row && typeof row === 'object' ? row : {};
   const s = NodeView.str;
@@ -377,7 +411,8 @@ NodeView.audit = function (row, index) {
   return {
     key: String(r.id !== undefined && r.id !== null ? r.id : `i${index}`), at: NodeView.epoch(r.at), word: NodeView.auditWord(r.action, ok), ok,
     dir: r.direction === 'out' ? 'to' : r.direction === 'in' ? 'from' : '', who: s(r.node_name || r.name || r.peer_name || r.handle, 60),
-    detail: s(r.detail, 140), target: s(r.target, 80), user: s(r.user, 70), received: NodeView.epoch(r.received_at),
+    detail: s(r.detail, 140), target: s(r.target, 80), user: s(r.user, 70), received: NodeView.epoch(r.received_at), rowAt: NodeView.epoch(r.peer_at),
+    remote: r.remote === true, remoteDir: r.remote_dir === 'out' ? 'out' : r.remote_dir === 'in' ? 'in' : '',
   };
 };
 
@@ -418,13 +453,15 @@ NodeView.auditChoices = function (seen, current, label) {
 NodeView.auditRow = function (info, nowMs) {
   const ago = info.at !== null ? NodeView.span(info.at, nowMs) : '';
   const by = info.user ? (info.user.startsWith('for ') ? info.user : `by ${info.user}`) : '';       // the acting user: on the peer a claim (`for <login>`), never a proof
-  const rowAt = typeof info.received === 'number' && info.at !== null ? NodeView.clock(info.at) : '';                // the hub's receipt time next to the row's own, where the board gave one
+  const rowAt = typeof info.received === 'number' && info.at !== null ? NodeView.clock(typeof info.rowAt === 'number' ? info.rowAt : info.at) : '';                // the hub's receipt time next to the row's own, where the board gave one
   const when = rowAt ? `row time ${rowAt}, received ${NodeView.clock(info.received)}` : ago ? `${ago} ago` : '';
-  const where = [info.dir && info.who ? `${info.dir} ${info.who}` : info.who, info.target, by, when].filter(Boolean).join(' · ');
-  return el('div', { class: info.ok ? 'nd-audit' : 'nd-audit bad', 'data-key': info.key },
+  const dirWord = info.remote ? (info.remoteDir === 'out' ? 'it sent' : 'it received') : '';
+  const where = [info.remote ? dirWord : info.dir && info.who ? `${info.dir} ${info.who}` : info.who, info.target, by, when].filter(Boolean).join(' · ');
+  return el('div', { class: (info.ok ? 'nd-audit' : 'nd-audit bad') + (info.remote ? ' remote' : ''), 'data-key': info.key, 'data-remote': info.remote ? info.who : null },
     el('span', { class: 'nd-glyph', 'aria-hidden': 'true', text: info.ok ? '✓' : '✕' }),
     el('div', { class: 'nd-audit-main' },
       el('b', { class: 'nd-audit-word', text: info.word }),
+      info.remote && info.who ? NodeView.chip(`on ${info.who}`, '', '', `Recorded on ${info.who} and read by this board${typeof info.received === 'number' ? '' : ' just now'}`) : null,
       where ? el('span', { class: 'dim nd-audit-where', text: where }) : null,
       info.detail ? el('span', { class: 'dim nd-audit-detail', text: info.detail }) : null));
 };

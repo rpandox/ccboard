@@ -304,6 +304,42 @@
       "detail": "scopes read,tasks,sessions"
     }
   ],
+  "remote_audit": {
+    "build-box": [
+      {
+        "id": 31,
+        "at": "2026-10-03T02:55:00+00:00",
+        "direction": "in",
+        "action": "read_task",
+        "status": "ok",
+        "target": "task 42",
+        "user": null,
+        "detail": null
+      },
+      {
+        "id": 30,
+        "at": "2026-10-03T02:54:10+00:00",
+        "direction": "in",
+        "action": "scope_refused",
+        "status": "refused",
+        "target": "GET /api/node/sessions/shop--api--s1/pane",
+        "user": null,
+        "detail": "scope sessions not granted"
+      }
+    ],
+    "alice-mac": [
+      {
+        "id": 12,
+        "at": "2026-10-03T02:50:00+00:00",
+        "direction": "in",
+        "action": "read_state",
+        "status": "ok",
+        "target": "state",
+        "user": null,
+        "detail": null
+      }
+    ]
+  },
   "hub": [
     {
       "peer_id": "p-build-box",

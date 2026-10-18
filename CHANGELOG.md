@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.92 - 2026-10-17
+
+### Changed
+- Work on a node passes the same hard filters as Run (offline, no tasks scope, repository or agent missing, back-off, window over the limit, lanes unknown), shows the reason and is disabled; a pin never lifts one, and Start anyway lifts only the free-lane count (#150).
+- The Epics list reads GitHub with a call budget of 40 a refresh; what it did not reach is said as "not read this time", never shown as empty, and the next refresh carries on from there (#147).
+
+### Added
+- Settings > Nodes > Activity also lists the audit rows each paired node keeps about this board (newest 25, read when the tab opens or on Reload), with the node's chip and the time this board received them (#153).
+- `GET /api/node/audit` (scope read) and `GET /api/nodes/{handle}/audit` for those rows: only rows that name the caller's pair, capped at 50, no prompt text or secrets.
+
+Upgrade: nothing to do.
+
 ## v0.5.91 - 2026-10-17
 
 ### Changed

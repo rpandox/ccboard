@@ -5808,6 +5808,39 @@ def api_epic_issue_run(owner: str, repo: str, n: str, issue: str, body: EpicIssu
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
+class EpicIssueWorkIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    node: str                                            # the handle of the paired node that works the issue
+    repo: str | None = None                              # the issue's repository (owner/name) when it is not the epic's own
+    force: StrictBool = False                            # Start anyway: past the node's advisory lane cap only
+
+
+@app.post("/api/epics/{owner}/{repo}/{n}/issues/{issue}/work")
+def api_epic_issue_work(owner: str, repo: str, n: str, issue: str, body: EpicIssueWorkIn, request: Request):
+    """The epic page's Work on <node> (issue #150): the hard filters of routing first (offline, no tasks scope, repository not cloned, agent missing or logged out, back-off, window over the limit,
+    no free lane, lanes not read, a refusal this board just had), then the relay row epic_work as the signed-in person. A node that fails a filter is not asked: 409 {error, reason:
+    node_filtered, filter: <code>, node}, with the same words Run gives. `force` lifts only the free-lane count. A pin is not a way past a filter. Anything else is the relay's own answer
+    ({node, age, data} or its refusal); 409 `writes_off` or `no_nodes` when Work is off."""
+    _epic_person(request, "Work is pressed by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    if not github.valid_number(issue):
+        raise projects.BadRequest("not a valid issue number")
+    o, r = _epic_canon(owner, repo)
+    slug = None
+    if body.repo is not None:
+        so, _, sn = body.repo.partition("/")
+        if not github.valid_slug(so, sn):
+            raise projects.BadRequest("repo is owner/name")
+        slug = body.repo
+    try:
+        out = _runner().work_issue(o, r, num, int(issue), body.node, body.force, request, slug)
+    except nodes_run.RunRefused as e:
+        return _run_refused(e)
+    except nodes_relay.RelayError as e:
+        return e.response(body.node if nodes.valid_handle(body.node) else None)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/epics/{owner}/{repo}/{n}/route")
 def api_epic_route(owner: str, repo: str, n: str, issue: str | None = None):
     """The run as the epic page shows it ({route}), and, with `?issue=N`, what auto routing would do with that issue now ({preview: {handle, name, why, waiting, pin, refused, ranked}}). Reads GitHub only

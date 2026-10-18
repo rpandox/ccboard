@@ -816,6 +816,62 @@ test('the Epics list never looks complete when it is not: more issues, more epic
   assert.match(t, /This board has more repositories than it looks in\./);
 });
 
+test('an Epics list that stopped at its call limit says what it did not read, and an epic not read is never shown as having no issues (issue #147)', async () => {
+  const list = clone(FX.list);
+  list.epics[1].children = null;
+  list.epics[1].children_state = 'budget';
+  list.partial = true;
+  list.deferred_repos = ['example/api', 'example/docs', 'example/site', 'example/tools', 'example/more'];
+  list.deferred_counts = 1;
+  list.budget = { calls: 40, max: 40 };
+  const w = await tasksWorld({ list });
+  tabBtn(w, 'Epics').click();
+  await settle();
+  const rows = page(w).querySelectorAll('.ep-lrow');
+  assert.match(text(rows[0].querySelector('.ep-lmeta')), /6 open, 1 closed/);
+  assert.match(text(rows[1].querySelector('.ep-lmeta')), /issues not read this time/);
+  assert.ok(!/0 open|0 closed/.test(text(rows[1].querySelector('.ep-lmeta'))), 'unknown is not zero');
+  const note = page(w).querySelector('[data-partial]');
+  assert.equal(text(note.querySelector('.ep-note-t')), 'This list stopped at its GitHub call limit.');
+  assert.equal(text(note.querySelector('.ep-note-n')), 'not looked in this time: example/api, example/docs, example/site, example/tools and 1 more; 1 epic with their issues not read this time. The next refresh carries on from there.');
+  const w2 = await tasksWorld({ list: clone(FX.list) });
+  tabBtn(w2, 'Epics').click();
+  await settle();
+  assert.equal(page(w2).querySelector('[data-partial]'), null, 'a complete list carries no such note');
+  const odd = clone(FX.list);
+  odd.partial = true;
+  const w3 = await tasksWorld({ list: odd });
+  tabBtn(w3, 'Epics').click();
+  await settle();
+  assert.match(text(page(w3).querySelector('[data-partial] .ep-note-n')), /^part of it was not read this time\./);
+});
+
+test('a partial Epics list is asked again after about 11 s and is never reused for 30 s; a complete one keeps the 60 s poll and the 30 s reuse (issue #147)', async () => {
+  const listCalls = (w) => calls(w).filter((c) => c.path === '/api/epics').length;
+  const partial = clone(FX.list);
+  partial.partial = true;
+  partial.deferred_counts = 1;
+  const w = await tasksWorld({ list: partial });
+  const timers = fakeTimers(w);
+  tabBtn(w, 'Epics').click();
+  await settle();
+  const live = () => timers().filter((t) => !t.cleared && [11000, 60000].includes(t.ms));
+  assert.deepEqual(live().map((t) => t.ms), [11000], 'a partial list polls again in 11 s, not 60');
+  const before = listCalls(w);
+  await w.run('Epics.fetchList(false)');
+  assert.equal(listCalls(w), before + 1, 'a partial answer is not reused for 30 s');
+  live().at(-1).fn();
+  await settle();
+  assert.equal(listCalls(w), before + 2, 'the 11 s timer asks again');
+  w.ctx.__list = clone(FX.list);
+  await w.run('Epics.fetchList(true)');
+  await settle();
+  const n = listCalls(w);
+  await w.run('Epics.fetchList(false)');
+  assert.equal(listCalls(w), n, 'a complete answer is reused for 30 s');
+  w.run('Epics.stopList()');
+});
+
 test('opening #/tasks?tab=epics directly works even for a board with no sign of epics, and Board brings the task board back and stops the list', async () => {
   const w = await tasksWorld({ issue: false, hash: '#/tasks?tab=epics' });
   assert.ok(tabs(w), 'the address itself shows the switch');

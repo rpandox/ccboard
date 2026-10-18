@@ -82,6 +82,8 @@ LIST_TTL = 60.0
 ISSUE_TTL = 60.0
 COMMENTS_TTL = 0.0                       # an open child's comments are revalidated on every refresh (a 304 costs no request budget): `none` is a statement about a moment
 COMMENTS_TTL_CLOSED = 600.0              # a closed child's: its claim history is settled; a page kept this way is never the basis of `none`, and a child that was reopened is open again
+LIST_CALLS = 40                          # gh calls one refresh of the Epics list may make across all repositories and epics (a 304 counts); the rest waits for the next refresh and is said
+LIST_PARTIAL_TTL = 10.0                  # seconds a refresh that stopped at LIST_CALLS is reused before the next one carries on
 COMMENT_CALLS = 40                       # gh calls for comments one refresh may make; the rest wait for the next one (answer.partial)
 DEADLINE = 30.0                          # seconds one refresh may take
 STALE_NOTE = "not from an allowed author"
@@ -119,6 +121,7 @@ _NODE_ALIAS = re.compile(r"\w[\w.-]{0,39}")
 _lock = threading.Lock()
 _last_good: dict[tuple, tuple[float, dict]] = {}       # (owner, repo, n) -> (monotonic time, the GitHub part of the answer): what a failed read falls back to
 _list_good: dict[tuple, tuple[float, dict]] = {}
+_list_deferred: set = set()                              # repositories (lower-case slugs) and (slug, number) epics the last refresh left for the next one: they go first, so none starves
 mono = time.monotonic                                   # patched by tests
 
 
@@ -128,6 +131,7 @@ def reset() -> None:
     with _lock:
         _last_good.clear()
         _list_good.clear()
+        _list_deferred.clear()
     with _klock:
         _locks.clear()
     github.reader.reset_state()
@@ -349,16 +353,20 @@ def _link_children(children: list[dict]) -> None:
         c["dependency_cycle"] = bool(c["depends_on_refs"]) and reaches(me, me)
 
 
-def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, bool, bool]:
+def _paged(builder, cap: int, ttl: float, spend=None) -> tuple[list, bool, float | None, bool, bool]:
     """(items, truncated, GitHub's clock, any page stale, every page fresh): pages 1.. of builder(page) until a short page, `cap` items or MAX_PAGES. Never follows a
-    link. "Fresh" means GitHub itself confirmed every page in this call (a 200, or a 304 on If-None-Match), not a cache entry or a stale one."""
+    link. "Fresh" means GitHub itself confirmed every page in this call (a 200, or a 304 on If-None-Match), not a cache entry or a stale one. `spend(path, ttl)` is asked before
+    every page and raises _Cut when the refresh's call budget is used up and the page would really be fetched (nothing partial is returned then: the caller treats the whole read as not done)."""
     items: list = []
     srv: float | None = None
     stale = truncated = False
     fresh = True
     per = github.PER_PAGE
     for page in range(1, github.MAX_PAGES + 1):
-        rep = github.reader.get(builder(page), ttl)
+        path = builder(page)
+        if spend is not None:
+            spend(path, ttl)
+        rep = github.reader.get(path, ttl)
         data = rep.data
         if not isinstance(data, list):
             raise github.GhReadError("bad_answer")
@@ -1167,7 +1175,7 @@ def new_options(projects_list, project: str | None = None) -> dict:
             "limits": {"children": CHILDREN_MAX, "title": TITLE_MAX, "body": BODY_MAX}}
 
 
-def _counts(owner: str, repo: str, issue: dict) -> dict | None:
+def _counts(owner: str, repo: str, issue: dict, spend=None) -> dict | None:
     """{open, closed, total, more} children of an epic: from the parent's own sub_issues_summary when GitHub sends it (no extra call), else by reading the list.
     `more` is True when the list had more issues than were read (CHILD_CAP): the numbers are then a floor, and the page says "more than"."""
     s = issue.get("sub_issues_summary")
@@ -1175,24 +1183,46 @@ def _counts(owner: str, repo: str, issue: dict) -> dict | None:
         return {"open": s["total"] - s["completed"], "closed": s["completed"], "total": s["total"], "more": False}
     n = issue["number"]
     try:
-        items, more, *_ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL)
+        items, more, *_ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL, spend)
     except github.GhReadError as e:
         if e.reason != "not_found":
             raise
-        items, more, *_ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL)
+        items, more, *_ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL, spend)
     kids = [i for i in items if isinstance(i, dict) and "pull_request" not in i and i.get("number") != n]
     closed = sum(1 for i in kids if i.get("state") == "closed")
     return {"open": len(kids) - closed, "closed": closed, "total": len(kids), "more": bool(more)}
 
 
 def _read_list(repos: list[str]) -> dict:
+    """The GitHub part of the Epics list. At most LIST_CALLS gh calls (every call of the reader counts, a 304 too) across all repositories and epics: when they are used up the rest is
+    NOT read this time and says so, never shown as empty or free: a repository not looked in is in `deferred_repos`, an epic whose children could not be counted gets
+    `children: None` and `children_state: "budget"`, and `partial` is True. What was left goes first in the next refresh (`_list_deferred`), so no repository is starved."""
     epics, errors, top = [], [], None
     srv = None
     cut = False                                                                      # more epics than are listed (EPIC_CAP in all, or more than one page in a repository)
-    for slug in repos:
+    used = 0                                                                         # gh calls THIS refresh makes: counted here, never from the reader's process-wide counter (other refreshes bump that)
+    deferred_repos: list[str] = []
+    deferred_counts = 0
+
+    def spend(path: str, ttl: float) -> None:
+        nonlocal used
+        if github.reader.cached_fresh(path, ttl):                                    # a page the cache answers costs nothing, so the budget never cuts it
+            return
+        if used >= LIST_CALLS:
+            raise _Cut()
+        used += 1
+    with _lock:
+        before = set(_list_deferred)
+    left_over: set = set()
+    order = sorted(repos, key=lambda s: s.lower() not in before)                      # stable: the repositories the last refresh left go first
+    for i, slug in enumerate(order):
         owner, _, repo = slug.partition("/")
         try:
-            items, ptrunc, s, *_ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL)
+            items, ptrunc, s, *_ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL, spend)
+        except _Cut:
+            deferred_repos = [x for x in order[i:]]
+            left_over.update(x.lower() for x in deferred_repos)
+            break
         except github.GhReadError as e:
             if e.reason in ("no_gh", "no_login", "rate_limited", "timeout"):
                 top = e.as_dict()
@@ -1201,27 +1231,38 @@ def _read_list(repos: list[str]) -> dict:
             continue
         cut = cut or ptrunc
         srv = s if s is not None and (srv is None or s > srv) else srv
+        items = sorted(items, key=lambda it: (slug.lower(), it.get("number") if isinstance(it, dict) else 0) not in before)          # epics left uncounted last time first
         for it in items:
             if not isinstance(it, dict) or "pull_request" in it or not isinstance(it.get("number"), int) or not github.valid_number(it["number"]):
                 continue
             if len(epics) >= EPIC_CAP:
                 cut = True
                 break
+            state = None
             try:
-                counts = _counts(owner, repo, it)
+                counts = _counts(owner, repo, it, spend)
+            except _Cut:
+                counts, state = None, "budget"
+                deferred_counts += 1
+                left_over.add((slug.lower(), it["number"]))
             except github.GhReadError as e:
                 counts = None
                 if e.reason in ("no_gh", "no_login", "rate_limited", "timeout"):
                     top = e.as_dict()
             epics.append({"repo": slug, "owner": owner, "name": repo, "number": it["number"], "title": github.clean_text(it.get("title"), 200) or f"Issue {it['number']}",
                           "url": issue_url(owner, repo, it["number"]), "state": "open", "children": counts, "updated_at": github.clean_ts(it.get("updated_at")),
-                          "labels": [github.clean_text(lb.get("name"), 50) for lb in (it.get("labels") or [])[:LABEL_CAP] if isinstance(lb, dict) and github.clean_text(lb.get("name"), 50)]})
+                          "labels": [github.clean_text(lb.get("name"), 50) for lb in (it.get("labels") or [])[:LABEL_CAP] if isinstance(lb, dict) and github.clean_text(lb.get("name"), 50)],
+                          **({"children_state": state} if state else {})})
             if top:
                 break
         if top:
             break
+    with _lock:
+        _list_deferred.clear()
+        _list_deferred.update(left_over)
     epics.sort(key=lambda e: e["updated_at"] or "", reverse=True)
-    return {"epics": epics, "errors": errors, "error": top, "server_now": srv, "truncated": cut}
+    return {"epics": epics, "errors": errors, "error": top, "server_now": srv, "truncated": cut, "partial": bool(deferred_repos or deferred_counts),
+            "deferred_repos": deferred_repos, "deferred_counts": deferred_counts, "calls": used}
 
 
 def list_epics(db, repos: list[str]) -> dict:
@@ -1232,13 +1273,13 @@ def list_epics(db, repos: list[str]) -> dict:
     repos = list(repos)[:REPO_CAP]
     key = tuple(r.lower() for r in repos)
     out = {"epics": [], "repos": list(repos), "repos_truncated": more_repos, "truncated": False, "errors": [], "error": None, "stale_age_s": None, "server_now": None,
-           "rate": github.reader.rate()}
+           "rate": github.reader.rate(), "partial": False, "deferred_repos": [], "deferred_counts": 0, "budget": None}
     if not repos:
         out["note"] = "No project here has a GitHub remote, so there is nowhere to look for epics."
         return out
     with _lock:
         hit = _list_good.get(key)
-    if hit is not None and mono() - hit[0] < LIST_TTL:
+    if hit is not None and mono() - hit[0] < (LIST_PARTIAL_TTL if hit[1].get("partial") else LIST_TTL):          # a refresh that stopped at its call budget carries on soon
         res = hit[1]
     else:
         try:
@@ -1255,7 +1296,9 @@ def list_epics(db, repos: list[str]) -> dict:
                 _list_good[key] = (mono(), res)
                 while len(_list_good) > GOOD_MAX:
                     _list_good.pop(next(iter(_list_good)))
-    out.update(epics=[], errors=res["errors"], server_now=github.epoch_iso(res["server_now"]), rate=github.reader.rate(), truncated=bool(res.get("truncated")))
+    out.update(epics=[], errors=res["errors"], server_now=github.epoch_iso(res["server_now"]), rate=github.reader.rate(), truncated=bool(res.get("truncated")),
+               partial=bool(res.get("partial")), deferred_repos=list(res.get("deferred_repos") or []), deferred_counts=int(res.get("deferred_counts") or 0),
+               budget={"calls": res.get("calls"), "max": LIST_CALLS})
     out["error"] = out["error"] or res["error"]
     for e in res["epics"]:
         st = load_settings(db, e["owner"], e["name"], e["number"])

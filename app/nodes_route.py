@@ -238,7 +238,7 @@ def _check(v: dict, ctx: dict) -> dict | None:
         free, running = lanes.get("free"), lanes.get("running")
         if not isinstance(free, int) or isinstance(free, bool) or not isinstance(running, int) or isinstance(running, bool):
             return _refuse("lane_unknown", "has not counted its running tasks, so a free lane is not known")
-        if free - ctx["reserved"].get(v["handle"], 0) < 1:
+        if free - ctx["reserved"].get(v["handle"], 0) < 1 and not ctx["force_lane"]:
             return _refuse("lane", "has no free lane" + (f" ({ctx['reserved'][v['handle']]} reserved by this board)" if ctx["reserved"].get(v["handle"]) else ""))
     b = ctx["blocked"].get(v["handle"])
     if isinstance(b, dict) and float(b.get("until") or 0) > now:
@@ -259,7 +259,8 @@ def _lanes_text(free: int) -> str:
 
 def pick(issue: dict, nodes: list[dict], pins: dict | None, reservations: list[dict] | None, settings: dict | None) -> dict:
     """Choose the node for one issue. `issue` is {repo: "owner/name", number, agent: claude | codex}; `nodes` the hub's records; `pins` {ui, label, epic} (a handle, UNKNOWN_PIN or None
-    each); `reservations` the live ones (Reservations.items()); `settings` {max_window_pct, group: [[handle, ...]], assigned: {handle: epoch of its last assignment}, blocked: {handle: {until, text}}, now}.
+    each); `reservations` the live ones (Reservations.items()); `settings` {max_window_pct, group: [[handle, ...]], assigned: {handle: epoch of its last assignment}, blocked: {handle: {until, text}}, now, force_lane}.
+    `force_lane` is a person's "Start anyway" on one issue: it skips the free-lane count (the node's lane cap is advice) and no other filter; a lane count that is not known still refuses.
     Returns {handle, name, why, waiting, pin, refused, ranked}: `handle` is the chosen node or None; `why` is one plain sentence either way; `waiting` is None or {code, reason, until,
     until_iso, text, pinned} (the earliest time any refusal names, or None); `refused` is [{handle, name, code, text, until}] for every node that failed a filter; `ranked` the nodes
     that passed, best first."""
@@ -285,7 +286,7 @@ def pick(issue: dict, nodes: list[dict], pins: dict | None, reservations: list[d
         p = gpct.get(group[v["handle"]])
         window[v["handle"]] = (UNKNOWN_PCT, True, read[v["handle"]][1]) if p is None else (p, False, read[v["handle"]][1])
     ctx = {"now": now, "agent": agent, "slug": str(issue.get("repo") or "").lower(), "max_pct": max_pct, "reserved": reserved, "window": window,
-           "blocked": cfg.get("blocked") if isinstance(cfg.get("blocked"), dict) else {}}
+           "blocked": cfg.get("blocked") if isinstance(cfg.get("blocked"), dict) else {}, "force_lane": cfg.get("force_lane") is True}
     refused, passed = [], []
     for v in views:
         r = _check(v, ctx)
