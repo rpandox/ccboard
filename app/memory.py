@@ -17,13 +17,16 @@ is a loopback address; anything else is refused before a socket is opened.
 
 health() answers one dict, never raises, and never takes longer than BUDGET seconds:
 
-    {state: up|degraded|down, version, port, port_source, pid, observations, sessions, summaries, db_size, queue_depth, processing,
+    {state: up|degraded|down|not_started, version, port, port_source, pid, observations, sessions, summaries, db_size, queue_depth, processing,
      active_sessions, last_error{at, message, provider, failures, last_success_at}|None, reason, at}
 
     up        /health answered 200 and /api/readiness says ready (then /api/stats and /api/processing-status fill in the numbers;
               if either fails the numbers stay None and the state stays up)
     degraded  the port is open but /health or /api/readiness did not answer in time (or answered something else, or is not ready)
-    down      connection refused (a stale or missing worker.pid, a worker that was never started) or a refused non-loopback host
+    down      connection refused with a stale worker.pid (the worker ran and stopped), or CCBOARD_MEM_PORT pointing at nothing, or a refused
+              non-loopback host
+    not_started  connection refused and no worker.pid (nothing listens on the settings.json or default port either): the plugin's hooks
+              start the worker with the first Claude session, so a fresh box reads this, neutral, and not "down"
 
 last_error comes from <claude-mem dir>/observer-health.json on disk (never fails the probe). The monitor (app/agents/monitor.py) stores
 health() under kv `mem_health` every 20 s and /api/state's `memory` is that value, so the state poll never waits on the worker.
@@ -354,6 +357,16 @@ def _blank() -> dict:
             "last_error": None, "reason": None, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
+NOT_STARTED = "not started yet: the memory worker starts with the first Claude session"
+
+
+def refused(source: str) -> tuple[str, str]:
+    """(state, reason) for a refused connection to the port found from `source` (discover()): 'down' when the worker was running (a stale
+    worker.pid) or the owner pinned a port (CCBOARD_MEM_PORT); 'not_started' when there is no worker.pid at all, the fresh-box case."""
+    why = {"worker.pid": "worker.pid is stale or the worker stopped", "env": "CCBOARD_MEM_PORT points at nothing"}.get(source)
+    return ("down", f"connection refused ({why})") if why else ("not_started", NOT_STARTED)
+
+
 def _probe(out: dict, deadline: float) -> None:
     d = discover()
     out.update(port=d["port"], port_source=d["source"], pid=d["pid"])
@@ -372,9 +385,7 @@ def _probe(out: dict, deadline: float) -> None:
     try:
         status, body = get("/health")
     except Refused:
-        why = {"worker.pid": "worker.pid is stale or the worker stopped", "env": "CCBOARD_MEM_PORT points at nothing"}.get(
-            d["source"], "no worker.pid: the worker starts with the first Claude session")
-        out.update(state="down", reason=f"connection refused ({why})")
+        out.update(zip(("state", "reason"), refused(d["source"])))
         return
     except NoAnswer:
         out.update(state="degraded", reason=f"the port is open but /health did not answer within {TIMEOUT:g} s")

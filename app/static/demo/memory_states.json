@@ -13,6 +13,19 @@
       "tested_worker": "13.34.2"
     }
   },
+  "not_started": {
+    "status": 503,
+    "body": {
+      "error": "not started yet: the memory worker starts with the first Claude session",
+      "state": "not_started",
+      "up": false,
+      "reason": "not started yet: the memory worker starts with the first Claude session",
+      "reason_code": "not_started",
+      "compat": "ok",
+      "worker_version": null,
+      "tested_worker": "13.34.2"
+    }
+  },
   "degraded": {
     "status": 503,
     "body": {

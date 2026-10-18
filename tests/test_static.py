@@ -1468,8 +1468,8 @@ def test_demo_memory_fixtures_carry_the_proxy_envelope(name, lists):
 
 def test_demo_memory_states_cover_every_degraded_state():
     v = demo_json("memory_states.json")
-    assert {"down", "degraded", "stale", "partial", "ambiguous", "incompatible", "untested"} <= set(v)
-    for k in ("down", "degraded"):
+    assert {"down", "not_started", "degraded", "stale", "partial", "ambiguous", "incompatible", "untested"} <= set(v)
+    for k in ("down", "not_started", "degraded"):
         assert v[k]["status"] == 503 and v[k]["body"]["up"] is False and v[k]["body"]["state"] == k and v[k]["body"]["reason"]
     assert v["stale"]["body"]["stale"] is True and v["incompatible"]["body"]["state"] == "incompatible"
     assert "demoMemFlag" in (STATIC / "core.js").read_text(encoding="utf-8")

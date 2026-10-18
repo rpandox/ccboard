@@ -235,6 +235,15 @@ def test_a_refused_connection_is_503_down_and_a_hang_without_cache_is_degraded(s
     assert e.value.state == "down" and e.value.code == "refused" and e.value.body()["up"] is False
 
 
+def test_a_refused_connection_with_no_worker_pid_is_not_started_not_down(shop, mem_home, mem_worker):
+    (mem_home / "worker.pid").unlink()                          # a fresh box: no worker was ever started, and nothing listens on the default port
+    mp.reset()
+    with pytest.raises(mp.WorkerError) as e:
+        mp.observations("shop")
+    assert e.value.state == "not_started" and e.value.code == "not_started" and "not started yet" in e.value.reason
+    assert e.value.body()["up"] is False and e.value.body()["state"] == "not_started"
+
+
 def test_the_last_good_answer_is_served_stale_and_errors_are_never_cached(shop, mem_worker, monkeypatch):
     fill(mem_worker, {"api": 3})
     now = [1000.0]

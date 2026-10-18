@@ -395,7 +395,10 @@ registerPage('inbox', {
     const hint = el('p', { class: 'hint', text: Inbox.HINT });
     const list = el('div', { class: 'roster inbox-list' });
     Pages.reset();
-    const none = pageEmpty('inbox', 'Nothing needs you', 'Sessions that wait for you, finish or fail show up here until you acknowledge them.');
+    // the next step depends on the board: no sessions at all -> New session (and New project when there is no project to start it in); sessions running -> See all agents
+    const acts = { session: pageCreateButton('session', 'New session', true), project: pageCreateButton('project', 'New project', false),
+      agents: el('a', { class: 'btn', href: '#/agents', text: 'See all agents' }) };
+    const none = pageEmpty('inbox', 'Nothing needs you', 'Sessions that wait for you, finish or fail show up here until you acknowledge them.', [acts.session, acts.project, acts.agents]);
     root.append(el('div', { class: 'inbox-page' }, el('div', { class: 'page-head' }, el('h1', { text: 'Needs you' }), summary), hint, list, none));
     // a click on a card selects it (the keyboard's selection walks Pages.items(), so look the session up by name, not by position)
     const select = (tmux) => {
@@ -404,7 +407,7 @@ registerPage('inbox', {
       Pages.setIndex(i);
       repaintPage();
     };
-    inboxPage.refs = { summary, hint, none, listNode: list, list: makeKeyedList(list, {
+    inboxPage.refs = { summary, hint, none, acts, listNode: list, list: makeKeyedList(list, {
       key: (s) => s.tmux,
       create: (s) => {
         const n = inboxCard(s, inboxPage.st, {});
@@ -427,6 +430,10 @@ registerPage('inbox', {
     r.listNode.classList.toggle('cv-auto', items.length > CV_AUTO_ROWS);       // long lists skip the layout of rows that are off screen
     Pages.paint();
     r.none.classList.toggle('hidden', items.length > 0);
+    const live = rosterSessions(st).length > 0;
+    r.acts.session.classList.toggle('hidden', live);
+    r.acts.project.classList.toggle('hidden', live || (st.projects || []).length > 0);
+    r.acts.agents.classList.toggle('hidden', !live);
     r.hint.classList.toggle('hidden', !items.length);
     Nodes.use(() => Nodes.slot('inbox', r.listNode, { none: r.none, local: items.length }));     // paired nodes: "On other nodes" under the local cards (nodes-hub.js)
     refreshTitle();

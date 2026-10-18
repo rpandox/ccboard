@@ -101,6 +101,8 @@ html.force-coarse #page .xr-open { min-height:var(--tap); }
 .empty-visual .bp5-icon::before { font-size:32px; }
 .empty-title { margin:6px 0 0; font-size:15px; font-weight:600; color:var(--fg-2); }
 .empty-hint { max-width:42ch; }
+#page .empty-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }      /* the next step an empty state names, as a control (pageEmpty's 4th argument) */
+#page .empty-actions button, #page .empty-actions .btn { min-height:var(--tap); }
 
 /* keyboard selection (j/k) in the inbox and roster */
 #page .rrow.sel { outline:2px solid var(--sig); outline-offset:-2px; background:rgba(77,208,225,.10); }

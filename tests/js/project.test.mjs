@@ -1272,3 +1272,15 @@ test('project page shows the repository trust warning before a first task', asyn
   env.w.run('pjUpdate()');
   assert.equal(textOf(env.page().querySelector('.pj-trust')), '');
 });
+
+test('a project with no session: the empty state has its own New session button (the header\'s sits under the repo chips), which opens the launcher for this project', async () => {
+  const env = projectWorld();
+  const page = await go(env, '#/p/internalSystem');
+  const empty = all(page, '.nonideal').find((n) => /No sessions here/.test(textOf(n)));
+  assert.ok(empty && shownNode(empty));
+  assert.doesNotMatch(textOf(empty), /above/, 'it no longer points at a button elsewhere');
+  const b = all(empty, 'button').filter((x) => shownNode(x));
+  assert.deepEqual(b.map(textOf), ['New session']);
+  b[0].click();
+  assert.deepEqual(launched(env).map((l) => [l.mode, l.project]), [['session', 'internalSystem']]);
+});

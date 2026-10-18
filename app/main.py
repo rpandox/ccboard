@@ -1135,7 +1135,7 @@ def api_memory_health(refresh: str | None = None):
 
 
 def _mem_answer(fn, *args, **kw):
-    """A proxy answer, or its 503 body ({error, state: down|degraded, up: false, reason, reason_code}) when the worker could not answer
+    """A proxy answer, or its 503 body ({error, state: down|not_started|degraded, up: false, reason, reason_code}) when the worker could not answer
     and nothing was cached. An incompatible shape is a 200 with state 'incompatible' (the page shows one line; the worker is running)."""
     if not settings.claude_mem:
         return JSONResponse({"error": "claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)", "state": "off", "up": False,

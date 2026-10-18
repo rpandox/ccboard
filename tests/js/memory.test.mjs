@@ -900,3 +900,106 @@ test('?demo=1&mem=down and mem=stale: the degraded panel and the stale callout, 
   assert.match(text(page(inc).querySelector('.mem-note[data-note=incompatible]')), /report it/);
   assert.equal(page(inc).querySelectorAll('.mem-sum').length, 0);
 });
+
+// ---------------------------------------------------------------- never started (#307): neutral, with a New session button
+
+const NOT_STARTED = 'not started yet: the memory worker starts with the first Claude session';
+const withCreate = (w) => { w.run("globalThis.__created = []; globalThis.Shell = { openCreate: (k) => { __created.push(k); return true; } };"); };
+const created = (w) => plain(w.get('__created'));
+
+test('not_started: the pill is neutral (no down, no amber), says "not started yet" and the tile has no zeros, no red and a New session button', () => {
+  const { w } = memWorld();
+  withCreate(w);
+  w.ctx.__h = { state: 'not_started', reason: NOT_STARTED };
+  const info = plain(w.run('memPillInfo(__h, null)'));
+  assert.deepEqual([info.cls, info.glyph, info.text], ['not-started', '○', 'not started yet']);
+  const t = tileOf(w, { state: 'not_started', reason: NOT_STARTED, observations: null, summaries: null, queue_depth: null, active_sessions: null, last_error: null }, {});
+  const s = text(t);
+  assert.match(s, /not started yet: the memory worker starts with the first Claude session/);
+  assert.match(s, /Observationsunknown unknown/);
+  assert.doesNotMatch(s, /\bdown\b|\b0\b/);
+  const b = t.querySelectorAll('button');
+  assert.deepEqual(b.map(text), ['New session']);
+  b[0].click();
+  assert.deepEqual(created(w), ['session']);
+  assert.equal(plain(w.run('memHealthLine({ state: "not_started", reason: ' + JSON.stringify(NOT_STARTED) + ' })')), NOT_STARTED);
+});
+
+test('not_started on the Memory page: the health disclosure opens by itself with the explanation and New session; the pill is the neutral one', async () => {
+  const m = memWorld({ answers: withAnswers() });
+  withCreate(m.w);
+  m.w.ctx.__st = STATE({ memory: { state: 'not_started', reason: NOT_STARTED, observations: null, summaries: null, queue_depth: null, active_sessions: null, last_error: null } });
+  m.w.run('state = __st');
+  await go(m);
+  const pill = q(m.w, '.mem-pill');
+  assert.ok(pill.classList.contains('not-started') && !pill.classList.contains('down') && !pill.classList.contains('degraded'));
+  assert.equal(text(q(m.w, '.mem-pill-t')), 'not started yet');
+  const d = q(m.w, '.mem-health');
+  assert.equal(d.getAttribute('data-state'), 'not_started');
+  assert.equal(d.open, true);
+  assert.match(text(d), /the memory worker starts with the first Claude session/);
+  assert.equal(qa(m.w, '.mem-health-line.bad').length, 0, 'not the red failure line');
+  const b = d.querySelectorAll('button').find((x) => text(x) === 'New session');
+  assert.ok(b);
+  b.click();
+  assert.deepEqual(created(m.w), ['session']);
+});
+
+test('a read that answers not_started: the panel is the neutral explanation with New session and a plain Retry, not the red "not running" alert', async () => {
+  const m = memWorld({ answers: withAnswers({ '/api/memory/shop/observations': err('not_started') }) });
+  withCreate(m.w);
+  await go(m, '#/memory/shop?tab=timeline');
+  const d = q(m.w, '.mem-degraded');
+  assert.ok(d);
+  assert.equal(d.getAttribute('data-state'), 'not_started');
+  assert.equal(d.getAttribute('role'), 'status');
+  assert.match(text(d), /claude-mem has not started yet/);
+  assert.match(text(d), /the memory worker starts with the first Claude session/);
+  assert.doesNotMatch(text(d), /not running/);
+  assert.equal(text(q(m.w, '.mem-degraded-g')), '○');
+  assert.equal(qa(m.w, '.mem-degraded button.primary').map(text).join(), 'New session');
+  qa(m.w, '.mem-degraded button').find((x) => text(x) === 'New session').click();
+  assert.deepEqual(created(m.w), ['session']);
+  assert.ok(qa(m.w, '.mem-degraded button').some((x) => text(x) === 'Retry'));
+  assert.equal(text(q(m.w, '.mem-pill-t')), 'not started yet');
+});
+
+test('no projects: the empty state is the first thing under the title, with a New project button; the empty picker, search and tabs are gone', async () => {
+  const m = memWorld({ st: STATE({ projects: [] }), answers: withAnswers() });
+  withCreate(m.w);
+  m.w.location.hash = '#/memory';
+  await settle();
+  const empty = qa(m.w, '.nonideal').find((n) => /No projects yet/.test(text(n)));
+  assert.ok(empty);
+  assert.deepEqual(empty.querySelectorAll('button').map(text), ['New project']);
+  empty.querySelectorAll('button')[0].click();
+  assert.deepEqual(created(m.w), ['project']);
+  const out = (n) => { for (let x = n; x && x.nodeType === 1; x = x.parentNode) if (x.classList.contains('hidden')) return true; return false; };
+  assert.equal(out(q(m.w, '.mem-controls')), true, 'the Project picker and the search have nothing to act on');
+  assert.equal(out(q(m.w, '.tab')), true, 'nor have the tabs');
+  assert.equal(out(empty), false);
+  const kids = q(m.w, '.memory-page').children;
+  const above = kids.slice(0, kids.indexOf(empty.parentNode)).filter((n) => !out(n) && n.children.length);
+  assert.deepEqual(above.map((n) => n.className), ['page-head mem-pagehead', 'mem-tile-host'], 'only the title row and the (collapsed) health line are above it');
+});
+
+test('the demo fixture has a not_started variant shaped like the proxy answer', () => {
+  const v = STATES.not_started;
+  assert.equal(v.status, 503);
+  assert.equal(v.body.state, 'not_started');
+  assert.equal(v.body.up, false);
+  assert.equal(v.body.reason, NOT_STARTED);
+});
+
+test('the first project arriving while the empty state shows brings the picker and the tabs back', async () => {
+  const m = memWorld({ st: STATE({ projects: [] }), answers: withAnswers() });
+  m.w.location.hash = '#/memory';
+  await settle();
+  assert.ok(qa(m.w, '.nonideal').find((n) => /No projects yet/.test(text(n))));
+  m.w.ctx.__st = STATE();
+  m.w.run('state = __st; updateCurrentPage(state)');
+  await settle();
+  assert.equal(qa(m.w, '.nonideal').find((n) => /No projects yet/.test(text(n))), undefined);
+  assert.equal(q(m.w, '.mem-controls').classList.contains('hidden'), false);
+  assert.equal(q(m.w, '.tab').parentNode.classList.contains('hidden') || q(m.w, '.tab').classList.contains('hidden'), false);
+});

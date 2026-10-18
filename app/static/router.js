@@ -441,9 +441,16 @@ function makeKeyedList(parent, opts) {
 }
 
 /* components.js's emptyState / toast belong to the shell slice: degrade to plain nodes and the banner when they are missing. */
-function pageEmpty(icon, title, hint) {
-  if (typeof emptyState === 'function') return emptyState(icon, title, hint);
-  return el('div', { class: 'empty dim' }, el('b', { text: title }), hint ? el('div', { text: hint }) : null);
+function pageEmpty(icon, title, hint, actions) {
+  if (typeof emptyState === 'function') return emptyState(icon, title, hint, actions);
+  return el('div', { class: 'empty dim' }, el('b', { text: title }), hint ? el('div', { text: hint }) : null,
+    Array.isArray(actions) && actions.length ? el('div', { class: 'empty-actions' }, ...actions) : null);
+}
+
+/* A button for an empty state that runs what the + menu entry of that kind runs (Shell.openCreate: session | task | project ...). */
+function pageCreateButton(kind, text, primary) {
+  return el('button', { class: primary ? 'primary' : null, type: 'button', text, 'data-create': kind,
+    onclick: () => { if (typeof Shell !== 'undefined' && Shell && typeof Shell.openCreate === 'function') Shell.openCreate(kind); } });
 }
 
 function pageToast(text, kind) {
