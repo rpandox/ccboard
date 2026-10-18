@@ -307,6 +307,17 @@ def parse_graph(data) -> dict | None:
             t = _tip((lb or {}).get("ref"))
             if t:
                 linked.setdefault(n, []).append(t)
+    raw_open = ((repo.get("unassigned") or {}).get("nodes") or []) if isinstance(repo.get("unassigned"), dict) else []
+    covered = []                                                   # the unassigned open issues this read looked at (issue #200): an unassigned issue with a linked branch is held, never free
+    for it in raw_open[:team.GQL_OPEN_WINDOW]:
+        n = team.number_of(it.get("number")) if isinstance(it, dict) else None
+        if n is None:
+            continue
+        covered.append(n)
+        for lb in ((it.get("linkedBranches") or {}).get("nodes") or [])[:5]:
+            t = _tip((lb or {}).get("ref"))
+            if t:
+                linked.setdefault(n, []).append(t)
     for pr in ((repo.get("pullRequests") or {}).get("nodes") or [])[:60]:
         n = team.number_of(pr.get("number")) if isinstance(pr, dict) else None
         if n is not None:
@@ -321,7 +332,8 @@ def parse_graph(data) -> dict | None:
     cost = rl.get("cost") if isinstance(rl.get("cost"), int) and not isinstance(rl.get("cost"), bool) and 0 < rl.get("cost") < 1000 else 1
     rem = rl.get("remaining") if isinstance(rl.get("remaining"), int) and not isinstance(rl.get("remaining"), bool) and rl.get("remaining") >= 0 else None
     return {"linked": linked, "closes": closes, "tips": tips[:TIPS_KEEP], "tips_truncated": bool((refs.get("pageInfo") or {}).get("hasNextPage")) or len(tips) > TIPS_KEEP,
-            "full": {"issues": n_issues >= team.GQL_WINDOW, "pulls": n_pulls >= team.GQL_WINDOW}, "cost": cost, "remaining": rem}
+            "full": {"issues": n_issues >= team.GQL_WINDOW, "pulls": n_pulls >= team.GQL_WINDOW},
+            "open_cover": {"numbers": covered, "full": len(raw_open) >= team.GQL_OPEN_WINDOW}, "cost": cost, "remaining": rem}
 
 
 def parse_claims(comments, issue: int, server_now: float | None) -> list[dict]:
@@ -349,7 +361,7 @@ def new_read(slug: str) -> dict:
     return {"slug": slug, "status": "pending", "reason": None, "message": None, "wait_s": None, "read_at": None, "gql_at": None, "private": None, "fork": None,
             "default_branch": None, "issues": [], "pulls": [], "linked": {}, "tips": [], "claims": [], "closes": {}, "claims_at": 0.0, "graph_error": None, "gql_full": {"issues": False, "pulls": False},
             "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None, "pull_files": {},
-            "open_issues": None, "open_truncated": False, "open_at": None}
+            "open_issues": None, "open_truncated": False, "open_at": None, "open_cover": None}
 
 
 def parse_pull_files(data) -> tuple[list[str], bool]:
@@ -802,7 +814,7 @@ class Poller:
                 sc["gql"] = now + SOFT_RETRY_S                                     # a hiccup of the GraphQL read alone: ask again soon, the repository stays ok
             if graph is not None:
                 with self.lock:
-                    rd.update(gql_at=self.wall(), linked=graph["linked"], tips=graph["tips"], closes=graph["closes"], graph_error=None, gql_full=graph["full"])
+                    rd.update(gql_at=self.wall(), linked=graph["linked"], tips=graph["tips"], closes=graph["closes"], graph_error=None, gql_full=graph["full"], open_cover=graph["open_cover"])
                     rd["truncated"]["tips"] = graph["tips_truncated"]
                     rd["pulls"] = parse_pulls(pulls_raw, f"{o}/{n}", graph["closes"]) if pulls_raw else rd["pulls"]
                     sc["gql_last"] = now

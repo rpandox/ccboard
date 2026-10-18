@@ -381,6 +381,28 @@ test('every other phase has words: running, waiting for a person (attention), fa
   }
 });
 
+test('work on a paired node shows the phase that node reports for its task (issue #149), and a node that reports none shows no work phase', async () => {
+  const d = detail();
+  const kid = d.children.find((x) => x.number === 205);
+  const task = (extra) => ({ ref: 'node-b:9', phase: 'running', node: 'node-b', node_name: 'node-b', status: 'online', age_s: 0, updated_at: '2026-10-10T10:00:00+00:00', ...extra });
+  kid.work = null;
+  kid.task = task({ epic_phase: 'pr', epic_pr: 12 });
+  let w = await epicWorld({ data: clone(d) });
+  const n = rowOf(w, 205).querySelector('[data-phase]');
+  assert.equal(n.getAttribute('data-phase'), 'pr');
+  assert.equal(text(n).trim(), '○ Work pull request opened (PR #12)');
+  kid.task = task({ epic_phase: 'waiting' });
+  w = await epicWorld({ data: clone(d) });
+  assert.equal(text(rowOf(w, 205).querySelector('[data-phase]')).trim(), '✻ Work waiting for a person');
+  assert.ok(rowOf(w, 205).querySelector('[data-phase]').classList.contains('warn'));
+  kid.task = task({ epic_phase: 'nonsense' });
+  w = await epicWorld({ data: clone(d) });
+  assert.equal(rowOf(w, 205).querySelector('[data-phase]').getAttribute('data-phase'), 'running', 'a word the page does not know is shown as running, never as markup');
+  kid.task = task({});
+  w = await epicWorld({ data: clone(d) });
+  assert.equal(rowOf(w, 205).querySelector('[data-phase]'), null, 'an older node sends no epic phase: only the task line, as before');
+});
+
 test('the work phase never invents a link: a task reference that is not a number gets no Open link', async () => {
   const d = detail();
   d.children.find((x) => x.number === 203).task.ref = 'node-b:../x';

@@ -848,6 +848,7 @@ FREE_WORDS = {
     "graph_window": "This repository has more assigned issues or open pull requests than the link read covers, so nobody can say which issues are free.",
 }
 GQL_WINDOW = 30                 # the GraphQL read looks at this many assigned issues and this many open pull requests (app/github.py GQL, `first:30`)
+GQL_OPEN_WINDOW = 100           # and at this many unassigned open issues, for their linked branches (`unassigned:issues(first:100)`); the free list is as wide as the REST page of them
 
 
 def free_unknown(reason: str, held: list) -> dict:
@@ -869,6 +870,18 @@ def _window_short(read: dict) -> bool:
 def _unclocked(read: dict, owner: str, name: str) -> set[int]:
     """The issues named by a presence line that has no clock from GitHub (word unknown) and is not ended: such a line may be live, so its issue is held, never free."""
     return {board["issue"] for _, board in _presence_person(read, owner, name, keep_gone=True) if board["issue"] and board["live"] == "unknown" and board["state"] != "ended"}
+
+
+def _linked_issues(read: dict) -> set[int]:
+    """The issues that have a branch linked to them, whoever linked it and whether or not the branch's author is known: such an issue is somebody's work, so it is held, never free.
+    (A linked branch whose author is known already warns through `conflicts`; this also holds the one whose author is not known, which names nobody.)"""
+    out: set[int] = set()
+    linked = read.get("linked") if isinstance(read, dict) and isinstance(read.get("linked"), dict) else {}
+    for n, branches in linked.items():
+        num = number_of(n) if isinstance(n, int) else number_of(int(n)) if isinstance(n, str) and n.isdigit() else None
+        if num is not None and isinstance(branches, list) and any(isinstance(lb, dict) and branch_of(lb.get("name")) for lb in branches[:5]):
+            out.add(num)
+    return out
 
 
 def holds(read: dict, me_login: str | None, me_id: int | None, owner: str, name: str, lc: list[dict] | None = None) -> set[int]:
@@ -906,7 +919,7 @@ def free_of(read: dict, status: str, stale: bool, warnings: dict | None, owner: 
     the first page of the open issues nobody is assigned to; `read["open_truncated"]` says that page was full, so `truncated` is true and the list may be longer than it shows."""
     mine = holds(read, me_login, me_id, owner, name, lc)
     theirs = {int(k) for k in ((warnings or {}).get("issues") or {}) if str(k).isdigit()}
-    held = sorted(mine | theirs | _unclocked(read, owner, name))
+    held = sorted(mine | theirs | _unclocked(read, owner, name) | _linked_issues(read))
     pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
     tr = read.get("truncated") if isinstance(read.get("truncated"), dict) else {}
     if status != "ok":
@@ -936,17 +949,23 @@ def free_of(read: dict, status: str, stale: bool, warnings: dict | None, owner: 
     if now is not None and isinstance(at, (int, float)) and not isinstance(at, bool) and now - at > OPEN_OLD_S:
         return free_unknown("open_old", held)
     taken = set(held)
+    cover = read.get("open_cover") if isinstance(read.get("open_cover"), dict) else None          # the unassigned issues the link read looked at (issue #200)
+    covered = {c for c in (cover.get("numbers") or []) if isinstance(c, int) and not isinstance(c, bool)} if cover and isinstance(cover.get("numbers"), list) else None
+    cut = False
     rows = []
     for it in raw[:OPEN_ISSUES_MAX]:
         n = number_of(it.get("number")) if isinstance(it, dict) else None
         if n is None or n in taken or "pull_request" in it or (isinstance(it.get("assignees"), list) and it["assignees"]):
+            continue
+        if covered is not None and cover.get("full") is True and n not in covered:
+            cut = True                                                     # the link read's page of unassigned issues was full and did not reach this one: its linked branches are not known, so it is not listed
             continue
         labels = [text(x, 50) for x in (it.get("labels") or [])[:_LABEL_MAX] if text(x, 50)] if isinstance(it.get("labels"), list) else []
         if PRESENCE_LABEL in labels:
             continue                                                       # the presence status issue is machinery, never work to pick
         rows.append({"number": n, "title": text(it.get("title")), "url": issue_url(owner, name, n), "labels": labels, "updated_at": iso_of(it.get("updated_at"))})
     rows.sort(key=lambda r: (-(_epoch(r["updated_at"]) or 0), r["number"]))
-    return {"state": "ok", "reason": None, "message": "", "held": held, "issues": rows[:FREE_MAX], "count": len(rows), "truncated": len(rows) > FREE_MAX or read.get("open_truncated") is True}
+    return {"state": "ok", "reason": None, "message": "", "held": held, "issues": rows[:FREE_MAX], "count": len(rows), "truncated": len(rows) > FREE_MAX or read.get("open_truncated") is True or cut}
 
 
 # ---------------------------------------------------------------- the whole team in one list (issue #200)
