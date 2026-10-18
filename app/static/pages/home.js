@@ -70,7 +70,7 @@ function renderBanner() {
       el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (state && state.tmux_down) {
     const fix = typeof state.tmux_fix === 'string' ? state.tmux_fix : '';       // this platform's start command (#309); an older board sends none
-    own(el('span', null, 'The ccboard tmux server is not running.', fix ? [' Start it on the box: ', el('code', { text: fix })] : false),
+    own(el('span', null, 'The ccboard tmux server is not running.', fix ? [' Start it on the box: ', el('code', { class: 'bn-cmd' }, fix.split(' ').flatMap((t, i) => (i ? [' ', el('span', { class: 'bn-tok', text: t })] : [el('span', { class: 'bn-tok', text: t })])))] : false),   // wraps only at the command's spaces
       el('button', { class: 'primary small', type: 'button', onclick: () => { const h = '#/settings?sec=doctor'; if (typeof navigate === 'function') navigate(h); else location.hash = h; }, text: 'Open Doctor' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
     b.classList.add('warn');

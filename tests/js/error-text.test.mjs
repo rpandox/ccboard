@@ -1,7 +1,10 @@
 // #309: errorText() (core.js, beside api()) turns an error from api() or fetch into words for a panel, and the tmux-down banner on Home names this platform's
 // start command and opens Doctor. Real scripts on minidom through world.mjs's homeWorld; errors are built inside the page's context, as api() builds them.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
+import { STATIC } from './harness.mjs';
 import { fakeState, homeWorld, text, tick } from './world.mjs';
 
 const { w } = homeWorld();
@@ -44,6 +47,17 @@ test('tmux down: the banner shows the start command the state carries and an Ope
     assert.equal(text(r.code), cmd);
     assert.ok(r.open && r.open.classList.contains('primary') && r.open.classList.contains('small'));
   }
+});
+
+test('the command wraps only at its spaces: one code, copyable text equal to tmux_fix, every word an unbreakable piece', () => {
+  const cmd = 'launchctl kickstart gui/$(id -u)/dev.ccboard.tmux';
+  const r = banner({ tmux_fix: cmd });
+  assert.equal(text(r.code), cmd);
+  const toks = r.code.querySelectorAll('span.bn-tok');
+  assert.deepEqual(toks.map(text), cmd.split(' '));
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const rule = css.match(/#banner \.bn-tok \{([^}]*)\}/);
+  assert.ok(rule && /white-space:\s*nowrap/.test(rule[1]) && /overflow-wrap:\s*normal/.test(rule[1]), 'the words are nowrap, so the span\'s anywhere-wrapping cannot split one');
 });
 
 test('tmux down on a board that sends no command: the plain sentence, still with the button', () => {
