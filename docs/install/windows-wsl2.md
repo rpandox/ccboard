@@ -178,7 +178,7 @@ A Doctor inside the distro cannot say that the distro is stopped, because the bo
 
 ## What the installer changes
 
-Inside the distro it is the Linux install ([What the installer changes](linux.md#what-the-installer-changes)). The WSL branch adds: an early stop when systemd is not running, warnings when `PROJECTS_DIR`, `CCBOARD_DATA_DIR`, the checkout, `claude` or `codex` are on a Windows drive, and, with `CCBOARD_TAILSCALE_PLACEMENT=host`, no Tailscale checks and no `serve` mappings. On the Windows side, only the keep-alive script changes anything: it registers the `ccboard-wsl-keepalive` Scheduled Task, and with `-WriteWslConfig` edits `%UserProfile%\.wslconfig` after a backup copy. `-Remove` undoes the task.
+Inside the distro it is the Linux install ([What the installer changes](linux.md#what-the-installer-changes)). The WSL branch adds: an early stop when systemd is not running, warnings when `PROJECTS_DIR`, `CCBOARD_DATA_DIR`, the checkout, `claude` or `codex` are on a Windows drive, and, with `CCBOARD_TAILSCALE_PLACEMENT=host`, no Tailscale checks and no `serve` mappings. The `ccboard` MCP server is registered with Claude Code (and Codex) by the board's own venv python, `<checkout>/.venv/bin/python`, exactly as on Ubuntu: the distro's `/usr/bin/python3` is not used for it (only the docker runtime does, because Claude starts the shim on the host). A Claude registration that already exists is kept as it is, not added twice. On the Windows side, only the keep-alive script changes anything: it registers the `ccboard-wsl-keepalive` Scheduled Task, and with `-WriteWslConfig` edits `%UserProfile%\.wslconfig` after a backup copy. `-Remove` undoes the task.
 
 ## Next steps
 
