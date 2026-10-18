@@ -41,11 +41,14 @@ REPOS = (r'cd "$HOME/$1" || exit 1; find . -maxdepth 4 '
          r'\( -name node_modules -o -name .venv \) -prune -o -name .git -prune -print')
 
 
+RUNNER_TIMEOUT = 12                  # seconds one command on a device may take
+
+
 def runner(argv: list[str], *, stdin: str | None = None, stdout_limit: int = 32768):
     """The only process seam. Tests replace it; no shell on the board and no prompts in argv."""
     output = [bytearray(), bytearray()]
     limits = (stdout_limit, 8192)
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + RUNNER_TIMEOUT
     pending = memoryview((stdin or "").encode())
     p = subprocess.Popen(argv, stdin=subprocess.PIPE if pending else subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
@@ -59,7 +62,7 @@ def runner(argv: list[str], *, stdin: str | None = None, stdout_limit: int = 327
             while selector.get_map() and not capped:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise subprocess.TimeoutExpired(argv, 12)
+                    raise subprocess.TimeoutExpired(argv, RUNNER_TIMEOUT)
                 for key, _ in selector.select(remaining):
                     if key.data == 2:
                         try:

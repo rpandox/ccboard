@@ -21,6 +21,7 @@ import pytest
 
 from app import doctor, hooks
 from app.config import settings
+from tests.conftest import production_timeout
 from tests.proc_fake import use_fake_proc
 
 REAL_RUN = doctor._run          # captured before any fixture patches it
@@ -651,8 +652,9 @@ def test_claude_hooks_states():
 # ------------------------------------------------------------------ the 5 s cap
 
 def test_spec_constants():
-    assert doctor.CHECK_TIMEOUT == 5.0 and doctor.CACHE_TTL == 20.0
-    assert doctor.CMD_TIMEOUT < doctor.CHECK_TIMEOUT
+    # the shipped limits: the autouse fixture of tests/conftest.py (issue #293) has lifted the live ones
+    assert production_timeout("app.doctor", "CHECK_TIMEOUT") == 5.0 and doctor.CACHE_TTL == 20.0
+    assert production_timeout("app.doctor", "CMD_TIMEOUT") < production_timeout("app.doctor", "CHECK_TIMEOUT")
 
 
 def test_a_slow_check_becomes_a_timed_out_warning_without_holding_the_rest(monkeypatch):
@@ -2255,7 +2257,7 @@ def test_the_two_gh_commands_run_in_parallel_and_auth_gets_the_long_limit(world,
     assert time.monotonic() - t0 < 0.55 and c["status"] == "pass"
     assert {a[1]: a[2] for a in log} == {("gh", "--version"): doctor.CMD_TIMEOUT, ("gh", "auth", "status"): doctor.GH_AUTH_LIMIT}
     assert abs(log[0][0] - log[1][0]) < 0.1                                           # both started together
-    assert doctor.GH_AUTH_LIMIT == 15.0 and doctor.GH_AUTH_LIMIT > doctor.CHECK_TIMEOUT
+    assert doctor.GH_AUTH_LIMIT == 15.0 and doctor.GH_AUTH_LIMIT > production_timeout("app.doctor", "CHECK_TIMEOUT")
 
 
 def test_only_one_gh_probe_is_in_flight_and_the_cache_still_applies(world, monkeypatch):

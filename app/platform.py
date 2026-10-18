@@ -847,6 +847,9 @@ def launchd_target(job: str, env=None) -> str | None:
     return None if uid is None else f"{launchd_domain(env)}/{uid}/{launchd_label(job)}"
 
 
+LAUNCHCTL_TIMEOUT = 10           # seconds for `launchctl print`
+
+
 def launchd_loaded(job: str, env=None) -> bool | None:
     """Is dev.ccboard.<job> loaded in its domain (`launchctl print <target>` exits 0)? None where that cannot be asked: no launchctl, no uid, or no
     answer in 10 seconds. Read only; a loaded job that is not running (a calendar job between runs) is loaded."""
@@ -854,7 +857,7 @@ def launchd_loaded(job: str, env=None) -> bool | None:
     if target is None or shutil.which("launchctl") is None:
         return None
     try:
-        r = subprocess.run(["launchctl", "print", target], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        r = subprocess.run(["launchctl", "print", target], capture_output=True, text=True, timeout=LAUNCHCTL_TIMEOUT, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.returncode == 0

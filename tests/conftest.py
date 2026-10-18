@@ -176,6 +176,76 @@ def _no_real_tailscale(monkeypatch):
     nodes.reset()
 
 
+# ---- subprocess timeouts, lifted for tests (issue #293) -----------------------------------------------------------------------------
+# The fakes answer in milliseconds, but a short production timeout around one (wslinfo 3 s, the doctor's 1.5 s Tailscale command, ...) expires
+# when a whole-suite run stalls the machine for a moment, and the code under test reads that as "unknown" or "did not answer". So every named
+# subprocess timeout in app/ is raised for each test (autouse fixture below); a test about the timeout itself sets its own short value with
+# monkeypatch, which runs after the fixture. tests/test_subprocess_timeouts.py fails when a constant in app/ is in neither table.
+TEST_TIMEOUT = 30.0
+RAISED_TIMEOUTS = {                               # module -> constants lifted to TEST_TIMEOUT for every test
+    "app.platform": ("WSLINFO_TIMEOUT", "LISTEN_TIMEOUT", "LOGIN_SHELL_TIMEOUT", "LAUNCHCTL_TIMEOUT"),
+    "app.claude_auth": ("KEYCHAIN_TIMEOUT", "VERSION_TIMEOUT", "STATUS_TIMEOUT", "LOGOUT_TIMEOUT"),
+    "app.doctor": ("CHECK_TIMEOUT", "CMD_TIMEOUT", "TS_TIMEOUT", "HELPER_TIMEOUT", "LOGIN_PATH_TIMEOUT", "GH_WAIT"),
+    "app.doctor_wsl": ("PS_TIMEOUT",),
+    "app.tailscale": ("CALL_TIMEOUT", "WHOIS_TIMEOUT"),
+    "app.nodes": ("TS_TIMEOUT",),
+    "app.agents.codex": ("CMD_TIMEOUT", "MODELS_TIMEOUT", "LOGOUT_TIMEOUT"),
+    "app.agents.claude": ("CAPS_TIMEOUT",),
+    "app.tree": ("STATUS_TIMEOUT", "LS_TIMEOUT"),
+    "app.projects": ("GIT_TIMEOUT",),
+    "app.github": ("TIMEOUT", "CONFIG_TIMEOUT"),
+    "app.github_write": ("TIMEOUT",),
+    "app.preflight": ("TIMEOUT",),
+    "app.tmux": ("TIMEOUT",),
+    "app.bare": ("RUNNER_TIMEOUT",),
+}
+EXEMPT_TIMEOUTS = {                               # (module, constant) -> why it is not lifted
+    ("app.backup", "PUSH_TIMEOUT"): "300 s: already far longer than any stall, and no fake is told to take that long",
+    ("app.backup", "FETCH_TIMEOUT"): "180 s: already far longer than any stall",
+    ("app.cost", "CODEX_FALLBACK_TIMEOUT"): "240 s: already far longer than any stall",
+    ("app.scheduler", "RUN_TIMEOUT"): "3600 s default for a whole agent run, taken from the job (timeout_s) in tests",
+    ("app.tailscale", "SERVE_TIMEOUT"): "60 s: already longer than any stall (as install.sh's `timeout 60`)",
+    ("app.nodes_relay", "RELAY_TIMEOUT"): "an HTTP relay to a peer, not a subprocess",
+    ("app.nodes_relay", "CLAIM_TIMEOUT"): "an HTTP relay to a peer (90 s), not a subprocess",
+    ("app.nodes_relay", "WORK_TIMEOUT"): "an HTTP relay to a peer (120 s), not a subprocess",
+    ("app.nodes_stream", "OPEN_TIMEOUT"): "an HTTP request to a peer, not a subprocess",
+    ("app.nodes", "CALL_TIMEOUT"): "an HTTP request to a peer, not a subprocess",
+    ("app.nodes_hub", "TIMEOUT"): "an HTTP request to a node, not a subprocess",
+    ("app.nodes_discovery", "PROBE_TIMEOUT"): "an HTTPS probe over a socket, not a subprocess",
+    ("app.nodes_discovery", "RESOLVE_TIMEOUT"): "a name lookup in a thread, not a subprocess",
+    ("app.projects", "RESOLVE_TIMEOUT"): "a name lookup in a thread, not a subprocess",
+    ("app.memory", "TIMEOUT"): "an HTTP request to the claude-mem worker, not a subprocess",
+    ("app.memory_proxy", "FETCH_TIMEOUT"): "an HTTP request to the claude-mem worker, not a subprocess",
+    ("app.github_write", "LOCK_TIMEOUT"): "how long a write waits for a lock (45 s), not a subprocess",
+}
+# Modules with a short literal timeout in a subprocess call that no test fakes: git on a repository the test built in its own temp directory
+# (a real git, answering in milliseconds) or a tool the suite never reaches. tests/test_subprocess_timeouts.py allows a literal under 30 s only here.
+LITERAL_TIMEOUT_EXEMPT = {
+    "app/tasks.py": "git on a temp repository the test built, never a fake",
+    "app/scheduler.py": "git worktree unlock on a temp repository, never a fake",
+    "app/preflight.py": "git --version and git ls-remote against a local temp remote, never a fake",
+    "app/projects.py": "git init on a temp directory, never a fake",
+    "app/prpoll.py": "git and gh calls the poller's tests replace whole (gitops.run, _gh_json), never a fake binary",
+}
+PRODUCTION_TIMEOUTS: dict[tuple[str, str], float] = {}     # (module, constant) -> the production value, read before the first test lifts it
+
+
+def production_timeout(module: str, name: str) -> float:
+    """The value app/<module> ships for `name`, for a test that asserts on the production limit itself (the fixture has lifted the live one)."""
+    return PRODUCTION_TIMEOUTS[(module, name)]
+
+
+@pytest.fixture(autouse=True)
+def _raised_subprocess_timeouts(monkeypatch):
+    """Issue #293: lift every timeout in RAISED_TIMEOUTS to TEST_TIMEOUT (see the table above)."""
+    import importlib
+    for module, names in RAISED_TIMEOUTS.items():
+        mod = importlib.import_module(module)
+        for name in names:
+            PRODUCTION_TIMEOUTS.setdefault((module, name), getattr(mod, name))
+            monkeypatch.setattr(mod, name, TEST_TIMEOUT)
+
+
 TAILSCALE_READER_THREADS = ("doctor-", "bare-poll", "ccboard-lookup")     # app threads that end by themselves (a stop event or a command timeout) and can run a Tailscale or doctor read
 
 
