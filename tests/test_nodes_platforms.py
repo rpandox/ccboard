@@ -19,11 +19,11 @@ from app import platform as plat
 from app import tailscale as ts
 from app.config import settings
 from app.db import DB
+from tests.docs_util import read_doc
 from tests.test_nodes_card import ID, MAC_SNAP, HOME_SNAP, cardenv, ts as ts_reading  # noqa: F401 (fixtures)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIX = ROOT / "tests" / "fixtures"
-README = ROOT / "README.md"
 REAL_IS_WSL = plat.is_wsl                 # the lru_cached reader, before a test patches it
 REAL_TS_STATUS = nodes._ts_status          # captured at import, before conftest's autouse fixture replaces it
 WSL_VERSION = "Linux version 5.15.167.4-microsoft-standard-WSL2 (root@build) (gcc 11.2.0) #1 SMP Tue Nov 5 00:21:55 UTC 2024\n"
@@ -434,7 +434,7 @@ def test_the_tailscale_status_row_is_a_skip_with_the_sentence_on_the_windows_sid
 # ---------------------------------------------------------------- the README table
 
 def readme_table() -> tuple[list[str], list[list[str]]]:
-    text = README.read_text(encoding="utf-8")
+    text = read_doc("README.md")
     start = text.index("#### Several devices")
     rows = []
     for ln in text[start:].splitlines()[1:]:
@@ -466,7 +466,7 @@ def test_the_support_table_answers_every_question_for_every_platform():
 
 
 def test_the_readme_names_the_mac_browser_limit_and_the_decision_without_a_bypass():
-    text = README.read_text(encoding="utf-8")
+    text = read_doc("README.md")
     sec = text[text.index("#### Several devices"):]
     sec = sec[:sec.index("\n## ")]
     assert "#127" in sec and "another device" in sec and "caffeinate -s" in sec and "to verify" in sec
@@ -475,7 +475,7 @@ def test_the_readme_names_the_mac_browser_limit_and_the_decision_without_a_bypas
 
 def test_where_ccboard_runs_has_one_line_per_platform_of_the_support_table():
     """Issue #115: the short support section and the node platform table share the platform list, so they cannot disagree."""
-    text = README.read_text(encoding="utf-8")
+    text = read_doc("README.md")
     sec = text[text.index("## Where ccboard runs"):]
     sec = sec[3:sec.index("\n## ", 3)]
     rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in sec.splitlines() if ln.startswith("|")][2:]

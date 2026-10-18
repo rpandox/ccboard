@@ -2,23 +2,9 @@
 
 Text checks only: no git, no network. A rewrite of these paragraphs has to keep the facts, or change the test with the new evidence.
 """
-import re
-from pathlib import Path
+from tests.docs_util import read_doc, section
 
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def read(rel):
-    return (ROOT / rel).read_text(encoding="utf-8")
-
-
-def section(text, heading):
-    """The text from `heading` to the next heading of the same or a higher level."""
-    level = len(heading) - len(heading.lstrip("#"))
-    start = text.index(heading + "\n")
-    body = start + len(heading)
-    m = re.search(rf"^#{{1,{level}}} ", text[body:], re.M)
-    return text[start:body + (m.start() if m else len(text))]
+read = read_doc
 
 
 # ------------------------------------------------------------------ #111: the restore runbook

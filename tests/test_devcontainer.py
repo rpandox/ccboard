@@ -17,6 +17,8 @@ from app import agents, doctor
 from app.agents.base import LaunchReq
 from app.config import settings
 
+from tests.docs_util import read_doc
+
 ROOT = Path(__file__).resolve().parent.parent
 SID = "11111111-2222-4333-8444-555555555555"
 
@@ -165,7 +167,7 @@ def test_in_a_container_with_no_devcontainer_repo_it_still_skips(in_container, m
 # ------------------------------------------------------------------ the wording of the docs
 
 def read(rel):
-    return (ROOT / rel).read_text(encoding="utf-8")
+    return read_doc(rel)
 
 
 def test_the_old_claim_is_gone_and_the_host_prerequisites_are_stated():

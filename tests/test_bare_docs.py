@@ -3,10 +3,10 @@
 Every quotation in its failure table must still occur in the code, so the words cannot drift. Text checks only."""
 import json
 import re
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-README = (ROOT / "README.md").read_text(encoding="utf-8")
+from tests.docs_util import ROOT, read_doc
+
+README = read_doc("README.md")
 # Where a person can read a message: the module that builds them, the app, and the page scripts.
 SOURCES = [ROOT / "app" / "bare.py", ROOT / "app" / "main.py", *sorted((ROOT / "app" / "static").glob("*.js"))]
 PLACEHOLDERS = {"<device>": "{name}", "<user>": "{user}", "<agent>": "{agent}"}

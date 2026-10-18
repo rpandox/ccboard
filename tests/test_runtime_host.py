@@ -10,10 +10,10 @@ import pytest
 
 from app import doctor
 from app.config import settings
+from tests.docs_util import read_doc
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
-README = ROOT / "README.md"
 
 WSL = "Linux version 5.15.153.1-microsoft-standard-WSL2 (root@build) (gcc 11.2.0) #1 SMP"
 UBUNTU = "Linux version 6.8.0-45-generic (buildd@lcy02) (x86_64-linux-gnu-gcc-13) #45-Ubuntu SMP"
@@ -200,7 +200,7 @@ def test_runtime_host_is_the_registered_function():
 # ---- the README says the same
 
 def test_readme_carries_the_support_table_and_the_doctor_sentence():
-    t = README.read_text()
+    t = read_doc("README.md")
     assert "Where the container runtime works" in t
     assert doctor.CONTAINER_LINUX_ONLY.split(":")[0] in t                      # "Container mode is Linux only"
     for row in ("Linux host", "WSL2", "Docker Desktop on macOS", "Docker Desktop on Windows"):

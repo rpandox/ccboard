@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+from tests.docs_util import ROOT, read_doc, settings_rows, settings_span
+
 INSTALL = ROOT / "install.sh"
-README = ROOT / "README.md"
 PREFIXES = ("CCBOARD_", "NTFY_", "CODE_", "CODEX_", "TTYD_", "PREVIEW_", "PROJECTS_")
 
 # README rows that install.sh does not remember in /etc/ccboard/env, each with the reason.
@@ -80,9 +80,7 @@ def env_keys():
 
 def readme_rows(text=None):
     """Names that open a README row in the settings section (### Settings up to ### What install.sh sets up)."""
-    text = text if text is not None else README.read_text()
-    a, b = text.index("### Settings"), text.index("### What install.sh sets up")
-    return set(re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", text[a:b], re.M))
+    return settings_rows(text if text is not None else read_doc("README.md"))
 
 
 PY_READ = re.compile(r"""(?:environ|env)\s*\.\s*get\(\s*["']([A-Z][A-Z0-9_]+)["']|getenv\(\s*["']([A-Z][A-Z0-9_]+)["']|environ\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]"""
@@ -156,8 +154,7 @@ def test_internal_and_development_names_stay_out_of_the_installer_list():
     keys = set(env_keys())
     for n in ("CCBOARD_DEV_BYPASS_USER", "CCBOARD_HOOK_TOKEN_FILE", "CCBOARD_IMAGE_VERSION", "INVOCATION_ID", "PYTEST_CURRENT_TEST", "CCBOARD_URL"):
         assert n not in keys, f"{n} is development-only or internal and must not be remembered as a setting"
-    text = README.read_text()
-    assert "CCBOARD_DEV_BYPASS_USER" not in text[text.index("### Settings"):text.index("### What install.sh sets up")], "a development bypass is not a production setting"
+    assert "CCBOARD_DEV_BYPASS_USER" not in settings_span(read_doc("README.md")), "a development bypass is not a production setting"
 
 
 # ------------------------------------------------------------------ install.sh binds every key before the env file is written

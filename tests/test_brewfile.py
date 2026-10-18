@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.docs_util import read_doc
+
 ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / "scripts" / "macos"
 SCRIPT = ROOT / "scripts" / "macos_tools.py"
@@ -33,7 +35,7 @@ def lines(path):
 
 def tools_section():
     """The README's "macOS tools" subsection only (other macOS sections and tables may sit beside it)."""
-    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    text = read_doc("README.md")
     sec = text[text.index("### macOS tools"):]
     return sec[3:][:re.search(r"\n#{2,3} ", sec[3:]).start()]
 

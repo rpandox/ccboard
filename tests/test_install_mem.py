@@ -15,11 +15,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.docs_util import read_doc
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
 UNIT = ROOT / "systemd" / "ccboard-mem.service.in"
 RUN = ROOT / "bin" / "ccboard-mem-run"
-README = ROOT / "README.md"
 KEY = "claude-mem@thedotmack"
 NEW_KEYS = ["CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_SERVICE"]
 UNSET_IN_UNIT = ["CCBOARD_SESSION", "CCBOARD_URL", "CCBOARD_APPROVE_TIMEOUT", "TMUX", "TMUX_PANE", "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION"]
@@ -589,7 +590,7 @@ def test_a_stale_worker_pid_file_is_not_a_running_worker(box):
 
 # ------------------------------------------------------------------------------------------------ README
 def test_readme_documents_the_step_the_unit_and_the_handover():
-    t = README.read_text()
+    t = read_doc("README.md")
     assert "\n## claude-mem\n" in t
     for k in NEW_KEYS:
         assert re.search(rf"^\| `{k}` \|", t, re.M), f"{k} is missing from the settings table"
@@ -602,7 +603,7 @@ def test_readme_documents_the_step_the_unit_and_the_handover():
 
 
 def test_readme_says_what_a_plugin_update_does_and_documents_the_autostart_switch():
-    t = README.read_text()
+    t = read_doc("README.md")
     sec = t.split("\n## claude-mem\n", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(sec.split())
     assert "keeps running until you do" not in flat and "the old version keeps running" not in flat, "13.29.0 recycles a stale worker from a hook"

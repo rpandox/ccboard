@@ -23,10 +23,10 @@ from app import config, doctor, doctor_wsl as dw
 from app import platform as plat
 from app import tailscale as ts
 from app.config import settings
+from tests.docs_util import read_doc, settings_span
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
-README = ROOT / "README.md"
 PS1 = ROOT / "scripts" / "windows" / "ccboard-wsl-keepalive.ps1"
 
 WSL_VERSION = "Linux version 5.15.153.1-microsoft-standard-WSL2 (root@build) (gcc 11.2.0) #1 SMP"
@@ -816,7 +816,7 @@ def test_the_script_parses_with_pwsh():
 # ================================================================== the README
 
 def readme():
-    return README.read_text()
+    return read_doc("README.md")
 
 
 def test_the_readme_section_states_the_support_and_the_recipe():
@@ -837,7 +837,7 @@ def test_the_readme_section_states_the_support_and_the_recipe():
 
 def test_the_readme_lists_the_placement_setting_and_the_doctor_rows():
     t = readme()
-    assert "| `CCBOARD_TAILSCALE_PLACEMENT` |" in t[t.index("### Settings"):t.index("### What install.sh sets up")]
+    assert "| `CCBOARD_TAILSCALE_PLACEMENT` |" in settings_span(t)
     for cid, _g, _l, _f in dw.CHECKS:
         assert f"`{cid}`" in t, cid
 
