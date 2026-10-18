@@ -727,6 +727,7 @@ def test_entrypoint_text_keeps_its_rules():
 # ------------------------------------------------------------------------------------------------ the real codex binary (opt-in)
 @pytest.mark.skipif(not (shutil.which("codex") and os.environ.get("CCBOARD_TEST_CODEX_BINARY") == "1"),
                     reason="set CCBOARD_TEST_CODEX_BINARY=1 with codex on PATH: it drives `codex app-server` in a temp HOME")
+@pytest.mark.real_tool("codex")
 def test_codex_parses_the_installed_hooks_without_warnings(tmp_path):
     """The same check the box runs: Codex's own parser (app-server hooks/list) takes every ccboard hook, as sync, with our timeouts."""
     import select

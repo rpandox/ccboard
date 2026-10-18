@@ -477,6 +477,7 @@ def _compose_config(*files: Path, profile: str | None = None) -> dict:
 
 @pytest.mark.skipif((_compose_version() or (0, 0)) < (2, 24), reason="docker compose >= 2.24 not available")
 @pytest.mark.real_home("the docker CLI finds its compose plugin under ~/.docker/cli-plugins; it only reads config, writes nothing")
+@pytest.mark.real_tool("docker")
 def test_docker_compose_config_validates_and_merges():
     base = _compose_config(COMPOSE, profile="prod")
     assert set(base["services"]) == {"ccboard", "watchtower"}
@@ -549,6 +550,7 @@ def test_entrypoint_refuses_instead_of_guessing_a_home():
 
 @pytest.mark.skipif((_compose_version() or (0, 0)) < (2, 24), reason="docker compose >= 2.24 not available")
 @pytest.mark.real_home("the docker CLI finds its compose plugin under ~/.docker/cli-plugins; it only reads config, writes nothing")
+@pytest.mark.real_tool("docker")
 def test_docker_compose_config_without_a_home_fails_with_a_readable_message():
     env = {k: v for k, v in os.environ.items() if not k.startswith(("COMPOSE_", "CCBOARD_")) and k != "PROJECTS_DIR"}
     for files in ((COMPOSE,), (SHADOW,)):
