@@ -32,13 +32,21 @@ async function peekSend(input) {
   const tmux = sessionPeek.tmux;
   if (!text.trim() || !tmux) return;
   if (sessionPeek.node) { pageToast('This session is on another node: sending to it arrives with the relay.', 'warn'); return; }      // the keys route below is this board's
+  const typed = input.value;                                        // #311: empty at once; a refusal puts the text back
+  const clear = () => rowCleared(input);
+  input.value = '';
+  clear();
+  const note = toast('sending…', { kind: 'info', ttl: 0 });
+  const drop = () => { if (note) note.remove(); };
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { text, enter: true });
-    input.value = '';
-    if (typeof rowCleared === 'function') rowCleared(input);
-    else if (typeof composerGrow === 'function') composerGrow(input);
+    drop();
     pageToast('sent', 'ok');
-  } catch (e) { pageToast(e.message, 'bad'); }
+  } catch (e) {
+    drop();
+    if (!input.value) { input.value = typed; clear(); }
+    pageToast(errorText(e), 'bad');
+  }
 }
 
 /* The nudge chips of the peek's card come from the same list as the terminal page's quick replies (components.js quickLoad, localStorage

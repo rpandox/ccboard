@@ -31,6 +31,7 @@
               align-items:center; padding:8px 8px 8px 10px; border-bottom:1px solid var(--line-soft); border-left:2px solid transparent; }
 @media (hover:hover) { #page .rrow:hover { background:var(--card); } }   /* hover only where a pointer can hover: touch never keeps it */
 #page .rrow.attn { border-left-color:var(--warn); background:var(--warn-bg); }
+#page .rrow.closing, .peek-card.closing { opacity:.5; pointer-events:none; }       /* #311: a Kill is in flight: the row is a ghost until the board answers */
 #page .rrow .rr-g { grid-area:g; display:flex; align-items:center; gap:2px; align-self:start; padding-top:2px; }
 #page .rrow .rr-main { grid-area:main; display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; }
 #page .rrow .rr-name { font-weight:600; }
@@ -556,6 +557,7 @@ html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
 
 /* backlog cards: dashed until a session exists; the prompt head clamps at two lines */
 .task.backlog { border-style:dashed; }
+.task.pending { opacity:.55; }                                                          /* #311: added a moment ago, the board has not answered yet */
 .task .tk-prompt { margin:2px 0 4px; font-size:12px; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
 #page .tasks-board { margin:12px auto; }
 #page .tk-head .summary { flex:1 1 220px; }

@@ -64,10 +64,15 @@ Shell.bareDevice = function (node, device) {
       e.preventDefault();
       if (!input.value.trim() || send.disabled) return;
       send.disabled = true;
+      const text = input.value;
+      input.value = ''; draft.text = ''; status.textContent = 'Sending…';          // #311: the box empties at once; a refusal puts the text back
       try {
-        await api('POST', '/api/bare/' + encodeURIComponent(device.ts_id) + '/sessions/' + encodeURIComponent(row.tmux_name) + '/reply', { text: input.value });
-        input.value = ''; draft.text = ''; status.textContent = 'Reply sent.';
-      } catch (e) { status.textContent = e.message; }
+        await api('POST', '/api/bare/' + encodeURIComponent(device.ts_id) + '/sessions/' + encodeURIComponent(row.tmux_name) + '/reply', { text });
+        status.textContent = 'Reply sent.';
+      } catch (e) {
+        if (!input.value) { input.value = text; draft.text = text; }
+        status.textContent = typeof errorText === 'function' ? errorText(e) : e.message;
+      }
       finally { send.disabled = false; }
     });
     /* The server takes a reply only at the input prompt, so only a waiting row gets the button and the box; a draft is kept for when it waits again. */

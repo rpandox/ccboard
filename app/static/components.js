@@ -44,6 +44,35 @@ function confirmButton(key, label, action, quiet, onChange) {
   return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => { if (onChange) { ui.confirm = key; repaint(); } else confirmArm(key); }, text: label });
 }
 
+/* #311: sessions being closed -> 0 while the DELETE is out, then when to stop counting; their rows (agents.js) dim and say "closing…". */
+const sessionClosing = new Map();
+
+/* Run by every poll: drop a settled name once the state lacks it; true when one outlived its 15 s (the caller repaints). */
+function sessionClosingPrune(st) {
+  if (!sessionClosing.size) return false;
+  let expired = false;
+  const live = new Set(rosterSessions(st).map((x) => x.tmux));            // pages/agents.js
+  for (const [tmux, until] of Array.from(sessionClosing)) {
+    if (!until) continue;
+    if (!live.has(tmux)) sessionClosing.delete(tmux);
+    else if (Date.now() > until) { sessionClosing.delete(tmux); expired = true; }
+  }
+  return expired;
+}
+
+async function sessionKill(tmux) {
+  sessionClosing.set(tmux, 0);
+  repaintPage();
+  try {
+    await api('DELETE', `/api/sessions/${encodeURIComponent(tmux)}`);
+    sessionClosing.set(tmux, Date.now() + 15000);
+  } catch (e) {
+    sessionClosing.delete(tmux);
+    repaintPage();
+    toast(`${tmux} was not closed: ${errorText(e)}`, { kind: 'bad' });
+  }
+}
+
 /* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
    reads "Copied" for a moment. Without a clipboard (an insecure origin) it says to select the text instead. `what` names the thing for the screen reader and the toast. */
 function copyButton(text, what) {
@@ -200,7 +229,7 @@ function sessionRow(s) {
     el('div', { class: 'actions' },
       el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
       s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
-      confirmButton('kill:' + s.tmux, 'Kill session', () => api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`), true)));
+      confirmButton('kill:' + s.tmux, 'Kill session', () => sessionKill(s.tmux), true)));
   if (s.last_message || s.last_prompt) {
     row.append(el('div', { class: 'last' },
       s.last_prompt ? el('span', { class: 'dim', text: '› ' + s.last_prompt.slice(0, 120) }) : null,
@@ -351,6 +380,7 @@ function taskOverrideSet(row, keys, extra) {
 }
 
 function taskOverrideDrop(id) { delete store.tasksOverride[id]; }
+
 function taskRepaint() { if (typeof repaintPage === 'function') repaintPage(); }
 function taskStartingSession() { return { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' }; }
 
@@ -389,6 +419,7 @@ function boardTasks(st) {
     const o = ov[id];
     if (used.has(id)) continue;
     if (o._gone || (!keep && now - o._at > TASK_OVERRIDE_TTL)) { if (!keep) delete ov[id]; continue; }    // a delete the poll has caught up with
+    if (o.pending && base.some((t) => t.project === o.project && t.repo === o.repo && t.title === o.title && !o._seen.includes(t.id))) continue;
     if (o._new) fresh.push(taskApply(null, o));
   }
   return fresh.concat(out);
@@ -1030,12 +1061,12 @@ function backlogCard(t, ctx) {
       { id: 'edit', label: 'Edit', onClick: () => taskEditSheet(t) }],
     danger: { key: 'tdel:' + t.id, label: 'Delete', run: () => taskDelete(t) },
   });
-  return taskCardShell(t, ' backlog' + (queued ? ' queued' : ''), !queued,
+  return taskCardShell(t, ' backlog' + (queued ? ' queued' : '') + (t.pending ? ' pending' : ''), !queued && !t.pending,       // #311
     el('div', { class: 'row tk-title-row' }, el('span', { class: 'title', text: t.title }), queued ? el('span', { class: 'state ended', text: 'waiting for a step' }) : null),
     more ? el('div', { class: 'tk-prompt', text: more }) : null,
-    el('div', { class: 'meta' }, taskWhere(t), added ? ` · ${added}` : ''),
+    el('div', { class: 'meta' }, taskWhere(t), t.pending ? ' · adding…' : (added ? ` · ${added}` : '')),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
-    acts);
+    t.pending ? null : acts);
 }
 
 /* Preview: expose the task's dev server on its own tailnet HTTPS port. When the server cannot find the listening port on its own it asks, in a small

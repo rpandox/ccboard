@@ -62,7 +62,7 @@ Dnd.taskById = function (id, st) {
 
 /* Only a Backlog card can be dispatched: a queued one waits for its step (409), a started one is already somewhere. */
 Dnd.draggable = function (t) {
-  return !!t && t.id !== undefined && t.id !== null && (t.phase || 'running') === 'backlog';
+  return !!t && t.id !== undefined && t.id !== null && !t.pending && (t.phase || 'running') === 'backlog';
 };
 
 Dnd.agentOf = function (s) {
