@@ -9,6 +9,8 @@ scan row, so a field a later change gives a session cannot leak by itself):
   projects[{name, repos[{name, slug, branch, dirty}]}]     slug = `owner/name` of the repo's `origin` when that is a GitHub remote, else null
   sessions[{tmux, project, repo, repo_slug, session, agent, state, needs_you, kind, since, model}]      kind = how the session was started (task, user, external ...)
   tasks[{id, title, phase, agent, project, repo, repo_slug, branch, tmux, issue_ref, updated_at}]       issue_ref = "#<number>" or null
+    + `epic_phase` (running | waiting | pr | done | failed | cancelled | lost) and, with `pr`, `epic_pr` (the pull request number) ONLY for a task an epic's Work started on this node:
+    the phase of that work record, so the hub's epic page can say "waiting for a person" or "pull request opened" for an issue worked here (issue #149). An older node sends neither.
   repo_slug = the repository's canonical key `github.com/<owner>/<name>` in lower case (a fork or a renamed repository resolved to the one it belongs to), else null (issue #197)
   needs_you{permissions, input, errors}, usage{claude, codex}, lanes{cap, running, free}, login_problems[agent], truncated
 
@@ -45,6 +47,7 @@ STR_MAX = 200
 BODY_MAX = 100 * 1024                 # the encoded body, in bytes
 FINISHED_AGE = 24 * 3600              # seconds: a finished task older than this is the first thing dropped from a body that is too large
 FINISHED = ("done", "failed", "cancelled")
+EPIC_PHASES = ("running", "waiting", "pr", "done", "failed", "cancelled", "lost")          # nodes_work.PHASES: the phase of a task's epic work record
 SLUG_TTL = 600.0
 SLUG_CACHE_MAX = 512
 ETAG_LEN = 32
@@ -174,13 +177,29 @@ def _session_row(project, repo, s: dict, keys: dict | None = None) -> dict:
             "kind": clean(s.get("launcher"), 20), "since": clean(s.get("state_at"), 40), "model": clean(stats.get("model"), 80)}
 
 
-def _task_row(t: dict, keys: dict | None = None) -> dict:
+def _epic_fields(db, t: dict) -> dict:
+    """{epic_phase, epic_pr?} of a task that an epic's Work started here (its work record on this node), else {}. One row read; never raises."""
+    if db is None:
+        return {}
+    try:
+        from . import nodes_work
+        w = nodes_work.task_work(db, t)
+    except Exception:
+        return {}
+    if not w or w.get("phase") not in EPIC_PHASES:
+        return {}
+    pr = w.get("pr_number")
+    return {"epic_phase": w["phase"], **({"epic_pr": pr} if w["phase"] == "pr" and isinstance(pr, int) and not isinstance(pr, bool) and pr > 0 else {})}
+
+
+def _task_row(t: dict, keys: dict | None = None, db=None) -> dict:
     n = t.get("issue_number")
     return {"id": t.get("id") if isinstance(t.get("id"), int) else None, "title": clean(t.get("title")), "phase": clean(t.get("phase") or "running", 20),
             "agent": clean(t.get("agent") or "claude", 20), "project": clean(t.get("project")), "repo": clean(t.get("repo")),
             "repo_slug": (keys or {}).get((t.get("project"), t.get("repo"))), "branch": clean(t.get("branch")), "tmux": clean(t.get("tmux_name")),
             **({"failure_reason": clean(reason, 400)} if (reason := task_helpers.trust_failure(t)) else {}),
-            "issue_ref": f"#{n}" if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None, "updated_at": clean(t.get("updated_at"), 40)}
+            "issue_ref": f"#{n}" if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None, "updated_at": clean(t.get("updated_at"), 40),
+            **(_epic_fields(db, t) if isinstance(n, int) and not isinstance(n, bool) and n > 0 else {})}
 
 
 def _repo_keys(projs) -> dict:
@@ -241,7 +260,7 @@ def build(db, scan: dict) -> dict:
     sess = sorted(sess_all, key=lambda s: s["state"] == "ended")             # stable: live sessions first, the scan's order inside each group
     if len(sess) > SESSIONS_MAX:
         sess, truncated = sess[:SESSIONS_MAX], True
-    rows = [_task_row(t, keys) for t in db.tasks()]
+    rows = [_task_row(t, keys, db) for t in db.tasks()]
     active = [t for t in rows if t["phase"] not in FINISHED]
     finished = sorted((t for t in rows if t["phase"] in FINISHED), key=lambda t: t["updated_at"] or "", reverse=True)
     tasks = (active + finished)

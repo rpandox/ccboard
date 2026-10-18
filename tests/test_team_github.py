@@ -1273,6 +1273,19 @@ def test_the_link_read_says_when_a_window_was_full():
     assert team_github.parse_graph(answer(3, team.GQL_WINDOW))["full"] == {"issues": False, "pulls": True}
 
 
+def test_the_link_read_also_looks_at_the_unassigned_open_issues_for_linked_branches():
+    """Issue #200: an unassigned issue with a linked branch must be known as such, so the free list can leave it out."""
+    tipped = {"ref": {"name": "carol/four", "target": {"committedDate": "2026-10-10T09:00:00Z", "author": {"user": {"login": "carol", "databaseId": 4}}}}}
+    answer = {"data": {"repository": {"issues": {"nodes": []}, "pullRequests": {"nodes": []}, "refs": {"nodes": []},
+                                      "unassigned": {"nodes": [{"number": 4, "linkedBranches": {"nodes": [tipped]}}, {"number": 5, "linkedBranches": {"nodes": []}}, {"number": "x"}]}}}}
+    got = team_github.parse_graph(answer)
+    assert [(n, [b["name"] for b in bs]) for n, bs in got["linked"].items()] == [(4, ["carol/four"])] and got["open_cover"] == {"numbers": [4, 5], "full": False}
+    assert "unassigned:issues(states:OPEN,first:100,filterBy:{assignee:null}" in github.GQL_TEAM and github.GQL_TEAM.count(f"first:{team.GQL_OPEN_WINDOW}") == 2
+    full = {"data": {"repository": {**answer["data"]["repository"], "unassigned": {"nodes": [{"number": n, "linkedBranches": {"nodes": []}} for n in range(1, team.GQL_OPEN_WINDOW + 1)]}}}}
+    assert team_github.parse_graph(full)["open_cover"]["full"] is True
+    assert team_github.parse_graph({"data": {"repository": {"issues": {"nodes": []}}}})["open_cover"] == {"numbers": [], "full": False}, "an answer without the new connection still parses"
+
+
 def test_a_repository_that_moves_to_a_new_key_forgets_the_change_detection_of_the_old_one(tw):
     seed(tw.gh)
     tw.share()

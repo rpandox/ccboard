@@ -103,6 +103,7 @@ KV_PREFIX = "epic:"
 STATUSES = ("claimed", "running", "done", "failed", "released", "cancelled")
 LEASE_MIN, LEASE_MAX, LEASE_DEFAULT = 10, 120, 30
 PHASES = ("backlog", "queued", "running", "done", "failed", "cancelled")
+WORK_PHASES = node_state.EPIC_PHASES                       # the phases of epic work a node reports for a task (nodes_work.PHASES)
 
 _MARKER = re.compile(r"\A\s*<!--\s*ccboard:claim\s+v([0-9]{1,3})\s*-->")
 _FIELDS = re.compile(r"^[ \t]*ccboard claim:(.*)$", re.M)
@@ -710,7 +711,9 @@ def _task_views(db, records, display: str) -> dict[int, list[dict]]:
             by_num.setdefault(int(m.group(3)), []).append({
                 "slug": slug, "repo": str(t.get("repo") or "").lower(), "id": t.get("id") if isinstance(t.get("id"), int) else None, "phase": _phase(t.get("phase")),
                 "node": r["handle"], "node_name": github.clean_text(r.get("name"), 60) or r["handle"], "status": r.get("status") or "offline", "age_s": r.get("age_s"),
-                "updated_at": github.clean_text(t.get("updated_at"), 40) or None, "pr": None})
+                "updated_at": github.clean_text(t.get("updated_at"), 40) or None, "pr": None,
+                "epic_phase": t.get("epic_phase") if t.get("epic_phase") in WORK_PHASES else None,          # the node's own epic-work phase (waiting, pr, ...), when it sent one (issue #149)
+                "epic_pr": t.get("epic_pr") if t.get("epic_phase") == "pr" and isinstance(t.get("epic_pr"), int) and not isinstance(t.get("epic_pr"), bool) and t["epic_pr"] > 0 else None})
     return by_num
 
 
@@ -751,7 +754,12 @@ def _task_out(v: dict | None) -> dict | None:
             ref = str(v["id"]) if v["node"] == nodes.LOCAL else nodes.format_ref(v["node"], str(v["id"]), "task")          # `42` here, `box:42` on a node
         except nodes.RefError:
             ref = None
-    return {"ref": ref, "phase": v["phase"], "node": v["node"], "node_name": v["node_name"], "status": v["status"], "age_s": v["age_s"], "updated_at": v["updated_at"]}
+    out = {"ref": ref, "phase": v["phase"], "node": v["node"], "node_name": v["node_name"], "status": v["status"], "age_s": v["age_s"], "updated_at": v["updated_at"]}
+    if v.get("epic_phase"):                                                # a task of epic work on a paired node: the page shows the same epic phases as for this board's own work
+        out["epic_phase"] = v["epic_phase"]
+        if v.get("epic_pr"):
+            out["epic_pr"] = v["epic_pr"]
+    return out
 
 
 # ---------------------------------------------------------------- settings: pins, pause (kept on this board only, kv `epic:<owner/repo#n>`)
@@ -1136,7 +1144,7 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
             **edit_views[(c["repo"], c["number"])],
             "work": works.get((c["repo"].lower(), c["number"])),
             "label_pin": lp, "bucket": {"node": who, "state": bucket}})
-        out["children"][-1]["phase"] = (out["children"][-1]["work"] or {}).get("phase") or bucket                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
+        out["children"][-1]["phase"] = (out["children"][-1]["work"] or {}).get("phase") or (task or {}).get("epic_phase") or bucket                # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
     prog = progress_of(rows, amap)
     prog["open"] = sum(1 for c in part["children"] if c["state"] == "open")
     prog["closed"] = sum(1 for c in part["children"] if c["state"] == "closed")

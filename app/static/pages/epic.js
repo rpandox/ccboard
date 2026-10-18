@@ -576,10 +576,12 @@ function epPermissionNode(p) {
     el('button', { class: 'small', text: 'Deny', onclick: () => decide(p.id, 'deny') }));
 }
 
-/* The phase of the work on one issue, from this board's own work record: a glyph and words, never colour alone. Null when this board holds no record (a remote node's task shows
-   as "Task running on <node>"). */
+/* The phase of the work on one issue, from this board's own work record or, for work on a paired node, the phase that node reports for the task (task.epic_phase, which an older node
+   does not send: then the task's own phase shows as "Task running on <node>"): a glyph and words, never colour alone. Null when neither exists. */
 function epWorkPhaseNode(c) {
-  const w = c.work;
+  let w = c.work;
+  const t = c.task;
+  if ((!w || typeof w !== 'object') && t && typeof t.epic_phase === 'string') w = { phase: t.epic_phase, pr_number: t.epic_pr };          // work on a paired node: the node's own phase (issue #149)
   if ((!w || typeof w !== 'object') && !epPermission(c)) return null;
   const p = epPermission(c) ? 'waiting' : ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
   const [g, words] = EP_WORK_PHASE[p];
@@ -588,7 +590,7 @@ function epWorkPhaseNode(c) {
   if (w && w.attempt > 1) more.push(`attempt ${w.attempt}`);
   if (w && typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
   if (p === 'pr' && w && w.pr_number) more.push(`PR #${w.pr_number}`);
-  return el('span', { class: 'ep-phase' + (attn ? ' warn' : ''), 'data-phase': p, title: p === 'lost' ? 'This board lost the claim. It writes nothing more for it. The task is parked and its worktree is kept.' : null },
+  return el('span', { class: 'ep-phase' + (attn ? ' warn' : ''), 'data-phase': p, title: p === 'lost' ? 'The claim was lost. The node that lost it writes nothing more for it. The task is parked and its worktree is kept.' : null },
     el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: g + ' ' }), `Work ${words}${more.length ? ' (' + more.join(', ') + ')' : ''}`);
 }
 

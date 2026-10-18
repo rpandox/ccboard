@@ -109,6 +109,15 @@ def _i(v):
     return v if isinstance(v, int) and not isinstance(v, bool) and abs(v) < 10 ** 15 else None
 
 
+def _epic_fields(r: dict) -> dict:
+    """The phase of the epic work a peer's task came from (issue #149): one of the known words, with the pull request number only for `pr`; anything else is dropped."""
+    ph = r.get("epic_phase")
+    if not isinstance(ph, str) or ph not in node_state.EPIC_PHASES:
+        return {}
+    pr = _i(r.get("epic_pr")) if ph == "pr" else None
+    return {"epic_phase": ph, **({"epic_pr": pr} if pr and pr > 0 else {})}
+
+
 def _n(v):
     if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or abs(v) == float("inf") or abs(v) > 1e15:
         return None
@@ -182,6 +191,7 @@ def clean_state(body, row: dict) -> dict:
     tasks = [{"id": _i(r.get("id")), "title": _s(r.get("title")), "phase": _s(r.get("phase"), 20), "agent": _s(r.get("agent"), 20), "project": _s(r.get("project")),
               "repo": _s(r.get("repo")), "branch": _s(r.get("branch")), "tmux": _s(r.get("tmux")), "issue_ref": _s(r.get("issue_ref"), 20),
               **({"failure_reason": reason} if _s(r.get("phase"), 20) == "failed" and (reason := _trust_reason(r.get("failure_reason"), r.get("project"), r.get("repo"))) else {}),
+              **_epic_fields(r),
               "updated_at": _s(r.get("updated_at"), 40)} for r in _rows(body.get("tasks"), node_state.TASKS_MAX)]
     ny = body.get("needs_you") if isinstance(body.get("needs_you"), dict) else {}
     lanes = body.get("lanes") if isinstance(body.get("lanes"), dict) else {}
