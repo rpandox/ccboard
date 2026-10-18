@@ -449,6 +449,28 @@ async function cxLogout() {
   return true;
 }
 
+/* ---------- the account actions outside Settings (v0.5.101): the topbar chip's menu and the command palette ----------
+   acctChoices(st) lists every Claude and Codex account of a state payload with what a tap on it can do, so those two surfaces never re-decide it: `switchable` is Settings'
+   Switch rule (the box keeps saved logins, the row is not the one in use, and it has a saved login), `run` the same accountSwitch / cxSwitch the Settings rows call, `flagged`
+   the box having been told this login does not work, and `relogin` what Log in again does from here: Claude goes through accountLogin (Settings > Accounts, the sign-in
+   started), Codex opens its row there, where Log in again is the lead action. [] without accounts. */
+function acctChoices(st) {
+  const out = [];
+  const add = (agent, list, can, nameOf, run, relogin) => {
+    for (const a of list) {
+      out.push({ agent, key: a.key, account: a, name: nameOf(a), plan: typeof a.plan === 'string' ? a.plan : '', current: !!a.current,
+        switchable: can.switch && !a.current && !!a.saved, flagged: acctProblemHit(st, a, agent), canRelogin: can.relogin,
+        run: () => run(a), relogin: () => relogin(a) });
+    }
+  };
+  const cs = acctStore(st);
+  add('claude', agentsAccounts(st), { switch: cs.supported, relogin: cs.supported }, agentsAcctName, accountSwitch, (a) => accountLogin(a.email));
+  const xs = cxStore(st);
+  add('codex', cxAccounts(st), { switch: xs.supported, relogin: xs.supported && xs.add }, cxName, cxSwitch,
+    (a) => { if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'accounts', acct: a.key })); });
+  return out;
+}
+
 /* The reply box's placeholder: a phone gets the bare verb ('Reply…', 'Send…'): the one-row box is about 330 px wide and a long session name wrapped onto a
    second line that was cut off at the bottom, and there is no Shift+Enter on a touch keyboard. The name and the hint live in the box's title and aria-label
    (the callers set both). A fine pointer gets the full text. */

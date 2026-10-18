@@ -287,6 +287,8 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 .menu-pop .mi-text { flex:1 1 auto; min-width:0; }
 .menu-pop .mi-name, .menu-pop .mi-sub { display:block; }
 .menu-pop .mi-sub { margin-top:1px; font-size:11.5px; line-height:1.3; color:var(--dim); }
+.menu-pop .menuitem.is-current .mi-name { font-weight:600; }                                               /* the account menu (Shell.accountItems): the logins in use lead, the ones to switch to follow */
+.menu-pop .menuitem.is-current .bp5-icon { color:var(--ok-fg); }
 
 /* tabs (components.js tabs()): Blueprint tab list with the accent underline, no React indicator */
 .tabs { margin:4px 0 8px; }
