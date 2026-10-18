@@ -1206,10 +1206,16 @@ class DB:
                                                      "action": action, "target": target, "status": status, "detail": detail})
 
     def node_audit_list(self, limit: int = 100, *, direction: str | None = None, node: str | None = None, action: str | None = None,
-                        failures: bool = False) -> list[dict]:
+                        failures: bool = False, peer: str | None = None, not_action: str | None = None) -> list[dict]:
         """The newest audit rows first. `direction` (in or out), `node` (the node name or the peer id), `action` and `failures` (status other than ok)
-        narrow it; the values are bound parameters."""
+        narrow it; `peer` keeps only the rows of that pair (the peer id, exactly) and `not_action` leaves one action out; the values are bound parameters."""
         where, args = [], []
+        if peer:
+            where.append("peer=?")
+            args.append(peer)
+        if not_action:
+            where.append("action<>?")
+            args.append(not_action)
         if direction in ("in", "out"):
             where.append("direction=?")
             args.append(direction)

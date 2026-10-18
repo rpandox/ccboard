@@ -2,6 +2,28 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.93 - 2026-10-18
+
+### Changed
+- New module-level constants name subprocess timeouts that were literals (`platform.LAUNCHCTL_TIMEOUT`, the `claude_auth` version, status and logout timeouts, `codex.LOGOUT_TIMEOUT`, `github.CONFIG_TIMEOUT`, `tmux.TIMEOUT`, `bare.RUNNER_TIMEOUT`). Every value is the one it replaced.
+- `doctor._run`, `codex._run`, `tmux.run` and `preflight.ls_remote` read their default limit when called, not when the module loads; the default is the same number.
+- Tests lift every subprocess timeout for each test, so a stalled machine no longer turns a fake binary's answer into "unknown" or "did not answer" (#293).
+- A guard test fails when a new `*_TIMEOUT` constant, a short literal timeout or a frozen default appears in `app/` without being lifted or exempted with a reason.
+
+Upgrade: nothing to do.
+
+## v0.5.92 - 2026-10-17
+
+### Changed
+- Work on a node passes the same hard filters as Run (offline, no tasks scope, repository or agent missing, back-off, window over the limit, lanes unknown), shows the reason and is disabled; a pin never lifts one, and Start anyway lifts only the free-lane count (#150).
+- The Epics list reads GitHub with a call budget of 40 a refresh; what it did not reach is said as "not read this time", never shown as empty, and the next refresh carries on from there (#147).
+
+### Added
+- Settings > Nodes > Activity also lists the audit rows each paired node keeps about this board (newest 25, read when the tab opens or on Reload), with the node's chip and the time this board received them (#153).
+- `GET /api/node/audit` (scope read) and `GET /api/nodes/{handle}/audit` for those rows: only rows that name the caller's pair, capped at 50, no prompt text or secrets.
+
+Upgrade: nothing to do.
+
 ## v0.5.91 - 2026-10-17
 
 ### Changed

@@ -154,8 +154,9 @@ class Proc(NamedTuple):
     err: str
 
 
-def _run(argv: list[str], timeout: float = CMD_TIMEOUT) -> Proc:
-    """Run argv with a timeout. FileNotFoundError -> ToolMissing(argv[0]); timeout -> ToolTimeout. Tests patch this."""
+def _run(argv: list[str], timeout: float | None = None) -> Proc:
+    """Run argv with a timeout (CMD_TIMEOUT unless one is given). FileNotFoundError -> ToolMissing(argv[0]); timeout -> ToolTimeout. Tests patch this."""
+    timeout = CMD_TIMEOUT if timeout is None else timeout
     try:
         cp = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except FileNotFoundError as e:

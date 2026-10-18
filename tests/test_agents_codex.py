@@ -1177,8 +1177,8 @@ def test_doctor_sessions_folder_readability(ag, fake, _codex_sandbox):
 
 def test_doctor_runs_its_probes_within_the_checks_budget(ag, fake):
     """The group is one unit under doctor.CHECK_TIMEOUT: every subprocess timeout stays below it and the probes run side by side."""
-    from app import doctor
-    assert codex.CMD_TIMEOUT < doctor.CHECK_TIMEOUT
+    from tests.conftest import production_timeout as shipped      # the live limits are lifted for every test (issue #293)
+    assert shipped("app.agents.codex", "CMD_TIMEOUT") < shipped("app.doctor", "CHECK_TIMEOUT")
     fake.use()
     ag.doctor_checks()
     assert {("--version",), ("login", "status"), ("--help",), ("features", "list"), ("mcp", "get", "ccboard")} <= set(fake.calls)

@@ -403,8 +403,9 @@ def test_hook_helpers_a_probe_that_times_out_reads_as_unknown(helpers):
 
 
 def test_hook_helpers_probes_run_with_the_3_second_limit_by_default():
-    from app import doctor
-    assert doctor.HELPER_TIMEOUT == 3.0 and doctor.LOGIN_PATH_TIMEOUT + doctor.HELPER_TIMEOUT < doctor.CHECK_TIMEOUT
+    from tests.conftest import production_timeout as shipped      # the live limits are lifted for every test (issue #293)
+    helper, login_path, cap = (shipped("app.doctor", n) for n in ("HELPER_TIMEOUT", "LOGIN_PATH_TIMEOUT", "CHECK_TIMEOUT"))
+    assert helper == 3.0 and login_path + helper < cap
 
 
 def test_hook_helpers_finds_a_helper_only_the_login_shell_path_has(helpers, tmp_path, monkeypatch):

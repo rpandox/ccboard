@@ -22,6 +22,7 @@ from app import doctor, memory, platform
 from app.agents import monitor
 from app.config import Settings, settings
 from app.db import DB
+from tests.conftest import production_timeout
 from tests.mem_fake import PROCESSING, STATS, MemWorker, closed_port   # noqa: F401  (the fake worker, shared with the proxy tests)
 
 H = {"Tailscale-User-Login": "alice@example.com"}
@@ -93,7 +94,7 @@ def test_the_module_constant_is_computed_at_import_not_hardcoded(tmp_path):
 def test_spec_constants():
     assert memory.TIMEOUT == 2.0 and memory.BODY_CAP == 256 * 1024 and memory.DEFAULT_PORT != 0
     assert monitor.INTERVAL_SECONDS == 20 and memory.KV_HEALTH == "mem_health"
-    assert memory.BUDGET < doctor.CHECK_TIMEOUT, "a whole probe must fit inside the doctor's cap per check"
+    assert memory.BUDGET < production_timeout("app.doctor", "CHECK_TIMEOUT"), "a whole probe must fit inside the doctor's cap per check"
 
 
 # ------------------------------------------------------------------ discovery

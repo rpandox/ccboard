@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from app import preflight, projects
+from tests.conftest import production_timeout
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 GIT = ["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
@@ -87,7 +88,7 @@ def test_git_never_prompts_never_hangs_never_follows_a_redirect_and_gets_the_url
     preflight.ls_remote("https://example.com/o/r.git")
     argv, kw = run.calls[0]
     assert argv == ["git", "-c", "http.followRedirects=false", "ls-remote", "--symref", "--", "https://example.com/o/r.git"]
-    assert kw["timeout"] == preflight.TIMEOUT == 12
+    assert kw["timeout"] == preflight.TIMEOUT and production_timeout("app.preflight", "TIMEOUT") == 12      # the live limit is lifted for tests (issue #293)
     env = kw["env"]
     assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_ASKPASS"] == "true"
     assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
@@ -95,6 +96,7 @@ def test_git_never_prompts_never_hangs_never_follows_a_redirect_and_gets_the_url
 
 
 def test_a_remote_that_does_not_answer_in_time_is_unreachable(monkeypatch):
+    monkeypatch.setattr(preflight, "TIMEOUT", 12)      # the shipped limit, named in the answer (the suite lifts it, issue #293)
     monkeypatch.setattr(preflight, "_run", Run(subprocess.TimeoutExpired(["git"], 12)))
     r = preflight.ls_remote("https://example.com/o/r.git")
     assert r["reachable"] is False and r["needs_auth"] is False and "12 seconds" in r["error"]
