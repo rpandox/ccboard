@@ -10,7 +10,8 @@
    window limit, one hand-made group of nodes on one subscription and "Let MCP run this epic" (mcp_run, off by default, set only here by a person).
    It writes three things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, report, auto_pr, close, max_window_pct, group, mcp_run}, and, only when the board says
    GitHub writes are on (CCBOARD_EPIC_WRITES), a person's ask to a paired node to claim one issue (POST /api/nodes/<handle>/epics/claim {repo, issue, epic}, issue #148) or to
-   work one: claim it, start it as a task on the node and report on the issue (POST /api/nodes/<handle>/epics/work {repo, issue, epic, force?}, issue #149). The node does the
+   work one: claim it, start it as a task on the node and report on the issue (POST .../issues/<n>/work {node, repo, force?}, issues #149 and #150: the board passes the node through the
+   same hard filters as Run first and says why in the same words, and each open child carries `work_refused`, the nodes that fail one, so the action is disabled with the reason). The node does the
    claiming and the work; this page paints the ask at once and shows the node's answer in plain words (taken, lost, claim not known, writes off, closed, attempts used up,
    offline, scope, unconfirmed, and for work also: not cloned there, author not allowed, bypass refused, lane cap). It also shows this board's own claims (held, renewing, lost)
    from the answer's `own_claims`, and says once, with a toast, that one was lost. The settings (what a node posts: phases only, summary or none; pull request; Closes) start off
@@ -24,6 +25,7 @@
 
 const EP_POLL_MS = 30000;          // the page asks again this often while it is visible (the board answers from its own 60 s / 30 s caches and ETags, so most asks cost GitHub nothing)
 const EP_LIST_POLL_MS = 60000;
+const EP_LIST_PARTIAL_MS = 11000;  // a list that stopped at its call budget is asked again after this (the board reuses it for 10 s, then carries on)
 const EP_WAIT_MAX_MS = 65000;
 const EP_LINK_RE = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}\/(?:issues|pull)\/[1-9][0-9]{0,8}$/;
 const EP_STATE = { done: ['✓', 'done'], running: ['✽', 'running'], queued: ['∙', 'queued'], failed: ['✕', 'failed'], open: ['○', 'open'], closed: ['✓', 'closed'], unknown: ['?', 'claim not known'] };
@@ -246,6 +248,7 @@ function epWorkSentence(e, name, n) {
     lanes_full: `${name} already runs as many tasks as its lane cap advises. Nothing was claimed. You can start ${issue} anyway.`,
     launch_failed: `${name} could not start the task for ${issue} and released the claim.`,
   };
+  if (b.reason === 'node_filtered' && typeof b.error === 'string' && b.error) return b.filter === 'lane' ? `${b.error}. You can start ${issue} anyway.` : `${b.error}. Nothing was claimed.`;       // the board's own routing filter, in its words
   if (b.reason === 'repo_not_here' || b.why === 'repo_not_here') return own.repo_not_here;
   if (b.reason === 'work_refused' && ownKey(own, b.why)) return own[b.why];
   return epClaimSentence({ status: e && e.status, message: e && e.message, body: b.reason === 'work_refused' ? { ...b, reason: 'claim_refused' } : b }, name, n, true);
@@ -381,6 +384,15 @@ function epEditText(c) {
   return c.edit_state === 'blocked' ? `Edited by ${c.edited_by || 'someone'}, ${EP_NOT_ALLOWED}. Work is blocked.` : 'GitHub did not say who edited the text. Work is blocked.';
 }
 
+/* The routing filter this node fails for this issue (issue #150): {code, text} from the board's own `work_refused`, else null. The free-lane count is not one that disables: Start anyway
+   (force) is the person's override of the node's advice, and the board still refuses an unforced Work on a full node with the same words. A pin never lifts a filter. */
+function epFilterOf(c, node) {
+  const m = c.work_refused;
+  if (!m || typeof m !== 'object' || !ownKey(m, node.handle)) return null;
+  const f = m[node.handle];
+  return f && typeof f.text === 'string' && f.text && f.code !== 'lane' ? { code: String(f.code || 'filter'), text: f.text.slice(0, 300) } : null;
+}
+
 function epWorkOffer(P, c) {
   const d = P.data;
   if (!d || c.state !== 'open' || typeof d.writes !== 'boolean') return null;
@@ -394,6 +406,7 @@ function epWorkOffer(P, c) {
   if (d.writes === false) { off = 'writes'; text = EP_WRITES_OFF; }
   else if (node.status !== 'online') { off = 'offline'; text = `${node.name} is ${node.status}: it cannot work.`; }
   else if (node.tasks !== true) { off = 'scope'; text = `${node.name} is paired without the tasks scope.`; }
+  else if (epFilterOf(c, node)) { off = 'filter'; text = epFilterOf(c, node).text; }
   else if (a && a.epic_ok === false) { off = 'epic_author'; text = `The epic was written by ${a.epic || 'someone'}, ${EP_NOT_ALLOWED}. Nothing in it will run.`; }
   else if (d.epic && ['blocked', 'unknown'].includes(d.epic.edit_state)) { off = 'epic_edit'; text = `The epic: ${epEditText(d.epic)} Nothing in it will run.`; }
   else if (['blocked', 'unknown'].includes(c.edit_state)) { off = 'edit'; text = epEditText(c); }
@@ -418,7 +431,7 @@ function epWorkBits(P, c) {
       onclick: () => epWork(P, c, offer.node, false), text: `${offer.retry ? 'Try again on' : 'Work on'} ${offer.node.name}` }));
   } else if (offer) {
     out.push(el('button', { class: 'small ep-work-btn', type: 'button', disabled: true, 'data-work-off': offer.off, title: offer.text, 'aria-label': `Work on issue #${c.number}: ${offer.text}`, text: 'Work' }));
-    if (!epClaimable(P.data, c) || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown' || offer.off === 'edit' || offer.off === 'epic_edit') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
+    if (!epClaimable(P.data, c) || offer.off === 'filter' || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown' || offer.off === 'edit' || offer.off === 'epic_edit') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
   }
   if (note) {
     out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-work-note': note.why || 'error' }, note.text, note.check ? [' ', epCheckLink(note.check, note.name || note.check)] : null));
@@ -489,10 +502,11 @@ function epWork(P, c, node, force) {
   P.notes.delete(key);
   if (kid) epWorkPaint(P, kid, node);
   epPaint(P);
-  const body = { repo: c.repo, issue: c.number, epic: epRef(P.owner, P.repo, P.n) };
+  const body = { node: node.handle, repo: c.repo };
   if (force === true) body.force = true;
   const undo = () => { const k = epWorkKid(P, c); if (k && w.snap) Object.assign(k, w.snap); };
-  return api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/work`, body).then((r) => {
+  // the board passes the node through the same hard filters as Run before it asks it (issue #150); the answer is the relay's {node, age, data}
+  return api('POST', epPath(P, `/issues/${encodeURIComponent(c.number)}/work`), body).then((r) => {
     P.working.delete(key);
     if (epicPage.cur !== P) return;
     const d = r && r.data;
@@ -513,7 +527,8 @@ function epWork(P, c, node, force) {
     if (epicPage.cur !== P) return;
     undo();
     const text = epWorkSentence(e, node.name, c.number);
-    P.wnotes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text, check: epUnknown(e, node), name: node.name });
+    const bb = e && e.body && typeof e.body === 'object' ? e.body : {};
+    P.wnotes.set(key, { why: bb.reason === 'node_filtered' && bb.filter === 'lane' ? 'lanes_full' : (bb.why || bb.reason) || 'error', text, check: epUnknown(e, node), name: node.name });
     toast(text, { kind: 'bad' });
     epPaint(P);
     const b = e && e.body;
@@ -1411,10 +1426,10 @@ registerPage('epic', {
 
 /* ---------- the Epics list (the Tasks page's Epics tab) ---------- */
 
-/* The list answer, once: a second ask while one is out gets the same promise; a recent answer (30 s) is reused. A refusal leaves the last answer in place. */
+/* The list answer, once: a second ask while one is out gets the same promise; a recent answer (30 s) is reused, unless it stopped at the board's call budget (`partial`): that one is asked again. A refusal leaves the last answer in place. */
 Epics.fetchList = function (force) {
   if (Epics.pending) return Epics.pending;
-  if (!force && Epics.list && Date.now() - Epics.at < 30000) return Promise.resolve(Epics.list);
+  if (!force && Epics.list && Epics.list.partial !== true && Date.now() - Epics.at < 30000) return Promise.resolve(Epics.list);
   Epics.pending = api('GET', '/api/epics').then((d) => {
     if (d && typeof d === 'object' && Array.isArray(d.epics)) {
       Epics.list = d; Epics.at = Date.now();
@@ -1429,7 +1444,7 @@ Epics.fetchList = function (force) {
 function epListRow(e, nowIso) {
   const h = Epics.hash(e.owner, e.name, e.number);
   const c = e.children;
-  const counts = c ? `${c.open} open, ${c.closed} closed${c.more ? ', more issues than shown' : ''}` : 'issues not counted yet';
+  const counts = c ? `${c.open} open, ${c.closed} closed${c.more ? ', more issues than shown' : ''}` : e.children_state === 'budget' ? 'issues not read this time' : 'issues not counted yet';          // never 0: an epic whose issues were not read says so (issue #147)
   const when = epSince(e.updated_at, nowIso);
   return el('li', { class: 'ep-lrow' + (e.paused ? ' paused' : ''), 'data-epic': epRef(e.owner, e.name, e.number) },
     el('a', { class: 'ep-ltitle', href: h || '#/tasks?tab=epics', text: e.title || `Epic #${e.number}` }),
@@ -1455,6 +1470,16 @@ function epListPaint(L) {
     L.body.append(pageEmpty('git-branch', d.note ? 'No GitHub remote here' : 'No epics yet', d.note || 'An epic is an issue labelled ccboard:epic that has sub-issues. Label one on GitHub and it shows up here.'));
   }
   if (d.truncated) L.body.append(el('div', { class: 'ep-note warn', role: 'status' }, el('span', { class: 'ep-note-t', text: 'There are more epics than shown.' })));
+  if (d.partial === true) {                                    // this refresh stopped at its call budget: what it did not read is said, and the next refresh carries on
+    const repos = Array.isArray(d.deferred_repos) ? d.deferred_repos.filter((r) => typeof r === 'string').slice(0, 4) : [];
+    const more = Array.isArray(d.deferred_repos) ? d.deferred_repos.length - repos.length : 0;
+    const parts = [];
+    if (repos.length) parts.push(`not looked in this time: ${repos.join(', ')}${more > 0 ? ` and ${more} more` : ''}`);
+    if (Number.isInteger(d.deferred_counts) && d.deferred_counts > 0) parts.push(`${d.deferred_counts} ${d.deferred_counts === 1 ? 'epic' : 'epics'} with their issues not read this time`);
+    if (!parts.length) parts.push('part of it was not read this time');
+    L.body.append(el('div', { class: 'ep-note warn', role: 'status', 'data-partial': '' }, el('span', { class: 'ep-note-t', text: 'This list stopped at its GitHub call limit.' }),
+      el('span', { class: 'ep-note-n dim', text: `${parts.join('; ')}. The next refresh carries on from there.` })));
+  }
   if (d.repos && d.repos.length) L.body.append(el('p', { class: 'dim ep-lnote', text: `Looked in ${d.repos.length} ${d.repos.length === 1 ? 'repository' : 'repositories'}: ${d.repos.slice(0, 4).join(', ')}${d.repos.length > 4 ? ' and more' : ''}.${d.repos_truncated ? ' This board has more repositories than it looks in.' : ''}` }));
   const rate = epRateText(d.rate);
   if (rate) L.body.append(el('p', { class: 'dim ep-lnote', text: rate }));
@@ -1464,7 +1489,7 @@ function epListTick(L) {
   if (Epics.host !== L) return;
   if (L.timer) { clearTimeout(L.timer); L.timer = null; }
   const err = Epics.list && Epics.list.error;
-  const wait = err && err.reason === 'rate_limited' && typeof err.wait_s === 'number' ? Math.min(EP_WAIT_MAX_MS, Math.max(5000, (err.wait_s + 1) * 1000)) : EP_LIST_POLL_MS;
+  const wait = err && err.reason === 'rate_limited' && typeof err.wait_s === 'number' ? Math.min(EP_WAIT_MAX_MS, Math.max(5000, (err.wait_s + 1) * 1000)) : Epics.list && Epics.list.partial === true ? EP_LIST_PARTIAL_MS : EP_LIST_POLL_MS;
   L.timer = setTimeout(() => { L.timer = null; if (document.hidden) { L.sleeping = true; return; } epListLoad(L, true); }, wait);
 }
 
@@ -1575,9 +1600,7 @@ async function demoEpics(method, path, body) {
   if (bare === '/api/epics') { const l = { ...fx.list, ...((v && v.list) || {}) }; return typeof demoNewListed === 'function' ? demoNewListed(l) : l; }          // epics the visitor made with New epic come first
   const cm = /^\/api\/nodes\/([^/]+)\/epics\/claim$/.exec(bare);
   if (cm) return demoEpicClaim(decodeURIComponent(cm[1]), body || {}, fx);
-  const wm = /^\/api\/nodes\/([^/]+)\/epics\/work$/.exec(bare);
-  if (wm) return demoEpicWork(decodeURIComponent(wm[1]), body || {}, fx);
-  const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings|\/run|\/pause|\/resume|\/route|\/issues\/[0-9]+\/run)?$/.exec(bare);
+  const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings|\/run|\/pause|\/resume|\/route|\/issues\/[0-9]+\/(?:run|work))?$/.exec(bare);
   if (!m) return {};
   const key = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}#${m[3]}`.toLowerCase();
   const base = (fx.details && ownKey(fx.details, key) ? fx.details[key] : null) || (typeof demoNewBase === 'function' ? demoNewBase(fx, key) : null);          // or an epic the visitor made with New epic (epic-new.js)
@@ -1641,6 +1664,11 @@ async function demoEpics(method, path, body) {
     return { route: { ...route0(), running: true, by: 'you', via: 'page', started_at: eff.server_now || null, ended: null } };
   }
   if (method === 'GET' && tail === '/route') return { route: { ...route0(), running: made.run || (eff.route || {}).running === true }, preview: null };
+  const wk = /^\/issues\/([0-9]+)\/work$/.exec(tail);                  // Work on <node> (issue #150): the board checks the routing filters, then the node works the issue
+  if (method === 'POST' && wk) {
+    const b = body || {};
+    return demoEpicWork(typeof b.node === 'string' ? b.node : '', { repo: typeof b.repo === 'string' ? b.repo : `${m[1]}/${m[2]}`, issue: Number(wk[1]), force: b.force === true }, fx);
+  }
   const im = /^\/issues\/([0-9]+)\/run$/.exec(tail);
   if (method === 'POST' && im) {
     const n = Number(im[1]);

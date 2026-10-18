@@ -1396,11 +1396,16 @@ function demoRelayState(rec) {
   if (rec.status === 'incompatible') throw demoRelayFail(409, 'incompatible', Nodes.apiWords(rec), { node: h, peer_api: rec.peer_api, api: rec.api });
 }
 function demoRelayRead(data, bare) {
-  const m = /^\/api\/nodes\/([^/]+)\/(agents|permissions|sessions\/([^/]+)\/pane)$/.exec(bare);
+  const m = /^\/api\/nodes\/([^/]+)\/(agents|audit|permissions|sessions\/([^/]+)\/pane)$/.exec(bare);
   if (!m) return {};
   const h = decodeURIComponent(m[1]);
   const rec = (data && Array.isArray(data.hub) ? data.hub : []).find((r) => r.handle === h);
   if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+  if (m[2] === 'audit') {                                                        // the rows the node keeps about this board (issue #153): the board stamps its own receipt time
+    demoRelayCan(rec, 'read');
+    const at = new Date().toISOString();
+    return { node: h, age: 0, data: { rows: ((data.remote_audit && data.remote_audit[h]) || []).map((r) => ({ ...r, received_at: at })), cap: 50 } };
+  }
   if (m[2] === 'permissions') {                                                  // the pending requests (the fixture's extra demo_answer says how an answer to it goes; a node never sends it)
     demoRelayCan(rec, 'permissions');
     const left = ((data.permissions && data.permissions[h]) || []).filter((p) => !demoSteerMade.answered.has(`${h}/${p.id}`)).map(({ demo_answer: _a, ...p }) => p);
