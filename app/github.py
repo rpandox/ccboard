@@ -761,6 +761,14 @@ class Reader:
             self.until = max(self.until, self.mono() + wait)
         return wait
 
+    def cached_fresh(self, path: str, ttl: float) -> bool:
+        """True when `get(path, ttl)` would be answered from a fresh cache entry or (during a back-off) a stale one: it would make no call."""
+        with self.lock:
+            ent = self.cache.get(path)
+            if ent is not None and self.mono() - ent.at < ttl:
+                return True
+            return ent is not None and self.wait_left() > 0
+
     # ---- the read
     def get(self, path: str, ttl: float = 60.0) -> Reply:
         """The JSON at `path`. A fresh cache entry (younger than `ttl`) costs no call; an older one is revalidated with its ETag (a 304 is free of the

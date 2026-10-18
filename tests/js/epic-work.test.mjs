@@ -14,7 +14,7 @@ const TASK_FX = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'task-epic.
 const STATE_FX = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8'));
 const KEY = 'example/website#147';
 const HASH = '#/epic/example/website/147';
-const WORK = '/api/nodes/node-b/epics/work';
+const WORK = '/api/epics/example/website/147/issues/205/work';          // the board checks the routing filters, then asks the node (issue #150)
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const detail = (over = {}) => ({ ...clone(FX.details[KEY]), ...over });
 const variant = (name) => {                                                       // what ?epic=<name> lays over the detail, as the demo does
@@ -28,7 +28,7 @@ afterEach(() => { for (const w of made.splice(0)) { try { w.run('epUnmount(); Ep
 const settle = async (n = 5) => { for (let i = 0; i < n; i++) await tick(); };
 const defer = () => { let resolve, reject; const p = new Promise((a, b) => { resolve = a; reject = b; }); return { p, resolve, reject }; };
 
-/** A world on the epic page. GET answers __detail; POST /api/nodes/<h>/epics/work answers __work (a value or a function of the request); PUT .../settings answers __put (default: the request merged). */
+/** A world on the epic page. GET answers __detail; POST .../issues/<n>/work answers __work (a value or a function of the request); PUT .../settings answers __put (default: the request merged). */
 async function epicWorld({ data = detail(), work = null, put = null } = {}) {
   const { w } = homeWorld({ state: fakeState() });
   made.push(w);
@@ -40,7 +40,8 @@ async function epicWorld({ data = detail(), work = null, put = null } = {}) {
     if (req.method === 'PUT') return typeof __put === 'function' ? __put(req) : (__put || Object.assign(__detail, req.body || {}));          // the board keeps what it was sent
     return JSON.parse(JSON.stringify(typeof __detail === 'function' ? __detail(req) : __detail));          // a fresh object per poll, as the wire gives
   };
-  __answers['/api/nodes/'] = (req) => (typeof __work === 'function' ? __work(req) : (__work || { node: 'node-b', age: 0, data: { claimed: true, reason: 'won', task_ref: 'node-b:51', id: 51, branch: 'worktree-issue-205', tmux: 'x', repo: 'example/website', issue: 205 } }));`);
+  const WORKED = { node: 'node-b', age: 0, data: { claimed: true, reason: 'won', task_ref: 'node-b:51', id: 51, branch: 'worktree-issue-205', tmux: 'x', repo: 'example/website', issue: 205 } };
+  __answers['/api/epics'] = ((was) => (req) => (req.method === 'POST' && /\\/issues\\/[0-9]+\\/work$/.test(req.path) ? (typeof __work === 'function' ? __work(req) : (__work || WORKED)) : was(req)))(__answers['/api/epics']);`);
   w.location.hash = HASH;
   await settle();
   return w;
@@ -112,11 +113,11 @@ test('an issue claimed by a paired node that has not started it offers Work on t
   assert.equal(text(workBtn(w, 206)).trim(), 'Work on node-b');
 });
 
-test('Work asks the node with the repository, the issue and the epic only: the settings are the hub\'s, never sent by the page', async () => {
+test('Work asks the board, with the node and the repository only: the settings are the hub\'s, never sent by the page', async () => {
   const w = await epicWorld();
   workBtn(w, 205).click();
   await settle();
-  assert.deepEqual(posts(w).map((c) => [c.path, c.body]), [[WORK, { repo: 'example/website', issue: 205, epic: 'example/website#147' }]]);
+  assert.deepEqual(posts(w).map((c) => [c.path, c.body]), [[WORK, { node: 'node-b', repo: 'example/website' }]]);
   assert.ok(!/report|auto_pr|close|force|prompt/.test(JSON.stringify(posts(w)[0].body)));
 });
 
@@ -218,9 +219,68 @@ test('a full lane cap offers Start anyway, which sends force and nothing else ne
   assert.ok(!force.classList.contains('primary'), 'still one tinted action in the row');
   force.click();
   await settle();
-  assert.deepEqual(posts(w).map((c) => c.body), [{ repo: 'example/website', issue: 205, epic: 'example/website#147' }, { repo: 'example/website', issue: 205, epic: 'example/website#147', force: true }]);
+  assert.deepEqual(posts(w).map((c) => c.body), [{ node: 'node-b', repo: 'example/website' }, { node: 'node-b', repo: 'example/website', force: true }]);
   assert.equal(rowOf(w, 205).getAttribute('data-state'), 'running');
   assert.equal(rowOf(w, 205).querySelector('[data-work-note]'), null);
+});
+
+// ---------------------------------------------------------------- the routing filters, said before Work (issue #150)
+
+const filtered = (code, error, extra = {}) => ({ ...detail(), children: detail().children.map((c) => (c.number === 205 ? { ...c, work_refused: { 'node-b': { code, text: error, until: null } }, ...extra } : c)) });
+const STARTED = { node: 'node-b', age: 0, data: { claimed: true, reason: 'won', task_ref: 'node-b:52', id: 52, branch: 'branch-205', tmux: 'x', repo: 'example/website', issue: 205 } };
+
+test('a node that fails a routing filter for the issue disables Work with the board\'s own words, and nothing is sent', async () => {
+  const text0 = 'node-b 5-hour window is at 90 percent until 14:10 UTC';
+  const w = await epicWorld({ data: filtered('window', text0) });
+  const b = workBtn(w, 205);
+  assert.equal(b.getAttribute('data-work-off'), 'filter');
+  assert.equal(b.getAttribute('disabled') !== null, true);
+  assert.equal(b.getAttribute('title'), text0);
+  assert.match(b.getAttribute('aria-label'), /window is at 90 percent/);
+  assert.equal(text(rowOf(w, 205).querySelector('[data-work-hint=filter]')).trim(), text0, 'the reason is on the row, not only in a tooltip');
+  b.click();
+  await settle();
+  assert.deepEqual(posts(w), []);
+  assert.equal(workBtn(w, 204).getAttribute('data-work'), 'node-b', 'an issue the node passes is still offered');
+});
+
+test('every filter code disables Work; a full lane count does not (Start anyway is the override), and an answer without the field changes nothing', async () => {
+  for (const code of ['online', 'offline', 'stale', 'incompatible', 'unauthorized', 'scope', 'repo', 'repo_unknown', 'agent_unknown', 'agent_missing', 'agent_login', 'backoff', 'window', 'lane_unknown', 'refused']) {
+    const w = await epicWorld({ data: filtered(code, `node-b fails ${code}`) });
+    assert.equal(workBtn(w, 205).getAttribute('data-work-off'), 'filter', code);
+  }
+  const lane = await epicWorld({ data: filtered('lane', 'node-b has no free lane') });
+  assert.equal(workBtn(lane, 205).getAttribute('data-work'), 'node-b', 'a full lane cap is the person\'s to override');
+  const none = await epicWorld({ data: detail() });
+  assert.equal(workBtn(none, 205).getAttribute('data-work'), 'node-b');
+});
+
+test('a filter the board finds after the page read is shown in the board\'s words, with no claim', async () => {
+  const w = await epicWorld({ work: refusal(409, { error: 'node-b has not reported its task lanes, so a free lane is not known', reason: 'node_filtered', filter: 'lane_unknown', node: 'node-b' }) });
+  workBtn(w, 205).click();
+  await settle();
+  const note = rowOf(w, 205).querySelector('[data-work-note]');
+  assert.equal(text(note).trim(), 'node-b has not reported its task lanes, so a free lane is not known. Nothing was claimed.');
+  assert.equal(rowOf(w, 205).querySelectorAll('button').find((b) => b.getAttribute('data-work-force')), undefined, 'a lane count that is not known has no Start anyway');
+  assert.equal(posts(w).length, 1);
+});
+
+test('a full lane count found by the board offers Start anyway, which sends force', async () => {
+  let n = 0;
+  const w = await epicWorld({ work: () => (++n === 1 ? Promise.reject(Object.assign(new Error('x'), { status: 409, body: { reason: 'node_filtered', filter: 'lane', error: 'node-b has no free lane' } })) : STARTED) });
+  workBtn(w, 205).click();
+  await settle();
+  assert.match(text(rowOf(w, 205).querySelector('[data-work-note]')), /node-b has no free lane\. You can start #205 anyway\./);
+  rowOf(w, 205).querySelectorAll('button').find((b) => b.getAttribute('data-work-force')).click();
+  await settle();
+  assert.deepEqual(posts(w).map((c) => c.body), [{ node: 'node-b', repo: 'example/website' }, { node: 'node-b', repo: 'example/website', force: true }]);
+  assert.equal(rowOf(w, 205).getAttribute('data-state'), 'running');
+});
+
+test('the demo plays a filter: ?epic=workfilter disables Work on #205 with the reason', async () => {
+  const w = await epicWorld({ data: variant('workfilter') });
+  assert.equal(workBtn(w, 205).getAttribute('data-work-off'), 'filter');
+  assert.match(workBtn(w, 205).getAttribute('title'), /window is at 90 percent/);
 });
 
 // ---------------------------------------------------------------- the author check, said before Work
@@ -486,7 +546,7 @@ async function demoWorld({ search = '' } = {}) {
 }
 const demoCall = (w, method, p, body) => { w.ctx.__a = [method, p, body]; return w.run('demoApi(...__a)').then(plain); };
 const demoFail = (w, method, p, body) => { w.ctx.__a = [method, p, body]; return w.run('demoApi(...__a)').then(() => null, (e) => ({ status: e.status, body: plain(e.body) })); };
-const ASK = { repo: 'example/website', issue: 205, epic: 'example/website#147' };
+const ASK = { node: 'node-b', repo: 'example/website' };
 
 test('demo: the work route is played here: the node starts the issue and the row shows its task running from then on, with a link to it', async () => {
   const w = await demoWorld();

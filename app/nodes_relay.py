@@ -597,6 +597,22 @@ class NoFields(_Strict):
     """The read rows that take nothing."""
 
 
+AUDIT_ROWS_MAX = 50                                            # the most audit rows one read of a node's activity answers (issue #153)
+AUDIT_ROWS_DEFAULT = 25
+
+
+class AuditQuery(_Strict):
+    limit: int = Field(AUDIT_ROWS_DEFAULT, ge=1, le=AUDIT_ROWS_MAX)
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def _plain_digits(cls, v):
+        """A query value is text: only one or two ASCII digits (no sign, space, underscore, hex, other-script digits, float or bool)."""
+        if isinstance(v, bool) or not isinstance(v, (int, str)) or (isinstance(v, str) and not re.fullmatch(r"[0-9]{1,2}", v)):
+            raise ValueError(f"limit is a whole number from 1 to {AUDIT_ROWS_MAX}")
+        return v
+
+
 class PaneQuery(_Strict):
     lines: int = Field(PANE_LINES, ge=1, le=PANE_LINES)
 
@@ -705,6 +721,41 @@ def _shape_any(body, reg):
 def _strs(v, n: int = 60, cap: int = 60) -> list[str]:
     from . import node_state
     return [t for t in (node_state.clean(x, n) for x in (v[:cap] if isinstance(v, list) else []) if isinstance(x, str)) if t]
+
+
+_AUDIT_ACTION = re.compile(r"[a-z][a-z0-9_.-]{0,39}")
+_AUDIT_STATUS = re.compile(r"[a-z][a-z0-9_-]{0,19}")
+
+
+def _shape_audit(body, reg):
+    """The audit rows a node keeps about this pair, rebuilt field by field: the row time on that node's clock, its direction on that node (`in` is a call it received from this board),
+    the action and status as words, the target, the acting user and a short detail (cut and redacted), and `received_at`, this board's own time of reading them. A row dated after `received_at` (a skewed or hostile clock) gets `at` = `received_at` and the node's own value in `peer_at`, so no row can sort ahead of this board's own. At most
+    AUDIT_ROWS_MAX, in the order the node sent them (newest first). Never an address, a token or a prompt: the node's own audit holds none, and every text is cleaned again here."""
+    from . import node_state, nodes_hub
+    c = node_state.clean
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        raise nodes_hub.Bad("not an audit list")
+    received = nodes.iso(nodes._now())
+    out = []
+    for r in body["rows"][:AUDIT_ROWS_MAX]:
+        if not isinstance(r, dict):
+            continue
+        at, action = _shaped(r.get("at"), _TIME_OUT, 40), _shaped(r.get("action"), _AUDIT_ACTION, 40)
+        direction = r.get("direction") if r.get("direction") in ("in", "out") else None
+        if not at or not action or direction is None:
+            continue
+        rid = r.get("id")
+        try:
+            future = nodes.iso(at) > received                        # whole-second UTC text, so text order is time order
+        except (ValueError, OverflowError, OSError):
+            future = True                                            # looks like a time but is not one
+        row = {"id": rid if isinstance(rid, int) and not isinstance(rid, bool) and 0 <= rid < 10 ** 12 else None, "at": received if future else at, "received_at": received, "direction": direction,
+               "action": action, "status": _shaped(r.get("status"), _AUDIT_STATUS, 20) or "unknown", "target": c(r.get("target"), 120), "user": c(r.get("user"), 64),
+               "detail": c(r.get("detail"), 160)}
+        if future:
+            row["peer_at"] = at                                      # the time the node gave, kept to show as "row time"; `at` is never later than this board's own receipt time
+        out.append(row)
+    return {"rows": out, "cap": AUDIT_ROWS_MAX}
 
 
 def _shape_agents(body, reg):
@@ -1415,6 +1466,10 @@ RELAY: tuple[Row, ...] = (
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
     Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True, answer_max=256 * 1024,
         target=lambda p: "agents", shape=_shape_agents),
+    # The node's own audit rows about this pair (issue #153): read scope, a person's read (no MCP tool), at most AUDIT_ROWS_MAX rows, newest first. The node answers only the rows that
+    # name the caller's pair, leaves its own reads of this list out, and the hub rebuilds every field. Reading it is itself one audited read on both boards.
+    Row("audit", "GET", "/api/nodes/{handle}/audit", "GET", "/api/node/audit", "read", AuditQuery, READ, "read_audit", human_only=True, answer_max=64 * 1024,
+        target=lambda p: "audit", shape=_shape_audit),
     # The write rows (issue #141). A task is a worktree, a branch and a tmux session on the node that runs it: the hub never makes one.
     Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, mcp=True,
         agent_model=AgentTaskCreateBody, agent_shape=_agent_started, answer_max=16 * 1024, target=lambda p: "create task",
@@ -2044,7 +2099,7 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
     if extra and not nodes.scope_ok(peer.get("scopes"), extra):
         _inbound_audit(db, request, row, params, False, "refused", f"scope {extra} not granted", clean)
         raise projects.Forbidden(f"this node token does not hold the {extra} scope")
-    token = CALLER.set({"node": nodes._scrub(peer.get("name"), 41) or "", "user": _acting(request) or None})
+    token = CALLER.set({"node": nodes._scrub(peer.get("name"), 41) or "", "user": _acting(request) or None, "peer": request.state.node_pair})
     scopes_token = CALLER_SCOPES.set(peer.get("scopes"))
     try:
         out = handler(db, params, clean)
@@ -2469,6 +2524,17 @@ def _remote_option(f: dict) -> dict | None:
         only = _ONLY.get(key)
         f["choices"] = [c for c in f["choices"] if (c in only if only is not None else not (isinstance(c, str) and _squash(c).startswith(("shell", "danger", "bypass"))))]
     return f
+
+
+def peer_audit(db, params: dict, body: dict) -> dict:
+    """The newest audit rows of this board that are about the calling pair (the rows whose peer is the pair that asked), at most `limit`. Another pair's rows, the rows of settings and of the
+    board itself never come, and neither do the reads of this very list (each read would add one). Each row: id, at, direction, action, status, target, user and a detail of 200 characters at
+    most; the audit table holds no token, code, digest or prompt (nodes.audit replaces anything shaped like one before it writes)."""
+    pid = (CALLER.get() or {}).get("peer")
+    if not pid:
+        raise Refusal(403, "forbidden", "this route takes a node token")
+    rows = db.node_audit_list(body["limit"], peer=pid, not_action="read_audit")
+    return {"rows": [{k: r[k] for k in ("id", "at", "direction", "action", "status", "target", "user", "detail")} for r in rows]}
 
 
 def peer_agents(db, params: dict, body: dict) -> dict:
@@ -2965,6 +3031,6 @@ def peer_epic_work(db, params: dict, body: dict) -> dict:
     return {"claimed": True, "reason": res.get("reason"), "id": res["id"], "branch": res.get("branch"), "tmux": res.get("tmux"), "repo": res["repo"], "issue": res["issue"]}
 
 
-HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
+HANDLERS = {"task": peer_task, "pane": peer_pane, "audit": peer_audit, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
             "session_open": peer_session_open, "prompt": peer_prompt, "keys": peer_keys, "ack": peer_ack, "close": peer_close, "permissions": peer_permissions,
             "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim, "epic_claim_status": peer_epic_claim_status, "epic_work": peer_epic_work}

@@ -478,10 +478,37 @@ class Runner:
         ui = st["pins"].get(str(c["number"])) if c["repo"].lower() == own else None
         return self.pick(c, {"ui": ui, "label": label, "epic": st["epic_pin"]}, st)
 
-    def pick(self, c: dict, pins: dict, st: dict) -> dict:
+    def pick(self, c: dict, pins: dict, st: dict, records: list[dict] | None = None, force_lane: bool = False) -> dict:
         t = now()
-        cfg = {"max_window_pct": nodes_epics.max_window_pct(st), "group": st["group"], "assigned": dict(self.last_assigned), "blocked": dict(self.blocked), "now": t}
-        return nodes_route.pick({"repo": c["repo"], "number": c["number"], "agent": c.get("agent") or "claude"}, self.records(), pins, self.reservations.items(t), cfg)
+        cfg = {"max_window_pct": nodes_epics.max_window_pct(st), "group": st["group"], "assigned": dict(self.last_assigned), "blocked": dict(self.blocked), "now": t, "force_lane": force_lane}
+        return nodes_route.pick({"repo": c["repo"], "number": c["number"], "agent": c.get("agent") or "claude"}, self.records() if records is None else records, pins, self.reservations.items(t), cfg)
+
+    def work_refusals(self, c: dict, st: dict, records: list[dict] | None = None, force_lane: bool = False) -> dict[str, dict]:
+        """{handle: {code, text, until}} for every node that fails a hard filter of routing for child `c` now (the same `pick` as Run, with no pin: a pin never lifts a filter). `text` is one sentence
+        that starts with the node's name. A paired node that is not listed passes every filter."""
+        res = self.pick(c, {}, st, records, force_lane)
+        return {r["handle"]: {"code": r["code"], "text": f"{r['name']} {r['text']}", "until": r["until"]} for r in res["refused"]}
+
+    def work_issue(self, owner: str, repo: str, n: int, issue: int, node: str, force: bool, request, child_repo: str | None = None) -> dict:
+        """A person's "Work on <node>" for issue `issue` of epic `owner/repo#n` (issue #150): the hard filters of routing first (the same `pick` as Run, no pin to lift one), then the existing relay
+        row `epic_work`, as the person. `force` (Start anyway) lifts the free-lane count only. Returns the relay's answer {node, age, data}. Raises RunRefused (Work is off, or the issue is not
+        one this board has read) or nodes_relay.RelayError: `node_filtered` with the filter's code and plain sentence when the node fails a filter, else the relay's own. Unknown is not free: a
+        node whose card, projects or lanes were never read fails the filter that needs them."""
+        ok, code, text = self.can_run()
+        if not ok:
+            raise RunRefused(code, text)
+        if not nodes.valid_handle(node) or node == "local":
+            raise RunRefused("bad_node", "node is the handle of a paired node", 400)
+        records = self.records()
+        d = nodes_epics.detail(self.db, owner, repo, n, records, repos=self._repos_fn())
+        c = next((x for x in d["children"] if x["number"] == issue and x["repo"].lower() == (child_repo or f"{owner}/{repo}").lower()), None)
+        if c is None:
+            raise RunRefused("not_found", "that issue is not one of the epic's issues this board has read", 404)
+        bad = self.work_refusals(c, nodes_epics.load_settings(self.db, owner, repo, n), records, force).get(node)
+        if bad is not None:
+            raise nodes_relay.RelayError(409, "node_filtered", bad["text"], kind="refused", filter=bad["code"], **({"until": bad["until"]} if bad.get("until") is not None else {}))
+        body = {"repo": c["repo"], "issue": issue, "epic": f"{owner}/{repo}#{n}", **({"force": True} if force else {})}
+        return nodes_relay.relay(node, nodes_relay.BY_NAME[EPIC_ROW], {}, body, request, db=self.db, hub=self._hub())
 
     # ---- sending one issue
     def _acting(self, rec: dict) -> str:
@@ -627,8 +654,12 @@ class Runner:
         """Add `route` to an epic answer (the run view) and `route` to each child: {state: assigned | waiting | held | running | null, text, node?, until?}."""
         v = self.view(owner, repo, n)
         out["route"] = v
+        st = nodes_epics.load_settings(self.db, owner, repo, n)
+        records = self.records()
         for c in out.get("children") or []:
             k = str(c["number"])
+            if c.get("state") == "open":                               # issue #150: the nodes that fail a routing filter for this issue, for the page's Work on <node> (absent = not computed)
+                c["work_refused"] = self.work_refusals(c, st, records)
             r = None
             if k in v["waiting"] and c.get("state") == "open":
                 w = v["waiting"][k]

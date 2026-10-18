@@ -398,10 +398,10 @@ test('the page code writes to no GitHub address, builds nothing with innerHTML o
   assert.ok(!/innerHTML|insertAdjacentHTML|cssText|\.setAttribute\(\s*'style'/.test(src));
   assert.ok(!/api\.github\.com|fetch\(/.test(src.replace(/globalThis\.fetch/g, '')) || /demo fixture/.test(src), 'only the demo reads its fixture');
   const posts = src.match(/api\('POST', `[^`]*`/g) || [];
-  assert.deepEqual(posts, ["api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`", "api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/work`"]);
-  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)', `\/api\/nodes\//g) || []).length, 2, 'the page makes two writes to a node (claim, work) and no other');
+  assert.deepEqual(posts, ["api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`"]);
+  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)', `\/api\/nodes\//g) || []).length, 1, 'the page asks a node directly only to claim; Work goes through this board\'s routing filters');
   const board = src.match(/api\('(?:POST|DELETE|PATCH)', epPath\([^)]*\)[^)]*\)/g) || [];
-  assert.equal(board.length, 3, 'and three writes to this board\'s routing routes: Run, Pause or Resume, and Run on... for one issue');
+  assert.equal(board.length, 4, 'and four writes to this board\'s routing routes: Run, Pause or Resume, Run on... for one issue, and Work on <node> for one issue');
   assert.ok(!/api\('(?:DELETE|PATCH)'/.test(src), 'no DELETE and no PATCH');
   assert.ok(!src.includes('—'), 'no em-dash in UI text');
 });

@@ -46,6 +46,7 @@ EXPECTED_NODE_ROUTES = {
     ("GET", "/api/node/tasks/{tid}"): "read",                    # the relay rows (issue #140, app/nodes_relay.py RELAY): each has its refusal tests in tests/test_nodes_relay.py
     ("GET", "/api/node/sessions/{name}/pane"): "sessions",      # screen text is session content: never `read`
     ("GET", "/api/node/agents"): "read",
+    ("GET", "/api/node/audit"): "read",                          # the audit rows this board keeps about the calling pair (issue #153): at most 50, newest first, no other pair's rows
     ("POST", "/api/node/tasks"): "tasks",                        # the write rows (issue #141): each has its refusal tests in tests/test_nodes_relay.py and its own in tests/test_nodes_remote_tasks.py
     ("POST", "/api/node/tasks/{tid}/dispatch"): "tasks",         # a dispatch into a running session also needs `sessions` (checked in the wrapper, after the body is read)
     ("POST", "/api/node/sessions"): "sessions",

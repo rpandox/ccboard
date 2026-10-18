@@ -897,6 +897,89 @@ def test_run_one_issue_on_auto_or_on_a_named_node_and_the_filters_still_apply(rt
     assert spaced[1] - spaced[0] >= 1.0
 
 
+# ---- Work on <node> passes the same hard filters as Run (issue #150)
+
+def work(rt, issue: int, node_: str, **extra):
+    return rt.api("POST", f"/issues/{issue}/work", json={"node": node_, **extra})
+
+
+@pytest.mark.parametrize("code,kw,words", FILTERS, ids=[f"{c}-{i}" for i, (c, _, _) in enumerate(FILTERS)])
+def test_work_on_a_node_that_fails_a_routing_filter_is_not_asked_and_says_why_in_the_runs_words(rt, code, kw, words):
+    epic(rt, 2)
+    rt.hub.put(node("bad", **kw), node("good"))
+    rt.epic()
+    r = work(rt, 201, "bad")
+    j = r.json()
+    assert r.status_code == 409 and j["reason"] == "node_filtered" and j["filter"] == code and words in j["error"] and j["error"].startswith("bad "), r.text
+    assert rt.relay.calls == [], "the node was not asked and nothing was claimed"
+    ok = work(rt, 201, "good")
+    assert ok.status_code == 200 and rt.calls() == [("good", 201)] and ok.json()["data"]["claimed"] is True, ok.text
+    assert rt.relay.calls[0]["body"] == {"repo": REPO, "issue": 201, "epic": "acme/shop#147"}
+    run = rt.api("POST", "/issues/202/run", json={"node": "bad"}).json()
+    assert run["waiting"]["code"] == code and words in run["waiting"]["reason"], "Run on... says the same"
+
+
+def test_a_pin_to_a_node_that_fails_a_filter_does_not_let_work_through(rt):
+    epic(rt, 2)
+    box, mac = rt.pair("box", "mac")
+    rt.hub.put(node(box), node(mac, pct=95.0, resets_at=int(T0 + 900)))
+    rt.epic()
+    assert rt.api("PUT", "/settings", json={"pins": {"201": mac}, "epic_pin": mac}).status_code == 200
+    r = work(rt, 201, mac)
+    assert r.status_code == 409 and r.json()["filter"] == "window" and "95 percent" in r.json()["error"] and rt.relay.calls == []
+    assert work(rt, 201, mac, force=True).json()["filter"] == "window", "Start anyway lifts the lane count and nothing else"
+    assert work(rt, 202, box).status_code == 200
+
+
+def test_start_anyway_lifts_only_the_free_lane_count_and_a_lane_count_that_was_not_read_still_refuses(rt):
+    epic(rt, 3)
+    rt.hub.put(node("full", free=0), node("blind", lanes=False), node("offline", status="offline", free=0))
+    rt.epic()
+    r = work(rt, 201, "full")
+    assert r.status_code == 409 and r.json()["filter"] == "lane" and "no free lane" in r.json()["error"] and rt.relay.calls == []
+    forced = work(rt, 201, "full", force=True)
+    assert forced.status_code == 200 and rt.relay.calls[-1]["body"]["force"] is True, forced.text
+    assert work(rt, 202, "blind", force=True).json()["filter"] == "lane_unknown", "unknown is not free, forced or not"
+    assert work(rt, 203, "offline", force=True).json()["filter"] == "offline"
+    assert len(rt.relay.calls) == 1
+
+
+def test_a_node_the_hub_has_read_nothing_of_is_refused_not_assumed_ready(rt):
+    epic(rt, 1)
+    rt.hub.put(node("fresh", card=False, state=False))
+    r = work(rt, 201, "fresh")
+    assert r.status_code == 409 and r.json()["filter"] == "repo_unknown" and "has not reported its projects" in r.json()["error"] and rt.relay.calls == []
+
+
+def test_the_epic_answer_lists_for_each_open_issue_the_nodes_that_fail_a_filter_for_the_page(rt):
+    epic(rt, 2)
+    rt.hub.put(node("box"), node("mac", pct=95.0, resets_at=int(T0 + 900)), node("old", status="offline"))
+    rt.close(202)
+    d = rt.epic()
+    c = next(x for x in d["children"] if x["number"] == 201)
+    assert set(c["work_refused"]) == {"mac", "old"} and "95 percent" in c["work_refused"]["mac"]["text"] and c["work_refused"]["mac"]["code"] == "window"
+    assert c["work_refused"]["old"]["text"] == "old is offline" and c["work_refused"]["mac"]["text"].startswith("mac ")
+    closed = next(x for x in rt.epic()["children"] if x["number"] == 202)
+    assert "work_refused" not in closed, "a closed issue is not worked"
+
+
+def test_work_is_a_signed_in_persons_and_is_off_without_writes_and_checks_its_input(rt, monkeypatch):
+    from app import hooks
+    epic(rt, 1)
+    rt.hub.put(node("box"))
+    hook = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard": "1"}
+    assert rt.api("POST", "/issues/201/work", headers=hook, json={"node": "box"}).status_code == 403
+    assert rt.api("POST", "/issues/201/work", headers=ID, json={"node": "box"}).status_code == 403, "no X-CCBoard header"
+    assert work(rt, 201, "box", extra=1).status_code == 422 and rt.api("POST", "/issues/201/work", json={}).status_code == 422
+    assert work(rt, 201, "../x").status_code == 400 and work(rt, 201, "local").status_code == 400
+    assert work(rt, 201, "box", repo="not a slug").status_code == 400 and work(rt, 999, "box").status_code == 404
+    assert rt.c.post("/api/epics/acme/shop/147/issues/zero/work", headers=H, json={"node": "box"}).status_code == 400
+    assert rt.relay.calls == []
+    monkeypatch.setattr(settings, "epic_writes", False)
+    off = work(rt, 201, "box")
+    assert off.status_code == 409 and off.json()["reason"] == "writes_off" and rt.relay.calls == []
+
+
 def test_the_auto_preview_names_the_node_and_the_reason_and_sends_nothing(rt):
     box, mac = rt.pair("box", "mac")
     rt.hub.put(node(box, pct=10.0, free=2), node(mac, pct=60.0, free=3))
