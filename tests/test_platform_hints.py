@@ -123,8 +123,8 @@ def test_linux_memory_fixes(linux, monkeypatch):
                                "ccboard-mem.service does: systemctl status ccboard-mem"}
     monkeypatch.setattr(memory, "env_leaks", lambda pid: ["CLAUDE_CODE_SESSION"])
     out = doctor._mem_env(None, {"health": {"state": "up", "pid": 4242}})
-    assert out.fix == {"text": "Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then `sudo systemctl start ccboard-mem`. "
-                               "An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
+    assert out.fix == {"text": "Install the unit, then hand over: `worker-service.cjs stop`, then `sudo systemctl start ccboard-mem`. "
+                               "An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (docs/guide/claude-mem.md)",
                        "cmd": "CCBOARD_MEM_SERVICE=1 ./install.sh"}
 
 

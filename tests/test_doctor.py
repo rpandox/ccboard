@@ -1766,7 +1766,7 @@ def test_backup_repo_off_is_a_skip_remote_passes_same_disk_warns(newc, monkeypat
     monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "data" / "restic"))       # under the data dir: the default's shape
     c = newc("backup-repo")
     assert c["status"] == "warn" and "same disk" in c["detail"] and "deletion and corruption" in c["detail"]
-    assert "CCBOARD_RESTIC_REPO" in c["fix"]["text"] and "README" in c["fix"]["text"]
+    assert "CCBOARD_RESTIC_REPO" in c["fix"]["text"] and "docs/backup-and-restore.md" in c["fix"]["text"]
     assert "restic-password" in c["fix"]["text"] and "…" not in c["fix"]["text"], \
         "issue #111: the password file sits beside the repository, so one lost disk loses both; the fix says to copy it elsewhere"
     monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "does" / "not" / "exist" / "yet"))      # nearest existing parent decides
@@ -2318,7 +2318,9 @@ def test_claude_features_by_version(newc, world, version, status, needles):
     for n in needles:
         assert n in c["detail"], (n, c["detail"])
     if status == "warn":
-        assert "README, Updating" in c["fix"]["text"] and c["fix"]["cmd"] == "claude update"
+        assert "docs/upgrade.md#updating-claude-code" in c["fix"]["text"] and "README" not in c["fix"]["text"] and c["fix"]["cmd"] == "claude update"
+        assert len(c["fix"]["text"]) < doctor.DETAIL_MAX - 1
+        assert "\n## Updating Claude Code\n" in (Path(doctor.__file__).resolve().parents[1] / "docs" / "upgrade.md").read_text(encoding="utf-8")
     assert len(c["detail"]) <= doctor.DETAIL_MAX
 
 

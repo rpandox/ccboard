@@ -3,7 +3,7 @@
 // DOM through tests/js/world.mjs; api() is the recorder from world.mjs, answered by a small fake of the /api/mcp routes.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readDoc } from './docs-util.mjs';
+import { MCP_PAGE, readDoc } from './docs-util.mjs';
 import { calls, fakeState, homeWorld, page, plain, text, tick } from './world.mjs';
 
 const TOKEN = 'ccbmcp_' + 'T3st'.repeat(10) + 'abc';                 // the shape of a real one; only ever in tests
@@ -216,13 +216,13 @@ test('no public URL: a visible warning, and the dialog offers no command with a 
   btn(d, 'Done').click();
 });
 
-test('the command templates are the README\'s, word for word', () => {
+test('the command templates are the MCP page\'s, word for word', () => {
   const { w } = mcpWorld();
-  const readme = readDoc('README.md');
+  const readme = readDoc(MCP_PAGE);
   const url = 'https://<board-host>:<port>/mcp';
   for (const kind of ['claude', 'codex']) {
     const cmd = w.run(`mcpCommand(${JSON.stringify(kind)}, '<token>', ${JSON.stringify(url)})`);
-    assert.ok(readme.includes(cmd), `README.md lacks the ${kind} command:\n${cmd}`);
+    assert.ok(readme.includes(cmd), `${MCP_PAGE} lacks the ${kind} command:\n${cmd}`);
   }
   assert.equal(w.run("mcpUrl({ config: { public_url: 'https://board.example/' } })"), 'https://board.example/mcp');
   assert.equal(w.run("mcpUrl({ config: { public_url: '' } })"), '');

@@ -497,7 +497,7 @@ def _c_projects_dir(db) -> Outcome:
 
 
 PROC_VERSION = Path("/proc/version")      # tests point this at a temp file
-CONTAINER_LINUX_ONLY = "Container mode is Linux only: it needs a Linux host with Docker Engine"    # the README says the same
+CONTAINER_LINUX_ONLY = "Container mode is Linux only: it needs a Linux host with Docker Engine"    # docs/install/docker.md says the same
 
 
 def _c_runtime_host(db) -> Outcome:
@@ -1916,8 +1916,8 @@ def _mem_env(db, ctx: dict) -> Outcome:
         note = f" (reported by the host watchdog {why})"
     if leaks:
         return _warn(f"the memory worker inherited a session's environment; install ccboard-mem.service (it holds {', '.join(leaks)})",
-                     fix("Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then "
-                         f"`{plat.hint('start', 'ccboard-mem')}`. An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
+                     fix("Install the unit, then hand over: `worker-service.cjs stop`, then "
+                         f"`{plat.hint('start', 'ccboard-mem')}`. An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (docs/guide/claude-mem.md)",
                          "CCBOARD_MEM_SERVICE=1 ./install.sh"))
     return _pass("the worker's environment holds no ccboard session variables" + note)
 
@@ -2349,7 +2349,7 @@ def _c_backup_repo(db) -> Outcome:
     if same:
         return _warn("the restic repository is on the same disk as the data: it protects against deletion and corruption, not against losing the disk",
                      fix("Set CCBOARD_RESTIC_REPO to another disk or a remote (sftp:, rclone:, s3:, rest:) and restart; restic-password is in the "
-                         "data dir too, copy it elsewhere (README, Restoring from a backup)"))
+                         "data dir too, copy it elsewhere (docs/backup-and-restore.md)"))
     return _pass("the restic repository is on a different disk than the data")
 
 
@@ -2769,7 +2769,7 @@ def _c_claude_features(db) -> Outcome:
     if not unmet:
         return _pass(f"Claude Code {ver} meets all {len(cl.FEATURE_GATES)} version gates the board uses")
     shown = ", ".join(f"{g.feature} ({g.min_version})" for g in unmet[:4]) + (f" and {len(unmet) - 4} more" if len(unmet) > 4 else "")
-    return _warn(f"Claude Code {ver} is too old for: {shown}", fix("Update Claude Code (README, Updating); the launcher hides or refuses the options meanwhile", "claude update"))
+    return _warn(f"Claude Code {ver} is too old for: {shown}", fix("Update Claude Code (docs/upgrade.md#updating-claude-code); the launcher hides or refuses the options meanwhile", "claude update"))
 
 
 def _c_claude_unattended(db) -> Outcome:

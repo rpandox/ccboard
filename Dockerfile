@@ -71,7 +71,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/ccboard
 
 # Python dependencies first so a code-only change reuses this layer. requirements.lock pins exact versions with hashes
-# (regenerate from requirements.in, see the README): two builds of one commit install the same packages. The venv is created and chowned in one layer.
+# (regenerate from requirements.in, see docs/development.md): two builds of one commit install the same packages. The venv is created and chowned in one layer.
 COPY --chown=1000:1000 requirements.lock ./
 RUN python3 -m venv .venv \
  && .venv/bin/pip install --no-cache-dir --disable-pip-version-check --require-hashes -r requirements.lock \

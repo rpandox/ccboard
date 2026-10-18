@@ -4,9 +4,9 @@ Every quotation in its failure table must still occur in the code, so the words 
 import json
 import re
 
-from tests.docs_util import ROOT, read_doc
+from tests.docs_util import DEVICES_WITHOUT_BOARD, NODES_OVERVIEW, ROOT, read_doc
 
-README = read_doc("README.md")
+README = read_doc(DEVICES_WITHOUT_BOARD)
 # Where a person can read a message: the module that builds them, the app, and the page scripts.
 SOURCES = [ROOT / "app" / "bare.py", ROOT / "app" / "main.py", *sorted((ROOT / "app" / "static").glob("*.js"))]
 PLACEHOLDERS = {"<device>": "{name}", "<user>": "{user}", "<agent>": "{agent}"}
@@ -61,8 +61,8 @@ def test_the_failure_table_covers_the_plain_messages_of_the_check():
 
 def test_the_readme_has_one_section_linked_from_the_several_devices_index():
     assert README.count("\n#### Devices without a board\n") == 1
-    assert "(#devices-without-a-board)" in README
-    assert "(#several-devices-issue-154-phase-p6)" in _section()
+    assert "(device-check.md#devices-without-a-board)" in read_doc(NODES_OVERVIEW)
+    assert "(platforms.md#several-devices-issue-154-phase-p6)" in _section()
     section = _section()
     for topic in ("The tailnet rule", "The dedicated user", "10 seconds", "The state log", "Removal", "Not yet run on real hardware"):
         assert topic in section, topic

@@ -17,7 +17,7 @@ from app import agents, doctor
 from app.agents.base import LaunchReq
 from app.config import settings
 
-from tests.docs_util import read_doc
+from tests.docs_util import read_doc, readme_text
 
 ROOT = Path(__file__).resolve().parent.parent
 SID = "11111111-2222-4333-8444-555555555555"
@@ -172,10 +172,10 @@ def read(rel):
 
 def test_the_old_claim_is_gone_and_the_host_prerequisites_are_stated():
     old = ("socket inside the board's container", "docker CLI and socket inside", "they stay a systemd-mode feature")
-    for rel in ("README.md", "ROADMAP.md", "install.sh"):
+    for rel, text in (("README.md and docs/", readme_text()), ("ROADMAP.md", read("ROADMAP.md")), ("install.sh", read("install.sh"))):
         for needle in old:
-            assert needle not in read(rel), f"{rel}: {needle!r} was wrong about the cause (box check, issue #104)"
-    readme = read("README.md")
+            assert needle not in text, f"{rel}: {needle!r} was wrong about the cause (box check, issue #104)"
+    readme = readme_text()
     assert "Devcontainer sessions work in docker mode; what they need is on the host" in readme
     assert "devcontainer up --workspace-folder <repo> && devcontainer exec --workspace-folder <repo> -- claude" in readme
     assert "`docker` group" in readme and "the `devcontainer` CLI" in readme and "tests/test_devcontainer.py" in readme

@@ -2199,7 +2199,7 @@ function settingsMemBlock() {
   const hasViewer = typeof state !== 'undefined' && state && state.config && typeof state.config.mem_viewer_url === 'string' && /^https:\/\//.test(state.config.mem_viewer_url);
   const wrap = el('div', { class: 'set-mem' },
     tile,
-    tile && !hasViewer ? el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (the README says who can reach it).' }) : null,
+    tile && !hasViewer ? el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (docs/security.md says who can reach it).' }) : null,
     el('label', { class: 'set-check set-pref' }, box,
       el('span', { class: 'set-pref-t' }, el('b', { text: 'Save finished tasks to claude-mem' }), el('span', { class: 'dim', text: SETTINGS_MEM_NOTE }))),
     why, err,
@@ -2372,7 +2372,7 @@ function settingsCodexLogin() {
    The block is built once per visit (settingsMcp.node) and moved into the Agents panel on every rebuild, so a name being typed survives a poll. It shows what the
    server last answered: the switch and a Revoke stay pending until the answer arrives, and a revoked device leaves the list only then.
    The token is never kept: it goes from the mint answer straight into the text nodes of a one-time <dialog> (never into settingsMcp, localStorage, sessionStorage, a URL
-   or the state), and closing the dialog empties and removes it. The commands come from MCP_COMMANDS (tests/js/mcp-remote.test.mjs compares them with the README) and
+   or the state), and closing the dialog empties and removes it. The commands come from MCP_COMMANDS (tests/js/mcp-remote.test.mjs compares them with docs/guide/mcp.md) and
    are offered only with a board URL (state.config.public_url): no guessed address. */
 const MCP_COMMANDS = Object.freeze({
   claude: 'claude mcp add --transport http --scope user --header "Authorization: Bearer {token}" ccboard {url}',

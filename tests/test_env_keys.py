@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs_util import ROOT, read_doc, settings_rows, settings_span
+from tests.docs_util import CONFIGURATION, ROOT, read_doc, settings_rows, settings_span
 
 INSTALL = ROOT / "install.sh"
 PREFIXES = ("CCBOARD_", "NTFY_", "CODE_", "CODEX_", "TTYD_", "PREVIEW_", "PROJECTS_")
@@ -47,7 +47,7 @@ EXTRA_INTERNAL = {
     "CCBOARD_IMAGE_VERSION": "baked into the image by the build; shown in the footer",
     "CCBOARD_IMAGE_REVISION": "baked into the image by the build; the doctor's build check compares it with the repository",
     "CCBOARD_SOURCE_REPO": "baked into the image by the build (owner/name); the doctor's build check reads it",
-    "CCBOARD_DEV_BYPASS_USER": "development only (README, Development); never a production setting",
+    "CCBOARD_DEV_BYPASS_USER": "development only (docs/development.md); never a production setting",
     "CCBOARD_SESSION": "set by the board for a session's own processes",
     "CCBOARD_CURL_MAX": "an optional cap (seconds) on the hook wrappers' request, described in the wrapper's own header",
     "CCBOARD_HOST_PYTHON": "the container entrypoint's choice of a host-valid python for the MCP shim; the default is right on the supported hosts",
@@ -79,8 +79,8 @@ def env_keys():
 
 
 def readme_rows(text=None):
-    """Names that open a README row in the settings section (### Settings up to ### What install.sh sets up)."""
-    return settings_rows(text if text is not None else read_doc("README.md"))
+    """Names that open a row in the settings tables of docs/configuration.md (### Settings and ### Advanced and testing variables)."""
+    return settings_rows(text if text is not None else read_doc(CONFIGURATION))
 
 
 PY_READ = re.compile(r"""(?:environ|env)\s*\.\s*get\(\s*["']([A-Z][A-Z0-9_]+)["']|getenv\(\s*["']([A-Z][A-Z0-9_]+)["']|environ\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]"""
@@ -154,7 +154,7 @@ def test_internal_and_development_names_stay_out_of_the_installer_list():
     keys = set(env_keys())
     for n in ("CCBOARD_DEV_BYPASS_USER", "CCBOARD_HOOK_TOKEN_FILE", "CCBOARD_IMAGE_VERSION", "INVOCATION_ID", "PYTEST_CURRENT_TEST", "CCBOARD_URL"):
         assert n not in keys, f"{n} is development-only or internal and must not be remembered as a setting"
-    assert "CCBOARD_DEV_BYPASS_USER" not in settings_span(read_doc("README.md")), "a development bypass is not a production setting"
+    assert "CCBOARD_DEV_BYPASS_USER" not in settings_span(read_doc(CONFIGURATION)), "a development bypass is not a production setting"
 
 
 # ------------------------------------------------------------------ install.sh binds every key before the env file is written

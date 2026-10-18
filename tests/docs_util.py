@@ -8,6 +8,28 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Where the sections of the former README live (issue #244, slice 1). A test that pins a sentence reads the page its section moved to by
+# these names; moving a section again changes one line here. The JS twin is tests/js/docs-util.mjs.
+INSTALL_LINUX = "docs/install/linux.md"
+INSTALL_MACOS = "docs/install/macos.md"
+INSTALL_WSL2 = "docs/install/windows-wsl2.md"
+INSTALL_DOCKER = "docs/install/docker.md"
+CONFIGURATION = "docs/configuration.md"
+BACKUP = "docs/backup-and-restore.md"
+SECURITY = "docs/security.md"
+UNINSTALL = "docs/uninstall.md"
+DEVELOPMENT = "docs/development.md"
+CLAUDE_MEM = "docs/guide/claude-mem.md"
+MCP_PAGE = "docs/guide/mcp.md"
+HOOKS = "docs/reference/hooks.md"
+NODES_OVERVIEW = "docs/nodes/overview.md"
+NODES_PLATFORMS = "docs/nodes/platforms.md"
+NODES_EPICS = "docs/nodes/epics.md"
+DEVICES_WITHOUT_BOARD = "docs/nodes/device-check.md"
+
+# The two files of docs/ that never were part of the README.
+NOT_FROM_README = ("docs/memory-api.md", "docs/security-audit-2026-10.md")
+
 # The Markdown files tests/test_docs.py covers. A file that is not there yet is skipped; docs/ is searched at any depth.
 TOP_DOCS = ("README.md", "CONTRIBUTING.md", "ROADMAP.md", "CHANGELOG.md", "SECURITY.md", "deploy/README.md")
 
@@ -40,9 +62,21 @@ def section(text, heading):
     return text[start:body + (m.start() if m else len(text))]
 
 
+def readme_text():
+    """What the README held before slice 1: README.md and every page of docs/ that came out of it, concatenated. For a check that a
+    sentence is somewhere, or is nowhere, in the documentation of the product (not ROADMAP, CHANGELOG or the audit)."""
+    rels = ["README.md"] + [rel for rel in doc_paths() if rel.startswith("docs/") and rel not in NOT_FROM_README and rel != "docs/moved.md"]
+    return "\n\n".join(read_doc(rel) for rel in rels)
+
+
+def nodes_text():
+    """The nodes section of the former README: every page under docs/nodes/, concatenated in file-name order."""
+    return "\n\n".join(read_doc(p.relative_to(ROOT).as_posix()) for p in sorted((ROOT / "docs" / "nodes").glob("*.md")))
+
+
 def settings_span(text):
-    """The settings section as written today: from `### Settings` up to `### What install.sh sets up`."""
-    return text[text.index("### Settings"):text.index("### What install.sh sets up")]
+    """The settings section as written today: `### Settings` (with its page-options subsection) and `### Advanced and testing variables`."""
+    return section(text, "### Settings") + section(text, "### Advanced and testing variables")
 
 
 def settings_rows(text):

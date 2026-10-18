@@ -7,7 +7,7 @@
 # the HTTP code (000 = no answer within 1 s) and curl's time for the request. At the end it prints the longest gap between two
 # 200 answers, which is the outage a person at the board saw. Run it on the box in a second shell just before a push you were
 # going to make anyway, and join its output with `docker events --filter container=ccboard` and Watchtower's log for the same
-# window (README, "Run the board as a container"). It only reads: one GET per tick, nothing is written.
+# window (docs/install/docker.md). It only reads: one GET per tick, nothing is written.
 #
 # PROBE_COUNT=n stops after n requests instead of after `seconds` (the tests use it).
 set -u

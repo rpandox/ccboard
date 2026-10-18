@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.94 - 2026-10-18
+
+### Changed
+- Docs: the 599 KB README is split into a `docs/` tree, one page per job (install per system, configuration, backup and restore, security, the guides, nodes, team, development). The text moved word for word, except that a sentence pointing "above", "below", at "this README" or at another section whose target moved now carries a link to it, and its links were rewritten; `README.md` keeps its first lines, "What it is not", "Where ccboard runs" and an index of the pages (#244, slice 1).
+- `docs/README.md` indexes every page, and `docs/moved.md` maps each old README heading to its page and anchor (temporary: delete it after two releases).
+- The Doctor, the installers and the code comments name `docs/...md` paths instead of README section titles. The Doctor's "Update Claude Code" fix points at `docs/upgrade.md#updating-claude-code` (the README never had the "Updating" section the old text named; the new section says what to run), and the memory-env fix lost the words "the plugin's" to stay inside its length cap.
+- Tests read each moved section through `tests/docs_util.py` and `tests/js/docs-util.mjs`; apart from the two Doctor fixes named above, the only edits to pinned wording are the pointer links just described. `CONTRIBUTING.md`, `ROADMAP.md`, `deploy/README.md` and the audit note link to the new pages.
+
+Upgrade: nothing to do.
+
 ## v0.5.92 - 2026-10-17
 
 ### Changed

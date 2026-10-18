@@ -1,0 +1,26 @@
+# New project and clone
+
+For people creating projects and cloning repos.
+
+[Back to the documentation index](../README.md)
+
+#### The new-project wizard (v0.5.19)
+
+`#/onboarding/project` is four short steps in a vertical stepper that fits a phone, with one filled button at a time:
+
+1. **Name**: letters, digits, `-` and `_`, the same rule the box enforces. `POST /api/projects {name}`.
+2. **Repo**: *Blank* (an empty git repo), *Clone* (the URL is probed first and the chips say reachable or not, the default branch, whether it needs credentials and the repo name a clone would get; then `POST /api/projects/<p>/repos {url, name}`) or *Import* (your GitHub list behind the box's `gh` login, ticked repos go to `.../repos/bulk`; with no login the chip says *GitHub not connected* and offers `gh auth login` with a Copy button). Skip leaves the project without a repo. A refused address shows the box's own sentence under the field.
+3. **Defaults**: Claude, Codex or Shell, with the model and effort (Codex: model and reasoning) from the launcher's own schema. They are saved in this browser as `ccboard:defaults:<project>`, the key the launcher reads, so the first session starts from them.
+4. **First prompt** (optional): **Start** opens the launcher in the new repo with the prompt filled in, **Skip** goes to the project page.
+
+The wizard's place is kept in the tab's `sessionStorage` (`ccboard:wiz`), so a reload carries on; `#/onboarding/project?name=<project>` carries on for a project that exists but has no repo yet (step 2). It opens by itself in one case only: on Home, once per tab, when the board has never been used (`setup.first_run`), no project exists and `ccboard:onboarded` is not set; leaving the wizard any way sets `ccboard:onboarded`. Every other entry is yours to take: the **+** menu, the sidebar's **+ project**, Home's empty state. In `?demo=1` the wizard works end to end: the projects and repos it makes are remembered for the life of the page and laid over the demo state.
+
+#### Clone preflight and the clone URL rule (v0.5.19)
+
+`POST /api/preflight/clone {url}` answers `{reachable, default_branch, needs_auth, heads[], name, error}`. It runs `git ls-remote --symref` with prompts off (`GIT_TERMINAL_PROMPT=0`, ssh in batch mode), only over https and ssh (`GIT_ALLOW_PROTOCOL=https:ssh`), without following a redirect, and with a hard 12 s ceiling: git runs in its own process group and the whole group is killed at the timeout. A remote that is down or private is a normal `200` with `reachable: false`; a URL a clone would refuse is a `400`.
+
+That refusal is the clone rule, shared by the preflight, `POST /api/projects` with a URL and `.../repos` and `.../repos/bulk`. A clone URL is `https://[user[:token]@]host[:port]/path`, `ssh://[user@]host[:port]/path` or `git@host:path`, at most 512 characters. `http://`, `git://`, `file:`, `ext::`, whitespace, control characters and backslashes are refused, and so is every host that points at the box itself, your LAN or your tailnet: an IP address in any spelling (decimal, octal, hex, IPv6, IPv4-mapped), `localhost`, a single-label name such as `gitea`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa` and `*.ts.net`. The answer is one sentence ("that host is not allowed for clones ... add it to CCBOARD_CLONE_ALLOWED_HOSTS") and no git process is started. To clone from a private git server, list its name or address in `CCBOARD_CLONE_ALLOWED_HOSTS` (comma separated; `*.example.com` matches names below a domain, never an address); a listed host skips only the host rules, never the scheme rules. The clone session runs with `GIT_ALLOW_PROTOCOL=https:ssh` too and does not follow redirects (a public host must not bounce it to an internal one; a renamed repository fails the wizard's probe, which shows its new URL to use instead). A name that passes those rules is then resolved (every A and AAAA answer, in a worker thread with a 2 s cap): one answer that is loopback, RFC 1918, link-local, CGNAT (Tailscale's `100.64.0.0/10`, `100.100.100.100` included) or unique-local IPv6 is enough to refuse the URL ("that host name points at a local, private or tailnet address ..."), and so is a name that does not resolve ("the host name does not resolve") or a resolver that takes longer than 2 s. No answer is ever echoed. A host listed in `CCBOARD_CLONE_ALLOWED_HOSTS` is not resolved. A good answer is kept for 10 s, so the wizard's probe and the clone that follows resolve once. The check runs for the preflight, for `POST /api/projects` with a URL, for `.../repos` and `.../repos/bulk`, and again when a queued bulk clone starts. For an https probe the board then pins git to the addresses it checked (`git -c http.curloptResolve=<host>:<port>:<addresses> ls-remote ...`), so the probe cannot be sent somewhere else by a second lookup, and the https clone gets the same pin; that needs git 2.37 or newer, and on an older git the probe runs without the pin and relies on the check alone (Settings > Doctor, Box > git, says which case applies). The probe still finishes inside its 12 s budget: the time spent resolving comes off git's share. Not covered yet: a rate limit on the probe.
+
+## What v0.2 adds: the attention layer
+
+- **Import from GitHub**: pick repos from `gh repo list`, clone them into a project three at a time.

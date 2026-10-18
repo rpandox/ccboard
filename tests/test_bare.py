@@ -336,7 +336,7 @@ def test_repo_scan_timeout_explains_stopped_listing(lite_client, tailnet, bare_r
     ((255, '', '@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.'),
      'host key has changed', 'Verify', 'forget_host_key'),
     ((255, '', 'ccagent@device: Permission denied (tailscale).'),
-     'tailnet rule denied', 'README', None),
+     'tailnet rule denied', 'docs/nodes/device-check.md', None),
     ((255, '', 'tailscale: access denied by ACL'),
      'tailnet rule denied', 'SSH ACL', None),
     ((255, '', 'ssh: connect to host 100.64.0.2 port 22: Connection timed out'),

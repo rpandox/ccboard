@@ -23,7 +23,7 @@ from app import config, doctor, doctor_wsl as dw
 from app import platform as plat
 from app import tailscale as ts
 from app.config import settings
-from tests.docs_util import read_doc, settings_span
+from tests.docs_util import CONFIGURATION, INSTALL_WSL2, read_doc, readme_text, settings_span
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
@@ -816,12 +816,12 @@ def test_the_script_parses_with_pwsh():
 # ================================================================== the README
 
 def readme():
-    return read_doc("README.md")
+    return read_doc(INSTALL_WSL2)
 
 
 def test_the_readme_section_states_the_support_and_the_recipe():
     t = readme()
-    sec = t[t.index("## Windows (WSL2) (issue #118)"):t.index("## Run the board as a container")]
+    sec = t[t.index("## Windows (WSL2) (issue #118)"):]
     for needle in ("Windows 11 22H2 or newer", "Windows 10 build 19041", "best effort", "NAT networking only", "UNVERIFIED",
                    "wsl --install -d Ubuntu", "wsl --update", "wsl -l -v", "systemd=true", "wsl --shutdown", "systemctl is-system-running",
                    "ccboard-wsl-keepalive.ps1", "-Remove", "-WriteWslConfig", "-Method dbus", "instanceIdleTimeout", "vmIdleTimeout",
@@ -829,17 +829,18 @@ def test_the_readme_section_states_the_support_and_the_recipe():
                    "CCBOARD_TAILSCALE_PLACEMENT", "networkingMode=mirrored", "netsh interface portproxy", "wsl-keepalive", "wsl-restarts",
                    "cannot say that the distro is stopped", "issue #124", "WSL1", "Docker Desktop", "/mnt/c", "auto-logon"):
         assert needle in sec, needle
-    assert "8-hour" not in t and "8 hour" not in t and "eight-hour" not in t.lower()       # Microsoft documents no such timer
+    every = readme_text()
+    assert "8-hour" not in every and "8 hour" not in every and "eight-hour" not in every.lower()       # Microsoft documents no such timer
     assert "binds to `127.0.0.1` only" in sec or "bind to `127.0.0.1` only" in sec
     assert "http://localhost:<port>" in sec and "403" in sec and "issue #127" in sec
     assert "—" not in sec                                                                  # plain words, no em dashes
 
 
 def test_the_readme_lists_the_placement_setting_and_the_doctor_rows():
-    t = readme()
-    assert "| `CCBOARD_TAILSCALE_PLACEMENT` |" in settings_span(t)
+    assert "| `CCBOARD_TAILSCALE_PLACEMENT` |" in settings_span(read_doc(CONFIGURATION))
+    every = readme_text()
     for cid, _g, _l, _f in dw.CHECKS:
-        assert f"`{cid}`" in t, cid
+        assert f"`{cid}`" in every, cid
 
 
 def test_the_script_and_the_readme_agree_on_names():

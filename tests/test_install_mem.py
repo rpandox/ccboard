@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs_util import read_doc
+from tests.docs_util import CLAUDE_MEM, CONFIGURATION, UNINSTALL, read_doc
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
@@ -590,10 +590,10 @@ def test_a_stale_worker_pid_file_is_not_a_running_worker(box):
 
 # ------------------------------------------------------------------------------------------------ README
 def test_readme_documents_the_step_the_unit_and_the_handover():
-    t = read_doc("README.md")
+    t = read_doc(CLAUDE_MEM)
     assert "\n## claude-mem\n" in t
     for k in NEW_KEYS:
-        assert re.search(rf"^\| `{k}` \|", t, re.M), f"{k} is missing from the settings table"
+        assert re.search(rf"^\| `{k}` \|", read_doc(CONFIGURATION), re.M), f"{k} is missing from the settings table"
     sec = t.split("\n## claude-mem\n", 1)[1].split("\n## ", 1)[0]
     for needle in ("claude plugin marketplace add thedotmack/claude-mem", f"claude plugin install {KEY}", "CCBOARD_MEM_SERVICE=1 ./install.sh",
                    "worker-service.cjs --daemon", "ccboard-mem-run", ".orphaned_at", "bun-runner.js", "CAPTURE_BROKEN", "reset-failed",
@@ -603,7 +603,7 @@ def test_readme_documents_the_step_the_unit_and_the_handover():
 
 
 def test_readme_says_what_a_plugin_update_does_and_documents_the_autostart_switch():
-    t = read_doc("README.md")
+    t = read_doc(CLAUDE_MEM)
     sec = t.split("\n## claude-mem\n", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(sec.split())
     assert "keeps running until you do" not in flat and "the old version keeps running" not in flat, "13.29.0 recycles a stale worker from a hook"
@@ -613,6 +613,6 @@ def test_readme_says_what_a_plugin_update_does_and_documents_the_autostart_switc
                    'the string `"false"`', "a JSON boolean has no such method", "inside the top-level object",
                    "nothing starts a worker unless the unit runs", "`memory-worker`", "ccboard never writes it", "only prints this hint"):
         assert needle in flat, needle
-    row = next(l for l in t.splitlines() if l.startswith("| `CCBOARD_MEM_PORT` |"))
+    row = next(l for l in read_doc(CONFIGURATION).splitlines() if l.startswith("| `CCBOARD_MEM_PORT` |"))
     assert "37700 plus your uid modulo 100" in row and "then 37701)" not in row
-    assert "ccboard-mem" in t.split("### Uninstall", 1)[1]
+    assert "ccboard-mem" in read_doc(UNINSTALL).split("### Uninstall", 1)[1]
