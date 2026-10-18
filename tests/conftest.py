@@ -176,6 +176,35 @@ def _no_real_tailscale(monkeypatch):
     nodes.reset()
 
 
+TAILSCALE_READER_THREADS = ("doctor-", "bare-poll", "ccboard-lookup")     # app threads that end by themselves (a stop event or a command timeout) and can run a Tailscale or doctor read
+
+
+def forget_tailscale_and_doctor_state():
+    """Empty every in-memory Tailscale and doctor reading: the whois and version caches and the rate window (app/tailscale.py), the node id and
+    status reading (app/nodes.py), the doctor's result cache, background probes and last good answers (app/doctor.py), the login-shell lookups."""
+    from app import doctor, nodes, platform, tailscale
+    tailscale.whois_forget()
+    nodes.reset()
+    doctor.invalidate()
+    platform._login_lookups.clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tailscale_and_doctor_state():
+    """Issue #289. Each test starts and ends with no cached Tailscale or doctor reading, and a thread the test started that can still read
+    one (a doctor check that ran past its cap, a probe, a poller) is given a moment to end, so it never fills a cache or spends the time
+    of the next test. tests/test_tailscale.py's doctor tests answer from the fake command and nothing else."""
+    import threading
+    forget_tailscale_and_doctor_state()
+    before = set(threading.enumerate())
+    yield
+    deadline = time.monotonic() + 3.0
+    for t in threading.enumerate():
+        if t not in before and t is not threading.current_thread() and t.name.startswith(TAILSCALE_READER_THREADS):
+            t.join(max(0.0, deadline - time.monotonic()))
+    forget_tailscale_and_doctor_state()
+
+
 @pytest.fixture(autouse=True)
 def _no_real_github_reader(monkeypatch):
     """The epic reader (app/github.py `api`, which runs `gh api`) and the login lookup behind the claim author rule never reach the real gh: both answer "no gh"

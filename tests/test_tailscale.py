@@ -11,12 +11,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app import doctor, previews
+from app import doctor, nodes, previews
 from app import platform as plat
 from app import tailscale as ts
 from app.config import settings
@@ -28,6 +29,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import tailscale_serve  # noqa: E402
 
 FQDN = "node.example.ts.net"
+PRODUCTION_TS_TIMEOUT = doctor.TS_TIMEOUT        # taken at import, before the box fixture lifts it
 BOARD = 8443
 TARGET = "http://127.0.0.1:8000"
 
@@ -128,6 +130,9 @@ def box(tmp_path, monkeypatch):
     monkeypatch.delenv("CCBOARD_REPLACE_SERVE", raising=False)
     monkeypatch.delenv("CCBOARD_HTTPS_PORT", raising=False)
     monkeypatch.delenv("TAILSCALE_BE_CLI", raising=False)
+    # A stall of the machine (a whole-suite run on a loaded Mac) must not turn into the doctor's "did not answer in time" warning (issue #289).
+    # The fakes answer in milliseconds, so a long limit costs nothing; the one test about a hung command sets its own short one.
+    monkeypatch.setattr(doctor, "TS_TIMEOUT", 30.0)
     # the layout constants point at nothing; tests that need a layout write it under tmp_path and patch these again
     monkeypatch.setattr(ts, "LINUX_FALLBACK", str(tmp_path / "no-usr-bin-tailscale"))
     for name in ("MAC_APP", "MAC_APP_CLI", "MAS_RECEIPT", "MAC_DAEMON_SOCKET"):
@@ -899,3 +904,57 @@ def test_doctor_a_hung_command_is_a_warning_not_a_hang(box, doc, monkeypatch):
 def test_doctor_detail_stays_one_line_and_leaks_nothing(box, doc):
     o = doc()
     assert "\n" not in doctor._clean(o.detail) and "@" not in o.detail
+
+
+# ------------------------------------------------------------------ issue #289: no reading or stall of an earlier test reaches the doctor
+
+def warm_every_tailscale_and_doctor_cache(state="Running"):
+    """Put a reading into every in-memory cache the board keeps about Tailscale, as a test (or a poller) that ran earlier would have."""
+    ts._whois_cache["100.64.0.1"] = (ts._whois_clock(), {"ok": True})
+    ts._version_cache[:] = [(ts._whois_clock(), "1.104.1")]
+    nodes._ts_cache = (time.monotonic(), status_json(state=state))
+    doctor._cache[("box", False)] = (doctor._clock(), {"summary": {}, "checks": [], "state": state})
+    doctor._probes["tailscale-reading"] = doctor._Probe()
+    doctor._last_good["tailscale"] = (time.time(), doctor.Outcome("pass", state, None))
+
+
+def test_a_warmed_cache_is_gone_before_the_next_test_starts_part_one():
+    warm_every_tailscale_and_doctor_cache("Running")
+    assert ts._whois_cache and ts._version_cache and nodes._ts_cache and doctor._cache and doctor._probes and doctor._last_good
+
+
+def test_a_warmed_cache_is_gone_before_the_next_test_starts_part_two():
+    assert not ts._whois_cache and not ts._version_cache and nodes._ts_cache is None
+    assert not doctor._cache and not doctor._probes and not doctor._last_good
+
+
+@pytest.mark.parametrize("state", ["NoState", ""])
+def test_doctor_answers_from_the_command_whatever_an_earlier_test_cached(box, doc, state):
+    warm_every_tailscale_and_doctor_cache("Running")                       # what a test with a signed-in box leaves behind
+    box.status_file.write_text(json.dumps(status_json(state=state)))
+    o = doc()
+    assert o.status == "fail" and "not signed in" in o.detail and o.fix["cmd"] == "sudo tailscale up"
+    assert box.calls() == ["status --json"]                                # it asked the command; nothing came from a cache
+
+
+def test_the_fixture_resets_what_the_tests_warm_and_stops_what_they_leave_running():
+    import threading
+    from tests.conftest import forget_tailscale_and_doctor_state
+    warm_every_tailscale_and_doctor_cache()
+    forget_tailscale_and_doctor_state()
+    assert not ts._whois_cache and not ts._version_cache and nodes._ts_cache is None and not doctor._cache and not doctor._probes
+    assert [t.name for t in threading.enumerate() if t.name.startswith(("doctor-", "bare-poll"))] == []
+
+
+def test_doctor_does_not_turn_a_slow_start_of_the_command_into_a_warning(box, doc):
+    """The box fixture's limit is longer than the production one: a command that takes longer than TS_TIMEOUT (a machine that stalls for a moment)
+    is still read, and the answer is the command's, not "did not answer in time"."""
+    box.status_file.write_text(json.dumps(status_json(state="NoState")))
+    real = box.bin / "tailscale-answers"
+    (box.bin / "tailscale").rename(real)
+    stall = PRODUCTION_TS_TIMEOUT + 0.3
+    box.script("tailscale", f'sleep {stall}\nexec "${{0%/*}}/tailscale-answers" "$@"\n')
+    o = doc()
+    assert o.status == "fail" and "not signed in" in o.detail, o.detail
+    assert doctor.TS_TIMEOUT > stall
+
