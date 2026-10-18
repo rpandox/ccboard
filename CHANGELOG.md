@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.98 - 2026-10-18
+
+### Changed
+- Issue #121, "the WSL2 side (Phase K)" of the MCP shim python: nothing to change in `install.sh`. Reading it showed that the systemd install (plain Ubuntu and WSL2 alike; there is no WSL branch in that step) has registered the `ccboard` MCP server with the board's own `.venv/bin/python` since v0.4.3, and only the docker runtime uses `/usr/bin/python3` (Claude starts the shim on the host). The issue text that said Linux registers `/usr/bin/python3` was wrong.
+- `tests/test_install_mcp.py` pins it: the systemd runtime registers the venv python, the registration step names no system python and no WSL case, an existing entry is kept and never added twice, the docker runtime registers `/usr/bin/python3` and replaces an entry that names another script.
+- `docs/install/windows-wsl2.md` and `docs/install/linux.md` say which python the MCP registration uses.
+
+Upgrade: nothing to do.
+
 ## v0.5.97 - 2026-10-18
 
 ### Changed
