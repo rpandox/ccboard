@@ -67,6 +67,8 @@ def split_changes(before, after, window_ns=SYNC_WINDOW_NS):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_home(reason): the test legitimately reads the real home, so it keeps HOME; give the reason")
+    config.addinivalue_line("markers", "real_tool(*names): the test deliberately runs these machine tools (names from MACHINE_TOOLS, e.g. "
+                                       "real_tool(\"docker\")) for real; the hermetic guard (issue #291) lets only those names through for this test")
 
 
 # ---- platform markers (issue #123) --------------------------------------------------------------------------------------------------
@@ -1211,6 +1213,9 @@ def bare_runner(monkeypatch, projects_dir):
 # in MACHINE_TOOLS is found only on a PATH directory under the temp dirs (a fake the test wrote), never anywhere else; asking for any
 # other copy reads as "not installed" (FileNotFoundError, what a missing program raises). tmux is guarded only while the doctor runs,
 # because tests marked needs_tmux start the real one on a private socket.
+# Two ways through the guard, both narrow: (1) the repository's own dev fakes (scripts/dev: fake_agents/claude, fake_agents/codex, ...) count
+# as temp dirs, because they are test doubles that ship in the repo; (2) a test that deliberately needs a real machine tool says so with
+# @pytest.mark.real_tool("docker"), which lets that one named tool through for that one test and nothing else.
 MACHINE_TOOLS = frozenset({
     "tailscale", "tailscaled", "ttyd", "claude", "codex", "gh", "restic", "docker", "systemctl", "launchctl", "bun", "code-server",
     "ccusage", "security", "devcontainer", "pmset", "sudo",
@@ -1231,7 +1236,23 @@ def under_temp(path) -> bool:
     return any(real == r or real.startswith(r + os.sep) for r in temp_roots())
 
 
+DEV_FAKE_ROOTS = (os.path.realpath(ROOT / "scripts" / "dev"),)      # the repo's own test doubles (fake_agents, fake_tty, ...)
+
+
+def trusted_location(path) -> bool:
+    """A temp dir, or one of the repo's own dev fakes: where the guard lets a MACHINE_TOOLS name run from."""
+    if under_temp(path):
+        return True
+    real = os.path.realpath(os.fspath(path))
+    return any(real == r or real.startswith(r + os.sep) for r in DEV_FAKE_ROOTS)
+
+
+REAL_TOOLS: set[str] = set()        # names the running test opted into with @pytest.mark.real_tool(...); reset per test
+
+
 def _guarded(name: str) -> bool:
+    if name in REAL_TOOLS:
+        return False
     return name in MACHINE_TOOLS or (_doctor_runs > 0 and name in DOCTOR_ONLY_TOOLS)
 
 
@@ -1240,16 +1261,17 @@ def _hermetic_which(cmd, mode=os.F_OK | os.X_OK, path=None):
     if not _guarded(os.path.basename(name)):
         return _real_which(cmd, mode, path)
     if os.sep in name:
-        return _real_which(cmd, mode, path) if under_temp(name) else None
-    kept = [d for d in (path if path is not None else os.environ.get("PATH", os.defpath)).split(os.pathsep) if d and under_temp(d)]
+        return _real_which(cmd, mode, path) if trusted_location(name) else None
+    kept = [d for d in (path if path is not None else os.environ.get("PATH", os.defpath)).split(os.pathsep) if d and trusted_location(d)]
     return _real_which(cmd, mode, os.pathsep.join(kept)) if kept else None
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_binaries(monkeypatch):
+def _hermetic_binaries(request, monkeypatch):
     """See the block comment above: PATH lookups, the doctor's absolute fallbacks and every process start obey MACHINE_TOOLS. A test that
     wants a program writes a fake into a temp dir and puts that on PATH (tests/test_tailscale.py's box fixture); a test-level monkeypatch
-    of any of these names runs after this one and wins. Yields SPAWNED."""
+    of any of these names runs after this one and wins. @pytest.mark.real_tool("docker") lets that named tool run for real in that test only.
+    Yields SPAWNED."""
     import subprocess
     import tempfile
     from app import doctor, platform as plat, tailscale as ts
@@ -1263,8 +1285,16 @@ def _hermetic_binaries(monkeypatch):
     monkeypatch.setattr(doctor, "TTYD_BIN", str(nowhere / "ttyd"))
     monkeypatch.setattr(doctor, "_login_path", lambda: "")              # a login shell would run the owner's profile
     real_executable = doctor._executable
-    monkeypatch.setattr(doctor, "_executable", lambda p: bool(p) and under_temp(p) and real_executable(p))
+    monkeypatch.setattr(doctor, "_executable", lambda p: bool(p) and trusted_location(p) and real_executable(p))
     SPAWNED.clear()
+    REAL_TOOLS.clear()
+    for mark in request.node.iter_markers("real_tool"):
+        named = set(mark.args)
+        unknown = sorted(n for n in named if not isinstance(n, str) or n not in MACHINE_TOOLS | DOCTOR_ONLY_TOOLS)
+        if not named or unknown:
+            pytest.fail("real_tool needs names from MACHINE_TOOLS or DOCTOR_ONLY_TOOLS (tests/conftest.py); got "
+                        + (", ".join(map(repr, unknown)) if unknown else "none"), pytrace=False)
+        REAL_TOOLS.update(named)
     real_init = subprocess.Popen.__init__
 
     def guarded_init(self, args, *a, **kw):
@@ -1276,7 +1306,7 @@ def _hermetic_binaries(monkeypatch):
                 found = exe if os.access(exe, os.X_OK) else None
             else:
                 found = _real_which(exe, path=(env if env is not None else os.environ).get("PATH", os.defpath)) if exe else None
-            if exe and _guarded(os.path.basename(exe)) and not (found and under_temp(found)):
+            if exe and _guarded(os.path.basename(exe)) and not (found and trusted_location(found)):
                 raise FileNotFoundError(2, "not installed (hermetic test run, issue #291)", exe)
             if found:
                 SPAWNED.append(found)
@@ -1295,3 +1325,4 @@ def _hermetic_binaries(monkeypatch):
 
     monkeypatch.setattr(doctor, "run", counted_run)
     yield SPAWNED
+    REAL_TOOLS.clear()

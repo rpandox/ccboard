@@ -13,7 +13,7 @@ import sys
 import pytest
 
 from app import doctor
-from tests.conftest import MACHINE_TOOLS, SPAWNED, under_temp
+from tests.conftest import MACHINE_TOOLS, REAL_TOOLS, ROOT, SPAWNED, _guarded, trusted_location, under_temp
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 
@@ -64,3 +64,24 @@ def test_a_tool_on_the_temp_path_is_found_and_the_machines_copy_is_not(tmp_path,
             subprocess.run([path, "--version"], capture_output=True, timeout=5)
     assert not [p for p in SPAWNED if p != str(fake)] or all(os.path.basename(p) not in MACHINE_TOOLS for p in SPAWNED if p != str(fake))
     assert sys.executable                                        # (the interpreter itself is never a machine tool)
+
+
+def test_the_repos_own_dev_fakes_are_trusted_like_temp_dirs_and_nothing_else_is():
+    assert trusted_location(ROOT / "scripts" / "dev" / "fake_agents" / "claude") and trusted_location(ROOT / "scripts" / "dev" / "fake_agents")
+    assert not trusted_location(ROOT / "scripts" / "claude_settings.py") and not trusted_location(ROOT / "app" / "doctor.py")
+    assert not trusted_location("/usr/local/bin/claude") and not trusted_location("/opt/homebrew/bin/docker")
+
+
+@pytest.mark.real_tool("docker")
+def test_real_tool_lets_only_the_named_tool_through_for_that_test():
+    assert REAL_TOOLS == {"docker"} and not _guarded("docker")
+    assert _guarded("gh") and _guarded("tailscale") and _guarded("launchctl"), "every other machine tool stays guarded"
+    for path in ("/opt/homebrew/bin/gh", "gh"):
+        with pytest.raises(FileNotFoundError):
+            subprocess.run([path, "--version"], capture_output=True, timeout=5)
+
+
+def test_a_test_without_the_marker_has_no_real_tools():
+    assert REAL_TOOLS == set() and _guarded("docker")
+    with pytest.raises(FileNotFoundError):
+        subprocess.run(["docker", "--version"], capture_output=True, timeout=5)
