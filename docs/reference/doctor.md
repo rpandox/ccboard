@@ -4,19 +4,21 @@ For people reading the Doctor checks and the agents API.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ### Doctor and the agents API
 
-`GET /api/doctor` (optional `?group=box|terminal|claude|notify|memory|codex` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude and Codex: identity, install, login and hooks state, the launcher's option schema, permission modes, efforts, models, the reasoning levels per Codex model, what this box's binary can do as `capabilities`, and the slash commands the board knows; [The launcher](../guide/launcher.md#the-launcher-v0513) says how it is used; the Codex catalogue and the flag sets of both binaries are cached per binary, so only the first request after a start, or after the binary changes, runs a probe), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
+`GET /api/doctor` (optional `?group=box|terminal|claude|notify|memory|codex` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude and Codex: identity, install, login and hooks state, the launcher's option schema, permission modes, efforts, models, the reasoning levels per Codex model, what this box's binary can do as `capabilities`, and the slash commands the board knows; [The launcher](../guide/launcher.md#the-launcher) says how it is used; the Codex catalogue and the flag sets of both binaries are cached per binary, so only the first request after a start, or after the binary changes, runs a probe), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
 
 `POST /api/preflight/clone {url}` is the one write in this family, and it writes nothing: it asks a remote what it has before a clone is queued (the wizard's chips). The pages that show all this are Settings > Doctor, Settings > Agents and the new-project wizard.
 
-#### Settings > Doctor (v0.5.19)
+#### Settings > Doctor
 
 The box checklist from `GET /api/doctor`, in four labelled sections: **Box** (the terminal checks fold in), **Claude** (the claude-mem checks fold in), **Codex** and **Notifications**. Inside a section the failing checks come first, then warnings, passes and skipped ones. A row has a glyph that does not rely on colour (`✕` failing, `!` warning, `✓` passing, `–` skipped), the check's name and one line of detail, and for anything that is not passing the fix: a sentence; a command with a **Copy** button; or a button when the board can start the fix itself (`claude_login` and `codex_login` say **Log in** and lead to Settings > Accounts, `notify_test` says **Send test** and posts to ntfy or Web Push, then asks again; a hyphenated spelling such as `codex-login` is read the same, any other action name is ignored). **Re-check** asks `GET /api/doctor?refresh=1` (without it the server answers from its 20 s cache); coming back to the tab asks again, at most once per 5 s. A failed ask keeps the last answer on screen and says so.
 
 Doctor never opens by itself: no redirect, no banner. The only trace elsewhere is one quiet line under the Settings tabs, `Doctor: 2 checks failing`, which links to the tab and shows only while a check fails. The old bare `#/onboarding` address now lands here.
 
-#### Backup, CI and version checks (v0.5.21)
+#### Backup, CI and version checks
 
 All of these read files or the project scan the board already holds, call a tool only with a timeout, and sit in the doctor's 20 s cache; none runs `restic`.
 
@@ -42,6 +44,8 @@ All of these read files or the project scan the board already holds, call a tool
 
 The table is dated evidence from the documentation, not a measurement: none of the versions was run against an old binary, and Claude Code updates itself. Rule: the board prefers a probe of `--help` over a version number where one exists (the ultracode flag: a `--help` that lists it, or `CCBOARD_CLAUDE_ULTRACODE_FLAG`, wins). The table lives in `app/agents/claude.py` (`FEATURE_GATES`); an unreadable version hides nothing.
 
-#### Settings > Agents (v0.5.19)
+#### Settings > Agents
 
 A labelled section each for **Claude** and **Codex**: who is logged in, the version, the hooks and their trust state, how many models the launcher offers on this box, and that agent's own Doctor checks (without a login button; the card already has **Log in**). **Log in** (or **Add account** for Codex) leads to Settings > Accounts, which asks for a name first. Last, **Import external sessions** lists the Codex threads of the last 14 days that were not started on the board, each with **Open**. Codex has a two-tap **Log out** (see [Several Codex accounts](../guide/accounts.md#several-codex-accounts)).
+
+**Background.** Settings > Doctor and Settings > Agents: v0.5.19; Backup, CI and version checks: v0.5.21.

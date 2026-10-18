@@ -288,3 +288,42 @@ def test_page_widen_is_file_only_and_bound():
     for value in ("", "0", "true", " 1", "1 "):
         assert not Settings({key: value}).page_widen
     assert Settings({key: "1"}).page_widen
+
+
+# ------------------------------------------------------------------ the Default cell says what install.sh binds (issue #244, slice 4)
+def _install_defaults():
+    """{name: literal} for every ENV_KEYS name that install.sh binds with `: "${NAME:=literal}"`, and the names it binds empty."""
+    literal, empty = {}, set()
+    for name, default in re.findall(r'^: "\$\{([A-Z][A-Z0-9_]*):=([^}\n]*)\}"', INSTALL.read_text(), re.M):
+        if name not in env_keys():
+            continue
+        if default == "":
+            empty.add(name)
+        elif "$" not in default and "`" not in default:
+            literal[name] = default
+    return literal, empty
+
+
+def _default_cells():
+    cells = {}
+    for line in settings_span(read_doc(CONFIGURATION)).splitlines():
+        m = re.match(r"^\| `([A-Z][A-Z0-9_]+)` \| (.*?) \| ", line)
+        if m:
+            cells[m.group(1)] = m.group(2)
+    return cells
+
+
+def test_a_literal_default_in_install_sh_is_in_the_default_cell_of_the_row():
+    literal, _ = _install_defaults()
+    cells = _default_cells()
+    assert len(literal) > 30, "the parser sees the installer's defaults"
+    wrong = [f"{n}: install.sh binds {d!r}, the row says {cells.get(n)!r}" for n, d in sorted(literal.items()) if d not in (cells.get(n) or "")]
+    assert not wrong, wrong
+
+
+def test_a_setting_install_sh_binds_empty_has_a_default_cell_that_says_what_empty_means():
+    _, empty = _install_defaults()
+    cells = _default_cells()
+    assert len(empty) > 10
+    bare = [n for n in sorted(empty) if not (cells.get(n) or "").strip()]
+    assert not bare, f"a Default cell is blank (say empty, or name the application default): {bare}"

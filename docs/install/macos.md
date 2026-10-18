@@ -10,7 +10,7 @@ The board runs natively on a Mac as per-user launchd jobs, for a person who is l
 
 - [ ] macOS 13 or newer.
 - [ ] [Homebrew](https://brew.sh). The tools come from Homebrew ([macOS tools](#macos-tools)).
-- [ ] Tailscale installed and signed in, with MagicDNS and HTTPS certificates enabled for your tailnet ([Tailscale](tailscale.md#tailscale-on-each-system-issue-126) covers the three variants: App Store, Standalone and open-source `tailscaled`).
+- [ ] Tailscale installed and signed in, with MagicDNS and HTTPS certificates enabled for your tailnet ([Tailscale](tailscale.md#tailscale-on-each-system) covers the three variants: App Store, Standalone and open-source `tailscaled`).
 - [ ] A second device on the same tailnet, such as your phone or laptop. You open the board from it. A request from the Mac to plain `http://localhost` carries no Tailscale identity and is rejected with a 403 (the optional local sign-in below is the exception).
 - [ ] A terminal, as yourself. The installer never uses `sudo` and refuses to run as root.
 - [ ] A Mac that stays logged in (a locked screen is fine). After a logout or a reboot nothing runs until you log in again, and the tmux sessions are gone.
@@ -75,7 +75,7 @@ Open the printed Dashboard address from another device on your tailnet, then cli
 
 ### A rerun
 
-A rerun changes nothing it should not: a plist that renders the same is neither rewritten nor reloaded, the board restarts (`kickstart -k`) only when the checkout, the requirements or the settings file changed, a changed plist of the board, ttyd or an optional job is booted out and in again, and `dev.ccboard.tmux` is never booted out or kickstarted once it runs (a changed tmux plist only prints a warning, because reloading it would end every session). A job you switched off is booted out and its plist removed.
+Updating, and what a rerun does and does not restart, are on [Upgrade](../upgrade.md#updating-a-mac).
 
 ## What the installer changes
 
@@ -117,7 +117,7 @@ On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/
 | GitHub CLI | `gh` | required | bottle (to verify) | bottle (to verify) | "gh is not installed", with the install command |
 | ttyd | `ttyd` | required | no bottle: a source build of many minutes that may upgrade other packages (measured 2026-10-10 on an Intel Mac, macOS 14, see "Evidence and open checks") | bottles on Sequoia and Tahoe, source on Sonoma | "ttyd is not installed and nothing listens on its port"; it also needs version 1.7.4 or newer with `-W`, `-O` and `-a` |
 | code-server | `code-server` | optional | bottle (to verify) | bottle (to verify) | "nothing listens on 127.0.0.1:<port>", with the restart command |
-| restic | `restic` | optional | bottle (to verify) | bottle (to verify) | the [Backup section](../backup-and-restore.md#backup-on-each-system-issue-129) reports it (wording to verify) |
+| restic | `restic` | optional | bottle (to verify) | bottle (to verify) | the [Backup section](../backup-and-restore.md#backup-on-each-system) reports it (wording to verify) |
 | bun | `oven-sh/bun/bun` (tap `oven-sh/bun`) | optional | to verify | to verify | "bun not found and no worker is running, so hooks cannot start one" (claude-mem) |
 | shellcheck | `shellcheck` | optional | bottle (to verify) | bottle (to verify) | not checked: only people who change the scripts need it |
 
@@ -139,7 +139,7 @@ On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/
 | read a log | `tail -n 30 ~/Library/Logs/ccboard/board.log` (also `tmux.log`, `ttyd.log`) |
 | stop the board, keep the sessions | `launchctl bootout gui/$(id -u)/dev.ccboard.board` |
 | start it again | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.ccboard.board.plist` |
-| update | `git pull`, then rerun `./install.sh` |
+| update | see [Upgrade](../upgrade.md#updating-a-mac) |
 | uninstall | `scripts/uninstall-macos.sh` (asks first; `--yes` skips the question, `--keep-tmux` leaves the sessions running). It boots out and removes every `dev.ccboard.*` job, the tmux job last, and keeps the data folder, the settings file, the logs, the hook registrations and the `tailscale serve` mappings, saying how to remove each |
 
 Never restart or boot out `dev.ccboard.tmux` while sessions run: it is the tmux server that owns them, the same rule as `ccboard-tmux.service` on Linux. `bootout` of the tmux job kills the server and every session, and the socket file stays behind as a stale file. A socket file that exists therefore does not mean a server is alive: ask tmux (`tmux -L ccboard list-sessions`, which says "no server running on <path>"), never test for the file. tmux started under launchd with `-D` takes no command and stays in the foreground, which is how the job holds it.
@@ -178,5 +178,5 @@ Everything below comes from one run of the device check (issue #130) on an Intel
 - **Stopping the tmux job (measured 2026-10-10 on an Intel Mac, macOS 14, tmux 3.6b, M5 and M6).** `bootout` of the tmux job kills the server and every session, and the socket file stays behind as a stale file, as it did after most `tmux kill-server` runs.
 - **What survives what.** Measured: sessions survived `kickstart -k` and `bootout` of other jobs (M5), and an attribute-only Keychain lookup returned at once from a normal shell and from `gui/<uid>` and `user/<uid>` jobs (M17). Not run: lid closed on battery (M11), logout and reboot (M4). Everything marked "to verify" in the table is open.
 - **The claude-mem plugin.** Not yet run with a real `claude plugin install` on a Mac.
-- **Variants and architectures.** One run, on an Intel Mac with macOS 14 (2026-10-10); none on Apple silicon. The Standalone and Homebrew Tailscale variants were not installed on the measured Mac ([Tailscale](tailscale.md#tailscale-on-each-system-issue-126)).
+- **Variants and architectures.** One run, on an Intel Mac with macOS 14 (2026-10-10); none on Apple silicon. The Standalone and Homebrew Tailscale variants were not installed on the measured Mac ([Tailscale](tailscale.md#tailscale-on-each-system)).
 - **Background.** Issue #117 (the Mac port), #128 (the Homebrew tools), #122 (the claude-mem plugin step), #127 (local sign-in) and #130 (the device check).

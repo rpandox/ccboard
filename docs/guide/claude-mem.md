@@ -4,6 +4,8 @@ For people who run the claude-mem plugin beside the board.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ## claude-mem
 
 [claude-mem](https://github.com/thedotmack/claude-mem) is a Claude Code plugin (`claude-mem@thedotmack`) that records what your sessions do and feeds it back to later ones. It runs one **worker** per box: an HTTP service on loopback (port from `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`, recorded in `~/.claude-mem/worker.pid`) that spawns an observer `claude` session per observed session. The board reads its health, and the Memory page reads a project's memory through the board (never from the browser). The only write is the optional write-back below, which is off by default.

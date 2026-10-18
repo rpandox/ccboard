@@ -4,6 +4,8 @@ For people changing ccboard, and for anyone who wants to try the demo mode.
 
 [Back to the documentation index](README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ## Development
 
 ```sh
@@ -19,7 +21,7 @@ The suite cannot reach your real home. Every test runs with `HOME` and `USERPROF
 
 **Markers and the suite on a Mac (issue #123).** `pytest.ini` registers `linux_only`, `needs_tmux`, `needs_systemd`, `needs_proc`, `posix_sh` and `needs_macos` and runs with `--strict-markers`, so a marker that is not listed is an error. `tests/conftest.py` skips a marked test on a host that lacks what the marker names (the platform flags of `app/platform.py`, `shutil.which`, `/proc`) and says why in the report. `posix_sh` marks the tests that run the shell scripts under `sh`; the other markers are for tests that need a real tmux, systemd or `/proc`. CI runs the suite on macOS as well (`test-macos`, advisory: it is not in the image job's `needs`, it has `continue-on-error`, read-only permissions and no secrets, and it is skipped for changes to `*.md` and `docs/` only). To run the suite on a Mac yourself, never against your real home or tmux socket: `export HOME=$(mktemp -d) TMUX_TMPDIR=$(mktemp -d) CCBOARD_TMUX_SOCKET=ccboard-test CCBOARD_TEST_NO_CLAUDE=1`, then `python -m pytest -q` (about 15 minutes; the socket name must contain `ccboard`). `brew install tmux shellcheck` first, so those tests run instead of skipping.
 
-**Developer note: the exec form.** Claude Code can run a hook as `args` (an argument list, no shell), which would remove the [quoting problem](reference/hooks.md#what-the-hook-scripts-need-issue-121) and the dependency on `sh`. It needs a minimum Claude Code version (to verify) and a real executable, and native Windows is undecided, so the hooks stay shell commands for now.
+**Developer note: the exec form.** Claude Code can run a hook as `args` (an argument list, no shell), which would remove the [quoting problem](reference/hooks.md#what-the-hook-scripts-need) and the dependency on `sh`. It needs a minimum Claude Code version (to verify) and a real executable, and native Windows is undecided, so the hooks stay shell commands for now.
 
 **Accessibility check (issue #45).** `scripts/dev/axe-run.sh <url> [WxH]` opens a page of a running board (demo mode, for example `http://127.0.0.1:8777/?demo=1#/agents`) with the gstack browser, injects the vendored axe-core (`scripts/dev/axe/`, MPL-2.0, pinned in `VERSION`, never under `app/static/`, so the service worker does not precache it and the CSP stays strict), runs `axe.run()` and prints one line per violation (impact, rule, selector). Exit 0 means no serious or critical violation, 1 at least one, 2 nothing was measured (no browser or axe did not run). `AXE_COARSE=1` adds the `force-coarse` class first; use `390x844` for the phone size. `tests/test_a11y_static.py` fails on an icon-only button without an `aria-label` and on an `outline: none` without a visible replacement; `tests/js/a11y.test.mjs` pins the tab, menu and glyph roles and the arrow-key behaviour.
 

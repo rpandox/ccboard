@@ -4,7 +4,7 @@ For people who run a board on a Mac, WSL2 or a container as a node.
 
 [Back to the documentation index](../README.md)
 
-#### Several devices (issue #154; phase P6)
+#### Several devices
 
 A Mac and a Windows machine running the board inside WSL2 can be nodes next to the Linux box. Phase P6 made their card, their discovery and their Doctor rows honest; phase P16 pinned how routing treats them, where a repository is found and what sleep and wake do (the last three bullets). Everything marked "to verify" has been run on fakes only, not on a real Mac or a real Windows machine. A machine that runs no board at all is not a node; see [Devices without a board](device-check.md#devices-without-a-board).
 
@@ -26,3 +26,5 @@ A Mac and a Windows machine running the board inside WSL2 can be nodes next to t
 - **Sleep and wake (phase P16).** A sleeping Mac, or a WSL2 node without its keep-alive, shows stale and then offline, never broken. On wake the first reading shows it online again with no refresh; a claim it held is either still live or fenced: if another node took the issue while it slept, the returning node's next write is refused, its task is parked as lost and nothing is posted. Pinned by `test_sleep_and_wake_past_the_lease_the_other_node_reclaims_and_the_returning_node_is_fenced_and_parked`.
 
 To verify on real machines (issues #130 and #155): the Mac and WSL2 cards and discovery on real hardware, WSL2 localhost forwarding, Tailscale on the Windows host, and `caffeinate -s` on the target macOS. `tests/test_nodes_platforms.py` keeps the platform rows of the table equal to `SUPPORT_PLATFORMS` in `app/nodes.py`.
+
+**Background.** Several devices: issue #154 (phase P6).

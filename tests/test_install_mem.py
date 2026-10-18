@@ -615,4 +615,4 @@ def test_readme_says_what_a_plugin_update_does_and_documents_the_autostart_switc
         assert needle in flat, needle
     row = next(l for l in read_doc(CONFIGURATION).splitlines() if l.startswith("| `CCBOARD_MEM_PORT` |"))
     assert "37700 plus your uid modulo 100" in row and "then 37701)" not in row
-    assert "ccboard-mem" in read_doc(UNINSTALL).split("### Uninstall", 1)[1]
+    assert "ccboard-mem.service" in read_doc(UNINSTALL).split("## Linux with the systemd runtime", 1)[1]

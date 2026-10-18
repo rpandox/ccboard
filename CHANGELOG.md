@@ -2,6 +2,29 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.97 - 2026-10-18
+
+### Changed
+- Docs: 58 headings in `docs/` lost their issue, phase and version labels (for example "(issue #134; phase P2)" and "(v0.5.13)"); the numbers moved to a "Background" line at the end of each page. `docs/moved.md` and every link and anchor follow.
+- Docs: the "What v0.x adds" blocks are gone as headings. The release-note bullets that repeated `CHANGELOG.md` and `ROADMAP.md` were removed (11 bullets and the v0.5 feature list), and the behaviour they described is kept as one sentence on its feature page (the PR and CI status, Fix CI and overlap warning, transcript search, batch prompt, reboot recovery, the live grid, Import from GitHub and the usage strip); the bullets that hold facts found nowhere else stayed under plain topical headings. `docs/moved.md` says which rows were dropped.
+- Docs: a page says "the box" only after it says what it means (the machine that runs the board). `docs/README.md` ends with "Still to do by a person": the fresh Linux and fresh Mac walkthroughs, which have not been done.
+- New tests (`tests/test_docs_guards.py`, two in `tests/test_env_keys.py`) keep labels out of headings, every Markdown file under 400 KB, a title on every page, the "the box" rule, every `docs/...md` path in the code real, and the Default cell of each setting equal to what `install.sh` binds. Two tests that pinned an old heading now pin the new one.
+
+Upgrade: nothing to do.
+
+## v0.5.96 - 2026-10-18
+
+### Added
+- `docs/uninstall.md` is now complete and checked against `install.sh`, `scripts/install-macos.sh` and `scripts/uninstall-macos.sh`: every unit and timer (including `ccboard-backup.service` and `.timer`), `/etc/ccboard/env`, `/etc/sudoers.d/ccboard`, the ntfy package and apt source, the `tailscale serve` mappings (by port, never `reset`), the Claude and Codex hooks and MCP registrations, the code-server bits, the tmux server (with the warning that ending it ends every session) and the data folder, in order, for Linux, the container, a Mac and WSL2. No uninstall script was added for Linux.
+- `docs/troubleshooting.md` opens with a symptom, cause and fix table built from the Doctor's own messages and the installer's stop messages, and ends with an FAQ (Tailscale, the same machine, API keys, multi-user, what leaves the machine, offline). `docs/security.md` opens with a "who can reach what" table, and the security model below it is unchanged. `SECURITY.md` says how to report a vulnerability privately through GitHub.
+- New tests pin the uninstall page against the installers and the shape of the new pages.
+
+### Changed
+- `docs/upgrade.md` covers each kind of install (Linux, Mac, WSL2, Docker), how to read the changelog `Upgrade:` line before pulling, backing up first and going back; the Mac and container update text that sat in other pages moved into it.
+- `CONTRIBUTING.md` opens with a short path for a person (fork, venv, both test commands, a demo board, the changelog rule, a pull request) and the agent and model tables follow it unchanged. `docs/maintainers/deploying.md` now says first that ordinary users do not need it.
+
+Upgrade: nothing to do.
+
 ## v0.5.95 - 2026-10-18
 
 ### Changed

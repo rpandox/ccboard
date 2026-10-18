@@ -6,7 +6,7 @@ For people who add devices without ccboard and who turn on the device check.
 
 #### Devices without a board
 
-A device without a board is a machine on your tailnet that has no ccboard on it. It is not a node: no pair, no token, no relay, no tasks, no worktrees or clones, no worker. The board you are using starts agent sessions (Claude, Codex or a plain shell) in `tmux` on that machine over Tailscale SSH and reads them back. For devices that do run a board, see [Several devices](platforms.md#several-devices-issue-154-phase-p6).
+A device without a board is a machine on your tailnet that has no ccboard on it. It is not a node: no pair, no token, no relay, no tasks, no worktrees or clones, no worker. The board you are using starts agent sessions (Claude, Codex or a plain shell) in `tmux` on that machine over Tailscale SSH and reads them back. For devices that do run a board, see [Several devices](platforms.md#several-devices).
 
 **What it can and cannot do.**
 
@@ -64,7 +64,7 @@ A device without a board is a machine on your tailnet that has no ccboard on it.
 
 **Not yet run on real hardware** (the owner's device checks): the real Tailscale check-prompt text, a tmux session surviving a `tailscaled` restart, sleep and wake, a Mac as a target, and the state log hooks firing in real Claude and Codex.
 
-#### The device check (issue #136)
+#### The device check
 
 An optional layer on top of the pair token and node signature. Keys prove the node; this check also proves the device. With the device check on, the receiving board also asks Tailscale who is really calling (`tailscale whois`) and, if you want, requires a permission written in your tailnet policy. A copied token then stops working anywhere but on the paired device. **It is off by default**: `CCBOARD_NODE_AUTH=token` (or nothing set) behaves exactly as before, with no Tailscale call, no extra header read, no new column value and no new audit row, and node signing keys continue to apply independently.
 
@@ -106,3 +106,5 @@ Then, once, on the device that serves the board (Tailscale 1.92 or newer, check 
 **To verify on the two real boards** (issue #155), until it is proven there: that `AcceptAppCaps` is the key `serve status --json` uses; the exact text the command prints for an unknown address (the board matches "peer not found", "not found" or "no match"); the real header Serve sends (plain JSON for ASCII, RFC 2047 for anything else); what the user profile holds for a tagged peer; `whois` inside the container and on WSL2; and that a copied token used from a third device is refused.
 
 **Demo.** `?demo=1#/settings?sec=nodes` shows the Device check in `token` mode; `?demo=1&authstate=<name>#/settings?sec=nodes` shows the others, with `<name>` one of `whois`, `whois-cap`, `tagged` (more than one allowed tag), `bind` (the board listens wider), `old` (Tailscale 1.88.2), `noserve` (Serve without the capability flag), `down` (whois does not answer), `nocap` (`whois+cap` without a capability name), `badmode` (an unknown value) or `unknown` (nothing could be read). **Check** on the token state plays the host reading. The pairs of the demo show a bound device with and without a tag.
+
+**Background.** The device check: issue #136.

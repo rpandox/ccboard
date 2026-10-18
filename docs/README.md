@@ -19,21 +19,21 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 | Page | What it covers |
 |---|---|
 | [Configuration reference](configuration.md) | The few settings most people set, then one table per group, the options page, the advanced and test-only variables, and Restart board. |
-| [Upgrade](upgrade.md) | How to update an install, and how the changelog is written. |
-| [Uninstall ccboard](uninstall.md) | The uninstall commands for Linux. |
+| [Upgrade](upgrade.md) | How to update each kind of install (Linux, Mac, WSL2, Docker), what the changelog's `Upgrade:` line means, backing up first, going back, and updating Claude Code. |
+| [Uninstall ccboard](uninstall.md) | Every command in order, with what it removes and what it keeps, for Linux, the container, a Mac and WSL2. |
 | [Backup and restore](backup-and-restore.md) | What is backed up on each system, the restore runbook and backup branches in your repos. |
-| [Security](security.md) | The security model, node scopes and routes, and the settings permission classes. |
-| [Troubleshooting and FAQ](troubleshooting.md) | The known problems and what to do. |
+| [Security](security.md) | Who can reach what, the security model, node scopes and routes, and the settings permission classes. |
+| [Troubleshooting and FAQ](troubleshooting.md) | A symptom, cause and fix table, where the logs are, the longer notes, and answers to the questions people ask first. |
 
 ## Use it
 
 | Page | What it covers |
 |---|---|
-| [Getting started with the board](guide/getting-started.md) | The overview of Using it, and the v0.5 feature list. |
+| [Getting started with the board](guide/getting-started.md) | New projects, sessions and tasks, the backlog, state badges and the phone. |
 | [Home and projects](guide/home-and-projects.md) | Home, the attention inbox, the project page, repos, code-server and transcript search. |
 | [The launcher](guide/launcher.md) | The one sheet that starts every kind of run. |
 | [Tasks, diffs and pull requests](guide/tasks-and-prs.md) | Tasks, the diff and PR modal, CI status, previews and work from GitHub issues. |
-| [Schedules, batches and auto-continue](guide/automation.md) | Schedules, batch prompts, auto-continue and reboot recovery. |
+| [Schedules, batches, auto-continue and reboot recovery](guide/automation.md) | Schedules, batch prompts, auto-continue, and how sessions come back after a restart. |
 | [Notifications](guide/notifications.md) | Push through ntfy and Web Push, remote approve, and notifications across nodes. |
 | [The terminal](guide/terminal.md) | Terminal commands, the terminal page, the terminal on a phone and the live grid. |
 | [Usage and cost](guide/usage-and-cost.md) | The usage strip and page, series, accounts usage and cost. |
@@ -69,7 +69,7 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 |---|---|
 | [Team](team.md) | Who is working on what, publishing your status, conflict warnings and working with a team. |
 | [Developing ccboard](development.md) | Run the board locally, the tests, the lock files and demo mode. |
-| [Deploying](maintainers/deploying.md) | Updating the container and the outage per push, and what to do when GitHub Actions is down. |
+| [Deploying](maintainers/deploying.md) | For the maintainer of a public deployment: updating the container, the outage per push, and what to do when GitHub Actions is down. Ordinary users do not need it. |
 | [Design notes](maintainers/design-notes.md) | Deviations from the original spec. |
 
 ## Other files
@@ -78,5 +78,15 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 |---|---|
 | [memory-api.md](memory-api.md) | The claude-mem worker API the board talks to. |
 | [security-audit-2026-10.md](security-audit-2026-10.md) | The October 2026 security audit and what it changed. |
+| [SECURITY.md](../SECURITY.md) | How to report a vulnerability privately, and which versions get fixes. |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | The short path for a person (fork, tests, demo board, pull request, changelog entry), then the maintainer's agent workflow. |
 | [moved.md](moved.md) | Where each old README heading went (temporary). |
 | [img/README.md](img/README.md) | The two README screenshots: what they show and how to retake them. |
+
+## Still to do by a person
+
+Some checks need a real, empty machine and a person who did not write these pages. They have not been done, and no page here says they were.
+
+- A fresh Linux install: on an Ubuntu 24.04 machine with no ccboard and a Tailscale login, follow only [README.md](../README.md) and the pages it links, from clone to a first Claude session opened on a phone or a second device. Write down the start and end time, every point where you stopped or guessed, and the fix.
+- A fresh Mac install: the same on a Mac that has no ccboard (Homebrew may be present). Say which Mac you used; Apple silicon is not available to the project today.
+- Open the rendered pages on GitHub once, including the longest page, and look at the two screenshots.

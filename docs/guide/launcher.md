@@ -4,7 +4,9 @@ For people starting sessions, tasks and runs.
 
 [Back to the documentation index](../README.md)
 
-### The launcher (v0.5.13)
+In this page, "the box" means the machine that runs the board.
+
+### The launcher
 
 One sheet starts every kind of run, from every page: the **+** in the top bar, a project block on Home, a project page (*+ session*, *+ task*), the **+** on a project's row in the sidebar, an empty slot of the quad view, the terminal dock and the *Options…* of the Move sheet. It is a right-hand panel from 840 px and a bottom sheet below that; the footer is sticky (*Cancel* and the one filled button, *Start & open*), inputs are 16 px on touch so a phone does not zoom, and a new session from anywhere is two taps once the defaults are remembered (the **+**, then *Start & open*).
 
@@ -54,11 +56,12 @@ Ultracode is a setting, not an effort level (v0.5.21, #78): it plans a workflow 
 - **A job with no schedule.** A job with no cron and `run_now: false` is parked (`next_run_at` empty, shown *parked: Run now*) and runs only when *Run now* asks; the forms send `run_now: true` for the one-off preset, as before. The batch route still runs its jobs at once.
 - **Fable.** The docs say `claude -p` never asks before billing Fable usage credits, so a schedule or batch job whose model text resolves to Fable (`--model fable`, `best`, any id containing `fable`, a `--fallback-model` that does, or the id `ANTHROPIC_DEFAULT_FABLE_MODEL` remaps it to) is refused with a 422 unless the request carries `acknowledge_fable: true` **and** a `max_budget_usd` of at most `CCBOARD_HEADLESS_FABLE_CAP` (default 25). The forms show the unticked checkbox *This run bills Fable usage credits without asking* directly above the button, and Max $ becomes required, as soon as the model text resolves to Fable. The acknowledgement is per job: it is stored on the job with its time, cap and models, never remembered with the form, and goes stale when the model text or the cap changes. A Fable job already stored without it is **held**, not run under a cap of ours (a cap is not consent): the schedule row says so, Settings > Doctor > *Fable jobs waiting* lists it, and the row's *Acknowledge Fable* button (`POST /api/jobs/<id>/acknowledge-fable`) records the acknowledgement and Max $. Max $ is Claude Code's own client-side estimate: it counts subagent spend, and it is not a billing ceiling set by the provider. Interactive sessions, tasks and chain steps are unaffected (Claude can ask there); a model that is the box's settings default, not named in the arguments, is not detected.
 
-## What v0.1 does
+## Sessions and the repos they can edit
 
 - **Sessions.** Unlimited, all concurrent, one tmux session each, always started *inside a repo*. Launchers: `claude` (new session with a board-minted `--session-id`), `claude --resume`, `claude --continue`, and a plain `shell`. Extra CLI args are passed through. **One session can edit several repos:** the launch form pre-checks the sibling repos of the same project and passes them as `--add-dir`.
-- **Attach** from the browser through ttyd, **kill** from the board.
 
-## What v0.4 adds: autonomy & fleet
+## The devcontainer and bypass permissions
 
 - **Devcontainer**: repos with `.devcontainer/devcontainer.json` can run sessions inside the container. Bypass permissions is allowed **only inside the repo's devcontainer** (owner decision on #104, v0.5.62): an interactive Claude session started with *Run in the devcontainer* may choose it, with the acknowledgement; on the host, for Codex, and for tasks, scheduled and batch runs it is refused; and settings overrides in extra args (`--settings`, `--setting-sources`, `--permission-prompt`) are rejected everywhere.
+
+**Background.** The launcher: v0.5.13.
