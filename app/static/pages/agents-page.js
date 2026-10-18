@@ -206,7 +206,7 @@ async function agentsExtLoad() {
   let d = null;
   try { d = await api('GET', '/api/external?agent=codex'); } catch (e) {
     if (mine !== agentsExt.seq) return;
-    agentsExt.err = acctReason(e, 'the board did not answer');
+    agentsExt.err = errorText(e);
     agentsExtRepaint();
     return;
   }

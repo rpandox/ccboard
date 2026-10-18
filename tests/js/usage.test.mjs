@@ -101,7 +101,7 @@ function usageWorld({ wide = false, charts = true, st = STATE(), over = {}, extr
     __calls.push({ method, path, body });
     for (const [prefix, v] of Object.entries(__answers)) {
       if (!path.startsWith(prefix)) continue;
-      if (v && v.__error) throw new Error(v.__error);
+      if (v && v.__error) throw Object.assign(new Error(v.__error), v.__status ? { status: v.__status } : {});
       return typeof v === 'function' ? v(path) : v;
     }
     return {};
@@ -578,6 +578,15 @@ test('timeline: a body without an events array (no fixture, a fresh box) is a sa
 });
 
 // ---------------------------------------------------------------- errors and the missing library
+
+test('#309: a 503 with no sentence from the board and a dropped connection say what happened, not the transport text', async () => {
+  const { w } = usageWorld({ over: { '/api/usage/summary?days=7': { __error: '503 Service Unavailable', __status: 503 } } });
+  await go(w);
+  assert.match(text(q(w, '[data-sec="cost"] .uerr')), /Could not load the usage summary: the board answered with an error \(HTTP 503\)/);
+  const { w: w2 } = usageWorld({ over: { '/api/usage/summary?days=7': { __error: 'Failed to fetch' } } });
+  await go(w2);
+  assert.match(text(q(w2, '[data-sec="cost"] .uerr')), /Could not load the usage summary: the board did not answer/);
+});
 
 test('an error shows an inline callout with Retry in the sections that lost their data; Retry asks again and recovers; the others keep their paint', async () => {
   const { w } = usageWorld({ over: { '/api/usage/summary?days=7': { __error: '502 Bad gateway' } } });

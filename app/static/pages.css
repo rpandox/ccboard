@@ -257,6 +257,8 @@ html.force-coarse #page .uc-backup { min-height:var(--tap); }
 #banner { flex-wrap:nowrap; }
 #banner > span { flex:1 1 0; min-width:0; overflow-wrap:anywhere; }
 #banner > .bp5-button { flex:0 0 auto; }
+/* a command in the banner (the tmux start command) breaks only at its spaces: each word is one unbreakable piece, and one wider than the column scrolls inside itself */
+#banner .bn-tok { display:inline-block; max-width:100%; white-space:nowrap; overflow-wrap:normal; overflow-x:auto; vertical-align:bottom; }
 #banner.info { background:var(--sig-bg, rgba(77,208,225,.12)); border-left-color:var(--sig); }
 /* the rate-limit callout in #banner (pages/widgets.js limitBanner): alone, it needs no second frame; beside another message it loses its frame and sits under a divider */
 #banner.limit-only { display:block; padding:0; background:none; border-left:0; }
