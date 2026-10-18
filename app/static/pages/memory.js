@@ -605,7 +605,8 @@ function memoryHealthTile(h, o) {
       el('span', { class: `mem-pill ${pill.cls}`, title: pill.title }, el('span', { class: 'mem-pill-g', 'aria-hidden': 'true', text: pill.glyph }), el('span', { class: 'mem-pill-t', text: pill.text }))));
   }
   if (h.state !== 'up' && h.reason) node.append(el('p', { class: 'mem-reason', text: h.reason }));
-  if (h.state === 'not_started') node.append(el('div', { class: 'mem-tile-new' }, pageCreateButton('session', 'New session', true)));
+  // a session needs a project to start in; and where the page already shows its own New session (the panel for a read that answered not_started), the tile does not add a second
+  if (h.state === 'not_started' && !opt.noCreate && typeof state !== 'undefined' && state && Array.isArray(state.projects) && state.projects.length) node.append(el('div', { class: 'mem-tile-new' }, pageCreateButton('session', 'New session', true)));
   if (opt.bare && down) {                                              // a stopped worker has no figures: the reason and the footnote are the whole tile
     node.append(el('p', { class: 'mem-tile-foot dim', text: 'The counts come back once the worker answers. Per-day figures come from the board\'s own samples, taken every 5 minutes.' }));
     return node;
@@ -648,7 +649,7 @@ function memErrLevel(h) {
 function memHealthLine(h) {
   const s = h.state || 'unknown';
   if (s === 'down' || s === 'degraded' || s === 'incompatible') return `${s}${h.reason ? ' · ' + memOneLine(h.reason, 120) : ''}`;
-  if (s === 'not_started') return h.reason ? memOneLine(h.reason, 120) : 'not started yet';
+  if (s === 'not_started') return 'not started yet';                    // the full sentence is in the tile under it
   const bits = [s === 'up' ? 'up' : 'checking'];
   const q = memNum(h.queue_depth);
   if (q !== null) bits.push(`${q} queued`);
@@ -657,14 +658,14 @@ function memHealthLine(h) {
   return bits.join(' · ');
 }
 
-/* The Memory page's health: a disclosure (summary line, the full tile inside). It opens by itself while the worker is down, slow, incompatible, failing or not started yet (the New session button is in it),
+/* The Memory page's health: a disclosure (summary line, the full tile inside). It opens by itself while the worker is down, slow, incompatible or failing,
    unless the person chose otherwise (o.pref true/false); o.onToggle(open) reports their click. null when claude-mem is off or not sampled. */
 function memoryHealthDisclosure(h, o) {
   const opt = o || {};
-  const tile = memoryHealthTile(h, { bare: true });
+  const tile = memoryHealthTile(h, { bare: true, noCreate: opt.noCreate });
   if (!tile) return null;
   const bad = h.state === 'down' || h.state === 'degraded' || h.state === 'incompatible' || memErrLevel(h) === 'failing';
-  const open = typeof opt.pref === 'boolean' ? opt.pref : bad || h.state === 'not_started';
+  const open = typeof opt.pref === 'boolean' ? opt.pref : bad;
   const sum = el('summary', { class: 'mem-health-sum', 'data-state': h.state || 'unknown', onclick: () => { if (typeof opt.onToggle === 'function') opt.onToggle(!node.open); } },
     el('b', { class: 'mem-health-k', text: 'Health' }), el('span', { class: 'mem-health-line' + (bad ? ' bad' : ' dim'), text: memHealthLine(h) }));
   const node = el('details', { class: 'mem-health', 'data-state': h.state || 'unknown' }, sum, tile);
@@ -734,11 +735,12 @@ MemoryPage.paintHead = function (P) {
   P.pill.setAttribute('title', info.title || '');
   P.pillG.textContent = info.glyph;
   P.pillT.textContent = info.text;
-  const sig = JSON.stringify([h && h.state, h && h.observations, h && h.queue_depth, h && h.processing, h && h.last_error, h && h.rates, h && h.compat, h && h.reason, h && h.stale_sessions, h && h.active_sessions]);
+  const noCreate = !!(P.env && P.env.state === 'not_started');           // the panel under the tile has the New session button then
+  const sig = JSON.stringify([h && h.state, h && h.observations, h && h.queue_depth, h && h.processing, h && h.last_error, h && h.rates, h && h.compat, h && h.reason, h && h.stale_sessions, h && h.active_sessions, noCreate, st && Array.isArray(st.projects) ? st.projects.length > 0 : null]);
   if (sig !== P.tileSig) {
     P.tileSig = sig;
     P.tileHost.textContent = '';
-    const tile = st && st.memory ? memoryHealthDisclosure(h, { pref: P.healthPref, onToggle: (on) => { P.healthPref = on; } }) : null;
+    const tile = st && st.memory ? memoryHealthDisclosure(h, { noCreate, pref: P.healthPref, onToggle: (on) => { P.healthPref = on; } }) : null;
     if (tile) P.tileHost.append(tile);
     P.tileHost.classList.toggle('hidden', !tile);
   }

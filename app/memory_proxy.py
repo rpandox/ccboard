@@ -596,7 +596,7 @@ def _fan(jobs: dict, deadline: float) -> tuple[dict, dict]:
 def _worst(errors) -> WorkerError:
     errs = [e for e in errors if isinstance(e, WorkerError)]
     for e in errs:
-        if e.state == "down":
+        if e.state in ("down", "not_started"):
             return e
     return errs[0] if errs else WorkerError("degraded", "worker_error", "the worker could not answer")
 

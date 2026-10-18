@@ -922,10 +922,10 @@ test('not_started: the pill is neutral (no down, no amber), says "not started ye
   assert.deepEqual(b.map(text), ['New session']);
   b[0].click();
   assert.deepEqual(created(w), ['session']);
-  assert.equal(plain(w.run('memHealthLine({ state: "not_started", reason: ' + JSON.stringify(NOT_STARTED) + ' })')), NOT_STARTED);
+  assert.equal(plain(w.run('memHealthLine({ state: "not_started", reason: ' + JSON.stringify(NOT_STARTED) + ' })')), 'not started yet', 'the summary line is short: the sentence is in the tile');
 });
 
-test('not_started on the Memory page: the health disclosure opens by itself with the explanation and New session; the pill is the neutral one', async () => {
+test('not_started on the Memory page: the health disclosure stays closed (it is not a problem), its line is short, the tile has the sentence once and New session', async () => {
   const m = memWorld({ answers: withAnswers() });
   withCreate(m.w);
   m.w.ctx.__st = STATE({ memory: { state: 'not_started', reason: NOT_STARTED, observations: null, summaries: null, queue_depth: null, active_sessions: null, last_error: null } });
@@ -936,8 +936,9 @@ test('not_started on the Memory page: the health disclosure opens by itself with
   assert.equal(text(q(m.w, '.mem-pill-t')), 'not started yet');
   const d = q(m.w, '.mem-health');
   assert.equal(d.getAttribute('data-state'), 'not_started');
-  assert.equal(d.open, true);
-  assert.match(text(d), /the memory worker starts with the first Claude session/);
+  assert.equal(d.open, false);
+  assert.equal(text(q(m.w, '.mem-health-line')), 'not started yet');
+  assert.equal((text(d).match(/the memory worker starts with the first Claude session/g) || []).length, 1, 'the sentence once, in the tile');
   assert.equal(qa(m.w, '.mem-health-line.bad').length, 0, 'not the red failure line');
   const b = d.querySelectorAll('button').find((x) => text(x) === 'New session');
   assert.ok(b);
@@ -962,6 +963,18 @@ test('a read that answers not_started: the panel is the neutral explanation with
   assert.deepEqual(created(m.w), ['session']);
   assert.ok(qa(m.w, '.mem-degraded button').some((x) => text(x) === 'Retry'));
   assert.equal(text(q(m.w, '.mem-pill-t')), 'not started yet');
+  assert.equal(qa(m.w, 'button').filter((x) => text(x) === 'New session').length, 1, 'one New session on the screen: the tile above the panel leaves its own out');
+});
+
+test('not_started with no project: the tile has the explanation but no New session (a session needs a project), next to the New project of the empty state', async () => {
+  const m = memWorld({ st: STATE({ projects: [], memory: { state: 'not_started', reason: NOT_STARTED, observations: null, summaries: null, queue_depth: null, active_sessions: null, last_error: null } }), answers: withAnswers() });
+  withCreate(m.w);
+  m.w.location.hash = '#/memory';
+  await settle();
+  assert.equal(qa(m.w, 'button').filter((x) => text(x) === 'New session').length, 0);
+  assert.deepEqual(qa(m.w, 'button').filter((x) => /New project/.test(text(x))).map(text), ['New project']);
+  assert.equal(q(m.w, '.mem-health').open, false);
+  assert.equal((text(page(m.w)).match(/starts with the first Claude session/g) || []).length, 1);
 });
 
 test('no projects: the empty state is the first thing under the title, with a New project button; the empty picker, search and tabs are gone', async () => {

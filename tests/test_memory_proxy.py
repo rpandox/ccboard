@@ -402,3 +402,11 @@ def test_no_worker_body_is_logged(shop, mem_worker, caplog):
     mp.observations("shop")
     mp.search("shop", "title")
     assert "SECRET-NARRATIVE" not in caplog.text
+
+
+def test_a_refused_read_outranks_a_slow_one_whichever_kind_of_refusal(shop):
+    slow = mp.WorkerError("degraded", "timeout", "the worker is slow")
+    for refused in (mp.WorkerError("down", "refused", "connection refused"), mp.WorkerError("not_started", "not_started", "not started yet")):
+        assert mp._worst([slow, refused]) is refused
+        assert mp._worst([refused, slow]) is refused
+    assert mp._worst([slow]) is slow
