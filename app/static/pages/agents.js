@@ -580,11 +580,15 @@ function sessionPerm(tmux) {
   return null;
 }
 
-/* 10x pass: the row echoes a sent text at once ('› continue'); the next poll's last_prompt is the same text. `from` is any node inside the row. */
+/* 10x pass: the row echoes a sent text at once ('› continue'); the next poll's last_prompt is the same text. `from` is any node inside the row.
+   Returns a function that puts the line back as it was (a refused send, #311). */
 function sessionEcho(from, text) {
   const row = from && typeof from.closest === 'function' ? from.closest('.rrow, .peek, .inbox-card') : null;
   const line = row && row.querySelector('.rr-last .dim, .peek-block .dim');
-  if (line) setTextIfChanged(line, '› ' + String(text).split('\n')[0].slice(0, 160));
+  if (!line) return () => {};
+  const before = line.textContent;
+  setTextIfChanged(line, '› ' + String(text).split('\n')[0].slice(0, 160));
+  return () => setTextIfChanged(line, before);
 }
 
 async function sessionNudge(s, text, btn) {
@@ -603,15 +607,18 @@ async function sessionNudge(s, text, btn) {
 async function sessionSend(s, ta) {
   const text = String(ta.value || '').replace(/\r\n?/g, '\n');
   if (!s || !text.trim()) return;
-  ta.disabled = true;
+  const typed = String(ta.value || '');
+  ta.value = '';                                               // #311: the box empties at once and the echo line shows the text as sent; a refusal puts both back
+  rowCleared(ta);
+  const undo = sessionEcho(ta, text);
   try {
     await api('POST', s.bare_device ? `/api/bare/${encodeURIComponent(s.bare_device)}/sessions/${encodeURIComponent(s.tmux)}/reply` : `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, s.bare_device ? { text } : { text, enter: true });
-    ta.value = '';
-    rowCleared(ta);
     pageToast(`sent to ${s.name || s.tmux}`, 'ok');
-    sessionEcho(ta, text);
-  } catch (e) { pageToast(e.message, 'bad'); }
-  finally { ta.disabled = false; if (typeof ta.focus === 'function') ta.focus(); }
+  } catch (e) {
+    if (!ta.value) { ta.value = typed; rowCleared(ta); }
+    undo();
+    pageToast(typeof errorText === 'function' ? errorText(e) : e.message, 'bad');
+  }
 }
 
 async function sessionAck(s) {
@@ -911,7 +918,7 @@ function sessionCard(s, opts) {
     const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
       s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null, s2.parked, s2.queued_prompts || 0,
-      pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
+      pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey, sessionClosing.has(tmux),
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
       rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null, Nodes.sig(s2)]);
   }
@@ -937,7 +944,10 @@ function sessionCard(s, opts) {
     Nodes.mark(where, s2);                                     // the node chip (dim for this board) once nodes are paired (nodes.js)
     if (o.showProject && s2.project) chipHueSet(where, chipHue('project', s2.project));
     agentsAgeNode(age, sessionActivity(s2));
-    setTextIfChanged(meta, rich ? limitParkedText(s2) || GLYPH_LABEL[sk] : sessionMetaText(s2, sk));       // #71: a parked session says the limit, not 'error'
+    const closing = sessionClosing.has(tmux);                  // #311: the Kill was confirmed and the board has not answered yet: the row is a dimmed ghost until it does
+    node.classList.toggle('closing', closing);
+    if (moreBtn) moreBtn.disabled = closing;
+    setTextIfChanged(meta, closing ? 'closing…' : rich ? limitParkedText(s2) || GLYPH_LABEL[sk] : sessionMetaText(s2, sk));       // #71: a parked session says the limit, not 'error'
     const lim = o.peek ? [800, 2000] : (o.compact || rich ? [120, 160] : [200, 320]);
     const pt = s2.last_prompt ? '› ' + String(s2.last_prompt).slice(0, lim[0]) : '';
     const mt = s2.last_message ? String(s2.last_message).slice(0, lim[1]) : '';
@@ -973,10 +983,12 @@ function sessionCard(s, opts) {
       }
     }
     const confirming = ui.confirm === killKey;                // rebuilt only when the two-tap state flips (confirmButton repaints through repaintPage)
-    if (cur.kill !== confirming) {
-      cur.kill = confirming;
+    const killState = closing ? 'closing' : confirming;
+    if (cur.kill !== killState) {
+      cur.kill = killState;
       killSlot.textContent = '';
-      if (confirming || o.peek) killSlot.append(confirmButton(killKey, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(cur.s.tmux)}`), true));
+      if (closing) killSlot.append(el('button', { class: 'danger small minimal', type: 'button', disabled: true, text: 'Closing…' }));
+      else if (confirming || o.peek) killSlot.append(confirmButton(killKey, 'Kill', () => sessionKill(cur.s.tmux), true));
     }
     const nudge = sessionNudgeable(s2);
     chips.classList.toggle('hidden', !nudge);

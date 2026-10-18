@@ -1699,12 +1699,17 @@ const TermKit = (() => {
         autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send' });
       const sendBtn = el('button', { type: 'button', class: 'tk-send', title: 'Send (Enter)', text: 'Send' });
       const p = { ta, send: sendBtn, chips: el('div', { class: 'tk-chips' }), hint: el('span', { class: 'tk-hint' }), root: null, docked };
-      const go = () => send(ta.value).then((ok) => {
-        if (!ok) return;
-        ta.value = '';
-        if (typeof composerGrow === 'function') composerGrow(ta);
-        if (!docked) S.close(false);
-      });
+      const grow = () => { if (typeof composerGrow === 'function') composerGrow(ta); };
+      const go = () => {
+        const v = ta.value;
+        if (!v.trim()) return send(v);
+        ta.value = '';                                                            // #311: the box empties at once; a refused send puts the text back (unless something new was typed meanwhile)
+        grow();
+        return send(v).then((ok) => {
+          if (!ok) { if (!ta.value) { ta.value = v; grow(); } return; }
+          if (!docked) S.close(false);
+        });
+      };
       sendBtn.addEventListener('click', go);
       if (docked) {                                                               // one row that never grows (composerBind would): Enter sends, the … button opens the roomy box
         ta.classList.add('composer');

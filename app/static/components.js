@@ -44,7 +44,29 @@ function confirmButton(key, label, action, quiet, onChange) {
   return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => { if (onChange) { ui.confirm = key; repaint(); } else confirmArm(key); }, text: label });
 }
 
-/* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
+/* #311: Kill paints at once. The tmux names whose DELETE is in flight; a session row (agents.js sessionCard) dims and says "closing…" for as long as its name is here, and a poll that
+   still lists the session does not bring it back. The answer settles it: a refusal puts the row back and says why in the board's words, a success leaves the next poll to drop the row. */
+const sessionClosing = new Set();
+
+function sessionClosingRepaint() { if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); }
+
+async function sessionKill(tmux) {
+  sessionClosing.add(tmux);
+  sessionClosingRepaint();
+  try {
+    await api('DELETE', `/api/sessions/${encodeURIComponent(tmux)}`);
+    sessionClosing.delete(tmux);
+    return true;
+  } catch (e) {
+    sessionClosing.delete(tmux);
+    sessionClosingRepaint();
+    const why = typeof errorText === 'function' ? errorText(e) : e.message;
+    if (typeof toast === 'function') toast(`${tmux} was not closed: ${why}`, { kind: 'bad' }); else setError(why);
+    return false;
+  }
+}
+
+/* A small "Copy" button for a command or a link (v0.5.19,the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
    reads "Copied" for a moment. Without a clipboard (an insecure origin) it says to select the text instead. `what` names the thing for the screen reader and the toast. */
 function copyButton(text, what) {
   const name = what ? String(what) : 'text';
@@ -200,7 +222,7 @@ function sessionRow(s) {
     el('div', { class: 'actions' },
       el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
       s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
-      confirmButton('kill:' + s.tmux, 'Kill session', () => api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`), true)));
+      confirmButton('kill:' + s.tmux, 'Kill session', () => sessionKill(s.tmux), true)));
   if (s.last_message || s.last_prompt) {
     row.append(el('div', { class: 'last' },
       s.last_prompt ? el('span', { class: 'dim', text: '› ' + s.last_prompt.slice(0, 120) }) : null,
@@ -351,6 +373,17 @@ function taskOverrideSet(row, keys, extra) {
 }
 
 function taskOverrideDrop(id) { delete store.tasksOverride[id]; }
+
+/* #311: Add to backlog paints at once. The card the person just added stands in the Backlog (dimmed, "adding…", no actions) under a client-side id until the board answers: the
+   caller drops it (taskOverrideDrop(id)) and lays the real card over, or drops it alone when the board refused. boardTasks hides it when a poll already lists a card of the same
+   title in the same place that was not there when it was added. */
+let taskPendingSeq = 0;
+function taskPendingAdd(row) {
+  const id = -(Date.now() * 100 + (taskPendingSeq++ % 100));
+  const seen = boardTasks(typeof state !== 'undefined' ? state : null).filter((t) => t.project === row.project && t.repo === row.repo && t.title === row.title).map((t) => t.id);
+  taskOverrideSet({ ...row, id, pending: true }, null, { _new: true, _seen: seen });
+  return id;
+}
 function taskRepaint() { if (typeof repaintPage === 'function') repaintPage(); }
 function taskStartingSession() { return { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' }; }
 
@@ -389,6 +422,7 @@ function boardTasks(st) {
     const o = ov[id];
     if (used.has(id)) continue;
     if (o._gone || (!keep && now - o._at > TASK_OVERRIDE_TTL)) { if (!keep) delete ov[id]; continue; }    // a delete the poll has caught up with
+    if (o.pending && base.some((t) => t.project === o.project && t.repo === o.repo && t.title === o.title && !(o._seen || []).includes(t.id))) continue;      // the poll already has the real card
     if (o._new) fresh.push(taskApply(null, o));
   }
   return fresh.concat(out);
@@ -1030,12 +1064,13 @@ function backlogCard(t, ctx) {
       { id: 'edit', label: 'Edit', onClick: () => taskEditSheet(t) }],
     danger: { key: 'tdel:' + t.id, label: 'Delete', run: () => taskDelete(t) },
   });
-  return taskCardShell(t, ' backlog' + (queued ? ' queued' : ''), !queued,
+  const pending = !!t.pending;                                                           // #311: just added, the board has not answered: no actions until it has
+  return taskCardShell(t, ' backlog' + (queued ? ' queued' : '') + (pending ? ' pending' : ''), !queued && !pending,
     el('div', { class: 'row tk-title-row' }, el('span', { class: 'title', text: t.title }), queued ? el('span', { class: 'state ended', text: 'waiting for a step' }) : null),
     more ? el('div', { class: 'tk-prompt', text: more }) : null,
-    el('div', { class: 'meta' }, taskWhere(t), added ? ` · ${added}` : ''),
+    el('div', { class: 'meta' }, taskWhere(t), pending ? ' · adding…' : (added ? ` · ${added}` : '')),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
-    acts);
+    pending ? null : acts);
 }
 
 /* Preview: expose the task's dev server on its own tailnet HTTPS port. When the server cannot find the listening port on its own it asks, in a small

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.104 - 2026-10-18
+
+### Changed
+- Kill, Send and Add to backlog now paint at once, and the board only confirms (#311, rule 2 of #30). Confirm Kill turns the row into a dimmed "closing..." ghost with its actions off, and a poll that still lists the session does not bring it back; a refused Kill restores the row and says why. Send from the session peek box, the Agents row's send box, the terminal tile's prompt box and the device reply box empty at once, and a refusal puts the text back unless something new was typed. Add to backlog closes the New task sheet and puts a dimmed "adding..." card in the Backlog; the board's answer swaps it for the real card, and a refusal removes it and opens the sheet again with the prompt and title intact and the board's words under it. Now and Schedule keep their sheet open with the busy button, because their refusals show beside the field they are about.
+
+### Fixed
+- The New task sheet no longer starts on a permission mode the box refuses (#311). On a Claude older than 2.1.283 (the first that can start in auto) the sheets, the Start-in-a-lane popover and the dispatch sheet leave auto out of the Permissions select, select ask, and send the same value; a remembered auto becomes ask there. The version in the board state decides until the board's own agent list has been read, and that list wins afterwards.
+
+Upgrade: nothing to do.
+
 ## v0.5.102 - 2026-10-18
 
 ### Added

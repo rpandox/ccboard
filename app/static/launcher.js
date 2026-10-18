@@ -11,13 +11,14 @@ const BYPASS_WARNING = 'Claude runs every command and edit without asking, as yo
 
 /* Model / effort / permission controls shared by the session and task forms. Returns the grid plus a reader. */
 function launchControls(saved, permOptions) {
+  const offered = permOptions.filter(([v]) => v !== 'auto' || lxClaudeAuto());                    // #311: a Claude too old to start in auto does not get the option, and nothing pre-selects it
   const model = selectEl(MODELS, saved.model_sel || '');
   const modelId = el('input', { type: 'text', placeholder: 'full model id, e.g. claude-fable-5-1', 'aria-label': 'Custom model id', autocomplete: 'off', autocapitalize: 'off',
     class: saved.model_sel === 'custom' ? '' : 'hidden', value: saved.model_id || '' });
   model.addEventListener('change', () => { modelId.classList.toggle('hidden', model.value !== 'custom'); if (model.value === 'custom') modelId.focus(); });
   const effort = selectEl(EFFORTS, saved.effort || '');
-  const perm = selectEl(permOptions, typeof saved.permission_mode === 'string' ? saved.permission_mode : PERM_DEFAULT);      // a remembered '' is the person's 'ask' and wins; nothing remembered is auto
-  if (!perm.value) perm.value = '';                                       // a remembered choice that no longer exists
+  const perm = selectEl(offered, typeof saved.permission_mode === 'string' ? saved.permission_mode : PERM_DEFAULT);      // a remembered '' is the person's 'ask' and wins; nothing remembered is auto
+  if (!perm.value || !offered.some(([v]) => v === perm.value)) perm.value = '';                  // a remembered choice that no longer exists (or auto on a Claude without it): ask
   const warn = el('div', { class: 'bad hidden', role: 'alert', text: BYPASS_WARNING });
   const syncWarn = () => warn.classList.toggle('hidden', perm.value !== 'bypassPermissions');
   perm.addEventListener('change', syncWarn); syncWarn();
@@ -1500,7 +1501,20 @@ function launcherPresetDrop(p, r, agent, name) {
    explicit 'ask' (sent as nothing, as before) so that a remembered 'ask' can tell itself from 'nothing remembered'. */
 const LX_PERM_DEFAULT = 'auto';
 const LX_CX_DEFAULT = 'auto';
-function lxPermFallback() { return launcherSchema('claude').permission_modes.includes(LX_PERM_DEFAULT) ? LX_PERM_DEFAULT : 'manual'; }      // a Claude Code too old for auto as a starting mode keeps asking
+/* Can this box's Claude start in auto? app/agents/claude.py FEATURE_GATES auto_start_mode: 2.1.283. The schema the board answered (GET /api/agents) has auto left out below it; until that answer is in,
+   the version in state.agents.claude says the same, so a sheet never opens on auto for a Claude that refuses it (#311). A version nobody can read is a yes. */
+const LX_AUTO_MIN = [2, 1, 283];
+function lxClaudeAuto() {
+  if (!launcherSchema('claude').permission_modes.includes('auto')) return false;
+  if (LX_LOAD.agents && LX_LOAD.agents.claude) return true;
+  const a = typeof state !== 'undefined' && state && state.agents ? state.agents.claude : null;
+  const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(a && typeof a.version === 'string' ? a.version : '');
+  if (!m) return true;
+  const have = [+m[1], +m[2], +(m[3] || 0)];
+  for (let i = 0; i < 3; i++) if (have[i] !== LX_AUTO_MIN[i]) return have[i] > LX_AUTO_MIN[i];
+  return true;
+}
+function lxPermFallback() { return lxClaudeAuto() ? LX_PERM_DEFAULT : 'manual'; }      // a Claude Code too old for auto as a starting mode keeps asking
 function launcherDefaults(agent) {
   if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: LX_PERM_DEFAULT, tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
     agent_name: '', fallback_model: '', subagent_model: '', subagent_custom: '', subagent_force: false, autocompact: '', mcp_config: '', devcontainer: false };
@@ -1941,7 +1955,7 @@ function launcherForm(o) {
       const own = mode === 'dispatch' && task && task.spec && typeof task.spec === 'object' ? task.spec.permission_mode : '';       // the card's own choice beats the repo memory and the default: sending auto would override it
       if (typeof own === 'string' && own && own !== 'bypassPermissions') v.permission_mode = own;
       if (v.permission_mode === '' || v.permission_mode === 'default') v.permission_mode = 'manual';           // an older memory said ask with an empty word
-      if (v.permission_mode === 'auto' && !launcherSchema('claude').permission_modes.includes('auto')) v.permission_mode = 'manual';
+      if (v.permission_mode === 'auto' && !lxClaudeAuto()) v.permission_mode = 'manual';
     }
     safeBypass(agent, v);
     if (agent === 'codex' && !LX_CX_MODES.some(([k]) => k === v.cx_mode)) v.cx_mode = LX_CX_DEFAULT;
@@ -2147,7 +2161,7 @@ function launcherForm(o) {
   const permSel = selectEl([['manual', LX_PERM_LABEL.manual]], 'manual');
   const paintPermOptions = () => {
     permSel.textContent = '';
-    const modes = launcherSchema('claude').permission_modes.filter((m) => m !== 'manual' && m !== 'default' && (session || m !== 'bypassPermissions'));
+    const modes = launcherSchema('claude').permission_modes.filter((m) => m !== 'manual' && m !== 'default' && (session || m !== 'bypassPermissions') && (m !== 'auto' || lxClaudeAuto()));
     if (C.permission_mode === 'auto' && !modes.includes('auto')) C.permission_mode = 'manual';        // this Claude Code cannot start in auto: ask, never an error
     for (const [v, t] of [['manual', LX_PERM_LABEL.manual], ...modes.map((m) => [m, LX_PERM_LABEL[m] || m])]) permSel.append(el('option', { value: v, text: t }));
     syncBypass();
@@ -2626,31 +2640,50 @@ function launcherForm(o) {
   };
 
   const taskBase = (v) => ({ project: p.name, repo: r.name, agent: v.agent, ...launcherTaskOpts(v), add_dirs: v.add_dirs });
+  const taskRowBase = (res, v, prompt, title) => ({ id: res.id !== undefined && res.id !== null ? res.id : -Date.now(), project: p.name, repo: r.name, slug: res.slug || '', title, branch: '', base: '', worktree: '', tmux: '',
+    created_at: new Date().toISOString(), column: 'backlog', phase: 'backlog', mode: 'worktree', agent: v.agent, auto_close: false, parent_id: null, chain_id: null, session_row: null, session: null, result: null,
+    prompt: prompt.slice(0, 600), prompt_len: prompt.length, claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null });
+  /* #311: Add to backlog paints at once. The sheet closes and the card stands in the Backlog (dimmed, "adding…") before the board has answered; the answer swaps it for the real card.
+     A refusal takes the pending card away and opens the sheet again with what was typed (the prompt, the title, Later; the launch options were remembered when it was sent), the
+     board's words under the form. When the sheet cannot open again (something else is open now) the words come as a toast naming the task. */
+  const submitLater = (body, v, prompt, title) => {
+    const pid = taskPendingAdd(taskRowBase({}, v, prompt, title));
+    setError(null);
+    if (typeof opt.onDone === 'function') opt.onDone({}, 'later'); else { ui.openForm = null; closeSheet(); }
+    taskRepaint();
+    return api('POST', '/api/tasks', body).then((res0) => {
+      const res = res0 || {};
+      taskOverrideDrop(pid);
+      const row = { ...taskRowBase(res, v, prompt, title), ...(res.task && typeof res.task === 'object' ? res.task : {}), phase: 'backlog', column: 'backlog', tmux: '' };
+      taskOverrideSet(row, null, { _new: true });
+      toast(`added to backlog: ${title}`.slice(0, 120), { kind: 'ok' });
+      taskRepaint();
+      if (typeof poll === 'function') poll(true);
+    }, (err) => {
+      taskOverrideDrop(pid);
+      taskRepaint();
+      const why = typeof errorText === 'function' ? errorText(err) : err.message;
+      const dlg = typeof document !== 'undefined' ? document.getElementById('sheet') : null;
+      const ctl = dlg && dlg.open ? null : openLauncher({ ...opt, project: p.name, repo: r.name, mode: 'task', carry: { title: T.title, prompt, when: 'later' } });
+      if (ctl && ctl.status) { formStatus(ctl.status, why, true); setError(why); }
+      else toast(`not added to the backlog: ${title}: ${why}`.slice(0, 200), { kind: 'bad' });
+    });
+  };
   const submitTaskNow = async (v, w, prompt, title) => {
     const body = { ...taskBase(v), title, prompt, when: w, ...issueKit.link() };
     if (!T.autoClose) body.auto_close = false;
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null || (Array.isArray(body[k]) && !body[k].length)) delete body[k];
     remember(v, w); taskSaveLastRepo(p.name, r.name);
+    if (w === 'later') return submitLater(body, v, prompt, title);
     const res = (await api('POST', '/api/tasks', body)) || {};
     const demo = typeof demoOn === 'function' && demoOn();
-    const base = { id: res.id !== undefined && res.id !== null ? res.id : -Date.now(), project: p.name, repo: r.name, slug: res.slug || '', title, branch: '', base: '', worktree: '', tmux: '', created_at: new Date().toISOString(),
-      column: 'backlog', phase: 'backlog', mode: 'worktree', agent: v.agent, auto_close: false, parent_id: null, chain_id: null, session_row: null, session: null, result: null, prompt: prompt.slice(0, 600), prompt_len: prompt.length,
-      claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null };
-    if (w === 'now') {
-      const row = taskRowFromResponse(base, res, { mode: 'worktree' });
-      if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-${row.slug || 'task'}`;
-      taskOverrideSet(row, null, { _new: true });
-      toast(`started ${row.slug || title}`, { kind: 'ok' });
-      taskRepaint();
-      finish(res, w);
-      taskOpenPeek(row.tmux);
-    } else {
-      const row = { ...base, ...(res.task && typeof res.task === 'object' ? res.task : {}), phase: 'backlog', column: 'backlog', tmux: '' };
-      taskOverrideSet(row, null, { _new: true });
-      toast(`added to backlog: ${title}`.slice(0, 120), { kind: 'ok' });
-      taskRepaint();
-      finish(res, w);
-    }
+    const row = taskRowFromResponse(taskRowBase(res, v, prompt, title), res, { mode: 'worktree' });
+    if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-${row.slug || 'task'}`;
+    taskOverrideSet(row, null, { _new: true });
+    toast(`started ${row.slug || title}`, { kind: 'ok' });
+    taskRepaint();
+    finish(res, w);
+    taskOpenPeek(row.tmux);
   };
   const submitChainNow = async (v, w, prompt, title, more) => {
     const first = {};
