@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.100 - 2026-10-18
+
+### Changed
+- Issue #122, the macOS installer step for the claude-mem worker: reading the installer showed that `CCBOARD_MEM_SERVICE=1 ./install.sh` already rendered, wrote and loaded `dev.ccboard.mem` (with `CCBOARD_CLAUDE_MEM` on), removed it when switched off, never kickstarted it, and that `scripts/uninstall-macos.sh` removed it with the other jobs. What was missing is added: a mem job that will not render or load is now a warning and the install goes on (every other job still stops it), and the installer prints the worker port the board looks for, by the same rule `install.sh` uses.
+- Issue #125, `TMUX_TMPDIR` in the launchd jobs: the board, tmux and ttyd templates, the renderer's 100-byte refusal and its `plistlib` test had shipped in v0.5.24. The installer now also refuses a `CCBOARD_TMUX_TMPDIR` that makes the socket path too long, and an empty or control-character `CCBOARD_TMUX_TMPDIR` or `CCBOARD_TMUX_SOCKET`, before it changes anything, instead of after the Homebrew and venv steps.
+- New installer tests (fake `launchctl` and home): the mem job is off by default, on renders and loads once, a rerun and a board restart leave it alone, a mem job that will not load only warns, the uninstall removes it, the port rule, and one `TMUX_TMPDIR` in all three jobs with the too-long refusal.
+- `docs/install/macos.md`, `docs/guide/claude-mem.md` and `docs/configuration.md` describe the mem job, `CCBOARD_TMUX_TMPDIR` (an installer switch, not remembered) and what is still unchecked on a real Mac (issue #130).
+
+Upgrade: nothing to do. The next `./install.sh` run on a Mac uses the new checks; pass `CCBOARD_TMUX_TMPDIR` again if you use one (it is not remembered).
+
 ## v0.5.98 - 2026-10-18
 
 ### Changed

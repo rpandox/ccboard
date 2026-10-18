@@ -103,6 +103,7 @@ case "$1" in
   print) grep -qxF "$2" "$S/loaded" && exit 0; echo "Could not find service" >&2; exit 113;;
   bootstrap) [ -f "$3" ] || {{ echo "no such plist $3" >&2; exit 5; }}
              [ ! -e "$S/bootstrap-fails" ] || {{ echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }}
+             [ ! -e "$S/bootstrap-fails-$(basename "$3" .plist)" ] || {{ echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }}
              echo "$2/$(basename "$3" .plist)" >> "$S/loaded"; exit 0;;
   bootout) grep -vxF "$2" "$S/loaded" > "$S/loaded.new"; mv "$S/loaded.new" "$S/loaded"; exit 0;;
 esac
@@ -836,6 +837,27 @@ def test_a_changed_plist_reloads_the_board_and_ttyd_but_only_warns_for_tmux(mac)
     assert mac.plist("tmux")["EnvironmentVariables"]["TMUX_TMPDIR"] == short, "the file on disk is current; the running job loads it at its next start"
 
 
+def test_every_job_that_runs_tmux_carries_the_same_tmux_tmpdir_and_a_too_long_one_is_refused_before_any_change(mac):
+    mac.install()
+    assert {mac.plist(j)["EnvironmentVariables"]["TMUX_TMPDIR"] for j in ("board", "tmux", "ttyd")} == {"/tmp"}, "the default, as the systemd units pin it"
+    fresh = mac.root / "fresh"
+    fresh.mkdir()
+    r = mac.run(env={"CCBOARD_TMUX_TMPDIR": "/" + "d" * 120, "CCBOARD_DATA_DIR": str(fresh / "data")})
+    assert r.returncode == 1 and "CCBOARD_TMUX_TMPDIR=" in r.stderr and "100 byte limit" in r.stderr, r.stderr
+    assert not (fresh / "data").exists(), "refused before the settings file or anything else was written"
+    assert {mac.plist(j)["EnvironmentVariables"]["TMUX_TMPDIR"] for j in ("board", "tmux", "ttyd")} == {"/tmp"}, "the installed jobs are untouched"
+    assert "must be an absolute path" in mac.run(env={"CCBOARD_TMUX_TMPDIR": "tmp"}).stderr
+
+
+def test_a_control_character_in_the_tmux_directory_or_socket_name_is_refused_before_any_change(mac):
+    fresh = mac.root / "fresh"
+    fresh.mkdir()
+    for var, value, name in (("CCBOARD_TMUX_TMPDIR", "/tmp/a\nb", "TMUX_TMPDIR"), ("CCBOARD_TMUX_SOCKET", "cc\tboard", "TMUX_SOCKET")):
+        r = mac.run(env={var: value, "CCBOARD_DATA_DIR": str(fresh / "data")})
+        assert r.returncode == 1 and f"{var}: {name} holds a control character" in r.stderr, r.stderr
+        assert not (fresh / "data").exists(), "refused before the data directory or anything else was made"
+
+
 def test_a_bootstrap_that_is_still_finishing_is_retried_then_reported(mac):
     (mac.state / "bootstrap-fails").write_text("")
     r = mac.run()
@@ -905,6 +927,102 @@ def test_optional_jobs_follow_their_switches_and_are_removed_when_switched_off(m
     want = [f"launchctl bootout gui/{UID_N}/dev.ccboard.{j}" for j in ("awake", "mem", "backup")] + [f"launchctl kickstart -k gui/{UID_N}/dev.ccboard.board"]
     assert sorted(changes) == sorted(want)
     assert not {"dev.ccboard.awake.plist", "dev.ccboard.mem.plist", "dev.ccboard.backup.plist"} & set(mac.plists())
+
+
+# ------------------------------------------------------------------ the claude-mem worker job (#122)
+
+MEM_LABEL = "dev.ccboard.mem"
+
+
+def _mem_calls(mac, mark=0, verb=None):
+    return [c for c in mac.since(mark) if c.startswith("launchctl") and c.endswith(MEM_LABEL if verb != "bootstrap" else MEM_LABEL + ".plist")
+            and (verb is None or c.split()[1] == verb)]
+
+
+def test_the_mem_job_is_off_by_default(mac):
+    r = mac.install()
+    assert MEM_LABEL + ".plist" not in mac.plists() and f"gui/{UID_N}/{MEM_LABEL}" not in mac.loaded()
+    assert not [c for c in mac.calls() if MEM_LABEL in c and c.startswith("launchctl") and c.split()[1] != "print"]
+    assert "claude-mem worker" not in r.stdout and "claude-mem worker" not in r.stderr
+
+
+def test_mem_service_1_renders_and_bootstraps_the_mem_job_once_and_a_rerun_changes_nothing(mac):
+    r = mac.install(env={"CCBOARD_MEM_SERVICE": "1"})
+    p = mac.plist("mem")
+    assert p["Label"] == MEM_LABEL and p["ProgramArguments"] == [f"{mac.app}/bin/ccboard-mem-run"]
+    assert set(p["EnvironmentVariables"]) == {"HOME", "LANG", "PATH"}, "the clean environment: no CCBOARD_*, TMUX or CLAUDE* name, and no TMUX_TMPDIR"
+    assert p["EnvironmentVariables"]["HOME"] == str(mac.home) and p["StandardOutPath"] == str(mac.home / "Library/Logs/ccboard/mem.log")
+    assert (mac.la / (MEM_LABEL + ".plist")).stat().st_mode & 0o777 == 0o644
+    assert mac.loaded().count(f"gui/{UID_N}/{MEM_LABEL}") == 1
+    assert len(_mem_calls(mac, verb="bootstrap")) == 1 and not _mem_calls(mac, verb="kickstart")
+    assert "claude-mem worker port the board will look for: 37701" in r.stdout, "37700 + uid % 100, the rule install.sh and the board use"
+    before = (mac.la / (MEM_LABEL + ".plist")).read_bytes()
+    mark = mac.mark()
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1"})
+    assert mutating(mac.since(mark), "launchctl") == [], "no bootstrap, bootout or kickstart of any job"
+    assert (mac.la / (MEM_LABEL + ".plist")).read_bytes() == before
+    assert mac.loaded().count(f"gui/{UID_N}/{MEM_LABEL}") == 1 and mac.plists().count(MEM_LABEL + ".plist") == 1
+
+
+def test_the_mem_job_follows_the_same_port_rule_as_the_linux_installer(mac):
+    (mac.home / ".claude-mem").mkdir()
+    (mac.home / ".claude-mem" / "settings.json").write_text(json.dumps({"CLAUDE_MEM_WORKER_PORT": "37822"}))
+    assert "worker port the board will look for: 37822" in mac.install(env={"CCBOARD_MEM_SERVICE": "1"}).stdout, "claude-mem's own settings come before the default"
+    (mac.home / ".claude-mem" / "worker.pid").write_text(json.dumps({"pid": 1, "port": 37811}))
+    assert "worker port the board will look for: 37811" in mac.install(env={"CCBOARD_MEM_SERVICE": "1"}).stdout, "a running worker's pid file comes before its settings"
+    assert "worker port the board will look for: 37888" in mac.install(env={"CCBOARD_MEM_SERVICE": "1", "CCBOARD_MEM_PORT": "37888"}).stdout, "CCBOARD_MEM_PORT wins"
+
+
+def test_the_mem_job_needs_the_plugin_switch_too(mac):
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1", "CCBOARD_CLAUDE_MEM": "0"})
+    assert MEM_LABEL + ".plist" not in mac.plists(), "as on Linux: CCBOARD_CLAUDE_MEM=0 means no claude-mem anything"
+
+
+def test_a_board_restart_leaves_the_mem_job_alone(mac):
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1"})
+    mark = mac.mark()
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1", "CCBOARD_NODE_NAME": "othername"})        # a changed setting: the board is kickstarted
+    assert mutating(mac.since(mark), "launchctl") == [f"launchctl kickstart -k gui/{UID_N}/dev.ccboard.board"]
+    assert not _mem_calls(mac, mark, "kickstart") and not _mem_calls(mac, mark, "bootout")
+
+
+def test_a_mem_job_that_will_not_load_only_warns(mac):
+    (mac.state / f"bootstrap-fails-{MEM_LABEL}").write_text("")
+    r = mac.run(env={"CCBOARD_MEM_SERVICE": "1"})
+    assert r.returncode == 0, r.stderr
+    assert "launchctl bootstrap" in r.stderr and MEM_LABEL in r.stderr and "rest of the install goes on" in r.stderr
+    assert len(_mem_calls(mac, verb="bootstrap")) == 5, "retried like any job"
+    assert {f"gui/{UID_N}/dev.ccboard.{j}" for j in ("tmux", "ttyd", "board")} <= set(mac.loaded()), "the other jobs are loaded"
+    assert f"gui/{UID_N}/{MEM_LABEL}" not in mac.loaded()
+    assert "ccboard is installed" in r.stdout
+
+
+def test_a_mem_template_that_will_not_render_only_warns_and_keeps_the_installed_job(mac):
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1"})
+    before = (mac.la / (MEM_LABEL + ".plist")).read_bytes()
+    (mac.app / "launchd").unlink()
+    shutil.copytree(ROOT / "launchd", mac.app / "launchd")
+    broken = mac.app / "launchd" / (MEM_LABEL + ".plist.in")
+    broken.write_text(broken.read_text().replace("__LOG_DIR__/mem.log", "__NO_SUCH_TOKEN__", 1))
+    mark = mac.mark()
+    r = mac.run(env={"CCBOARD_MEM_SERVICE": "1"})
+    assert r.returncode == 0 and "could not render the mem job" in r.stderr and "NO_SUCH_TOKEN" in r.stderr, r.stderr
+    assert (mac.la / (MEM_LABEL + ".plist")).read_bytes() == before and f"gui/{UID_N}/{MEM_LABEL}" in mac.loaded(), "what was installed stays"
+    assert not _mem_calls(mac, mark, "bootout")
+    broken.write_text(broken.read_text().replace("__NO_SUCH_TOKEN__", "__LOG_DIR__/mem.log"))
+    (mac.app / "launchd" / "dev.ccboard.board.plist.in").write_text("not a plist __NO_SUCH_TOKEN__")
+    assert "could not render the board job" in mac.run(env={"CCBOARD_MEM_SERVICE": "1"}).stderr, "any other job still stops the install"
+
+
+def test_the_uninstall_removes_the_mem_job(mac):
+    mac.install(env={"CCBOARD_MEM_SERVICE": "1"})
+    assert f"gui/{UID_N}/{MEM_LABEL}" in mac.loaded()
+    mark = mac.mark()
+    r = mac.uninstall()
+    assert r.returncode == 0, r.stderr
+    outs = [c.split()[-1].rsplit(".", 1)[1] for c in mac.since(mark) if c.startswith("launchctl bootout")]
+    assert "mem" in outs and outs[-1] == "tmux"
+    assert MEM_LABEL + ".plist" not in mac.plists() and mac.loaded() == []
 
 
 def test_the_backup_time_comes_from_the_schedule_and_the_job_can_be_left_out(mac):

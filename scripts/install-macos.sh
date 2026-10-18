@@ -249,6 +249,21 @@ TMUX_TMPDIR_V=${CCBOARD_TMUX_TMPDIR:-/tmp}
 TMUX_SOCKET_V=${CCBOARD_TMUX_SOCKET:-ccboard}
 case "$TMUX_TMPDIR_V" in /*) ;; *) die "CCBOARD_TMUX_TMPDIR must be an absolute path (got '$TMUX_TMPDIR_V')";; esac
 case "$TMUX_SOCKET_V" in ''|*/*) die "CCBOARD_TMUX_SOCKET must be a socket name, not a path (got '$TMUX_SOCKET_V')";; esac
+# Before any change, the renderer's own value check (empty, control characters such as a newline or tab, ~, not absolute) on both values, so
+# the two cannot drift, then the socket path tmux will bind, which must stay under 100 bytes. scripts/launchd_render.py refuses both again when it renders.
+if ! out=$("$PY3" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import launchd_render as lr
+tmpdir, uid, sock = sys.argv[2], int(sys.argv[3]), sys.argv[4]
+for env, name, value in (("CCBOARD_TMUX_TMPDIR", "TMUX_TMPDIR", tmpdir), ("CCBOARD_TMUX_SOCKET", "TMUX_SOCKET", sock)):
+    try:
+        lr._check_value(name, value)
+    except lr.RenderError as e:
+        print(f"{env}: {e}"); sys.exit(1)
+n = lr.socket_path_length(tmpdir, uid, sock)
+if n > lr.MAX_SOCKET_PATH:
+    print(f"CCBOARD_TMUX_TMPDIR={tmpdir}: it makes the tmux socket path {n} bytes long, over the {lr.MAX_SOCKET_PATH} byte limit: choose a shorter directory"); sys.exit(1)' \
+    "$APP_DIR/scripts" "$TMUX_TMPDIR_V" "$UID_N" "$TMUX_SOCKET_V" 2>&1); then
+  die "${out:-CCBOARD_TMUX_TMPDIR / CCBOARD_TMUX_SOCKET could not be checked}"
+fi
 
 # Which optional tools are wanted.
 OPTIONAL=$(printf '%s' "${CCBOARD_MACOS_OPTIONAL:-code-server,restic,bun}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -498,7 +513,17 @@ render_job() { # job: STAGE/<label>.plist, from launchd/<label>.plist.in
 LOGIN_SHELL=$("$PY3" -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_shell)' 2>/dev/null || true)
 case "$LOGIN_SHELL" in /*) ;; *) LOGIN_SHELL=${SHELL:-/bin/zsh};; esac
 case "$LOGIN_SHELL" in /*) ;; *) LOGIN_SHELL=/bin/zsh;; esac
-for job in $JOBS; do render_job "$job" || die "could not render the $job job"; done
+MEM_SKIPPED=0
+for job in $JOBS; do
+  if render_job "$job"; then continue; fi
+  if [ "$job" = mem ]; then   # optional: the board does not need it, so a worker job that will not render only warns
+    warn "could not render the mem job; dev.ccboard.mem is left as it was and the rest of the install goes on"
+    MEM_SKIPPED=1
+  else
+    die "could not render the $job job"
+  fi
+done
+if [ "$MEM_SKIPPED" = 1 ]; then JOBS=$(printf ' %s ' "$JOBS" | sed 's/ mem / /'); fi
 
 CHANGED_JOBS=""
 for job in $JOBS; do
@@ -510,12 +535,44 @@ for job in $JOBS; do
   fi
 done
 
+mem_worker_port() { # the claude-mem worker's loopback port, in the order of app/memory.py (the same rule as install.sh): CCBOARD_MEM_PORT, worker.pid, settings.json, 37700 + uid % 100
+  "$PY3" -I - "${CCBOARD_MEM_PORT:-}" "${CLAUDE_MEM_DATA_DIR:-$HOME_DIR/.claude-mem}" "$UID_N" <<'PY'
+import json, os, sys
+env, data, uid = sys.argv[1:4]
+def port(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        v = v.strip()
+        v = int(v) if v.isascii() and v.isdigit() and len(v) <= 6 else None
+    return v if isinstance(v, int) and 0 < v < 65536 else None
+def load(name):
+    try:
+        with open(os.path.join(data, name), "rb") as f:
+            return json.loads(f.read(65537).decode("utf-8", "replace"))
+    except Exception:
+        return None
+pid = load("worker.pid")
+cfg = load("settings.json")
+for p in (port(env), port(pid.get("port")) if isinstance(pid, dict) else None,
+          port(cfg.get("CLAUDE_MEM_WORKER_PORT")) if isinstance(cfg, dict) else None):
+    if p:
+        print(p)
+        break
+else:
+    print(37700 + int(uid) % 100)
+PY
+}
 is_loaded() { launchctl print "$DOMAIN/dev.ccboard.$1" >/dev/null 2>&1; }
 bootstrap_job() { # job: loads the plist; a bootout that is still finishing makes the first tries fail, so it retries
   local i=0 plist="$LA_DIR/dev.ccboard.$1.plist"
   while ! launchctl bootstrap "$DOMAIN" "$plist" 2>"$TMPD/bootstrap.err"; do
     i=$((i + 1))
-    [ "$i" -lt 5 ] || die "launchctl bootstrap $DOMAIN $plist failed: $(cat "$TMPD/bootstrap.err"). Log: $LOG_DIR/$1.log"
+    if [ "$i" -ge 5 ]; then
+      # the claude-mem worker is optional (CCBOARD_MEM_SERVICE=1): its job failing to load warns and the install goes on
+      if [ "$1" = mem ]; then warn "launchctl bootstrap $DOMAIN $plist failed: $(cat "$TMPD/bootstrap.err"). Log: $LOG_DIR/$1.log. The rest of the install goes on"; return 1; fi
+      die "launchctl bootstrap $DOMAIN $plist failed: $(cat "$TMPD/bootstrap.err"). Log: $LOG_DIR/$1.log"
+    fi
     sleep 1
   done
   note "loaded dev.ccboard.$1"
@@ -524,6 +581,7 @@ bootstrap_job() { # job: loads the plist; a bootout that is still finishing make
 # Jobs that are off now: boot out and remove what a previous run installed (never the tmux job: it is always wanted).
 for job in $ALL_JOBS; do
   in_list "$job" "$JOBS" && continue
+  if [ "$job" = mem ] && [ "$MEM_SKIPPED" = 1 ]; then continue; fi
   label=dev.ccboard.$job
   if is_loaded "$job"; then launchctl bootout "$DOMAIN/$label" >/dev/null 2>&1 || warn "could not boot out $label"; note "stopped $label (no longer wanted)"; fi
   if [ -f "$LA_DIR/$label.plist" ]; then rm -f "$LA_DIR/$label.plist"; note "removed $LA_DIR/$label.plist"; fi
@@ -566,13 +624,15 @@ RESTARTED=""
 for job in $JOBS; do
   label=dev.ccboard.$job
   if ! is_loaded "$job"; then
-    bootstrap_job "$job"; RESTARTED="$RESTARTED $job"
+    bootstrap_job "$job" || continue
+    RESTARTED="$RESTARTED $job"
   elif in_list "$job" "$CHANGED_JOBS"; then
     if [ "$job" = tmux ]; then
       warn "dev.ccboard.tmux changed but is running; reloading it would end every session. The new definition loads the next time the job starts (after a logout and login). To load it now: launchctl bootout $DOMAIN/$label, when no session matters"
     else
       launchctl bootout "$DOMAIN/$label" >/dev/null 2>&1 || warn "could not boot out $label before reloading it"
-      bootstrap_job "$job"; RESTARTED="$RESTARTED $job"
+      bootstrap_job "$job" || continue
+      RESTARTED="$RESTARTED $job"
     fi
   elif in_list "$job" "$KICK_JOBS" && [ "$job" != tmux ]; then
     launchctl kickstart -k "$DOMAIN/$label" >/dev/null 2>&1 || warn "launchctl kickstart -k $DOMAIN/$label failed"
@@ -583,6 +643,7 @@ done
 if in_list mem "$JOBS"; then
   if out=$(sh "$APP_DIR/bin/ccboard-mem-run" --print 2>&1); then note "claude-mem worker runtime: $(printf '%s\n' "$out" | sed -n 's/^bun=//p')"
   else warn "the claude-mem worker cannot be launched yet: ${out#ccboard-mem-run: }"; fi
+  note "claude-mem worker port the board will look for: $(mem_worker_port) (the job forces none: the worker reads ~/.claude-mem/settings.json like a hook-started one)"
 fi
 
 # tmux.conf, live: the server read it at its start, so a changed file needs source-file. Only when the server is up (-N: never start one);
