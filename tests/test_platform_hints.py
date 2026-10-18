@@ -260,7 +260,7 @@ def test_state_names_the_tmux_start_command_only_while_tmux_is_down(lite_client,
     st = _tmux_state(lite_client, monkeypatch, down=True)
     assert st["tmux_down"] is True and st["tmux_fix"] == want == plat.hint("start", "ccboard-tmux")
     st = _tmux_state(lite_client, monkeypatch, down=False)
-    assert st["tmux_down"] is False and "tmux_fix" not in st
+    assert st["tmux_down"] is False and st["tmux_fix"] is None
 
 
 def test_node_state_body_does_not_carry_the_tmux_fix(lite_client, monkeypatch):
