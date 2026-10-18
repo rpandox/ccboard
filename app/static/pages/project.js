@@ -259,8 +259,9 @@ function pjSessionsView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const body = el('div', { class: 'pb-body' });
   const block = el('section', { class: 'pblock pb-project', 'data-block': 'sessions' }, body);
-  // no button here: the header's + session is the primary of this tab and is already on screen
-  const empty = pageEmpty('console', 'No sessions here', 'A session is a Claude, Codex or shell window in a repo of this project. Start one with + session above.');
+  // the header's + session is the tab's primary but sits under the repo chips and the stats, below the fold on a phone: the empty state carries its own (plain, so the page keeps one filled button)
+  const empty = pageEmpty('console', 'No sessions here', 'A session is a Claude, Codex or shell window in a repo of this project.',
+    [el('button', { type: 'button', text: 'New session', 'data-create': 'session', onclick: () => pjCreate('session') })]);
   const project = () => pjFind(pjState(), P.project);
   const groups = makeKeyedList(body, { key: (g) => 'g:' + g.key, create: (g) => homeGroupNode(g, 'project', project), patch: (n, g) => n.ccPatch(g) });
   const node = el('div', { class: 'pj-sessions' }, scopeNote, block, empty);

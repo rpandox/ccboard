@@ -297,10 +297,34 @@ def test_a_refused_connection_is_down(mem_home):
     assert all(h[k] is None for k in ("version", "observations", "queue_depth", "db_size"))
 
 
-def test_no_worker_pid_and_nothing_on_the_default_port_is_down(mem_home):
+def test_no_worker_pid_and_nothing_on_the_default_port_is_not_started_not_down(mem_home):
     h = memory.health()
-    assert h["state"] == "down" and h["port_source"] == "default" and h["pid"] is None
-    assert "worker.pid" in h["reason"]
+    assert h["state"] == "not_started" and h["port_source"] == "default" and h["pid"] is None
+    assert h["reason"] == "not started yet: the memory worker starts with the first Claude session" == memory.NOT_STARTED
+    assert all(h[k] is None for k in ("version", "observations", "queue_depth", "db_size"))
+
+
+def test_no_worker_pid_and_a_dead_settings_port_is_still_not_started(mem_home):
+    write_cfg(mem_home, CLAUDE_MEM_WORKER_PORT=str(closed_port()))
+    h = memory.health()
+    assert h["state"] == "not_started" and h["port_source"] == "settings"
+
+
+def test_a_stale_worker_pid_is_down_not_not_started(mem_home):
+    write_pid(mem_home, pid=999999, port=closed_port())
+    h = memory.health()
+    assert h["state"] == "down" and "stale" in h["reason"]
+
+
+def test_a_ccboard_mem_port_pointing_at_nothing_is_down_even_without_a_worker_pid(mem_home, monkeypatch):
+    monkeypatch.setattr(settings, "mem_port", closed_port())
+    h = memory.health()
+    assert h["state"] == "down" and h["port_source"] == "env" and "CCBOARD_MEM_PORT points at nothing" in h["reason"]
+
+
+def test_refused_maps_each_port_source_to_its_state():
+    assert memory.refused("worker.pid")[0] == "down" and memory.refused("env")[0] == "down"
+    assert memory.refused("default") == ("not_started", memory.NOT_STARTED) == memory.refused("settings")
 
 
 def test_a_hanging_worker_is_degraded_after_two_seconds(mem_worker):

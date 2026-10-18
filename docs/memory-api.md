@@ -136,7 +136,8 @@ Every project route answers these fields next to its own data:
 | `ok` with `partial` not empty | 200 | Some keys did not answer. | name the keys |
 | `ok` with `ambiguous` not empty | 200 | A folder name is shared with another project. | "another project shares a folder name; filtered by file path, best effort" |
 | `incompatible` | 200 | The worker answered in a shape this board does not know. The lists are `[]`, `shape_error` is `true`, and `reason_code` is `shape`. The worker is running. | "The Memory page may be wrong until the board is updated; report it." |
-| `down` | 503 | Connection refused, or a non-loopback worker host. | `reason` (the real cause) and Retry |
+| `down` | 503 | Connection refused with a stale `worker.pid` (the worker ran and stopped) or with `CCBOARD_MEM_PORT` pointing at nothing, or a non-loopback worker host. | `reason` (the real cause) and Retry |
+| `not_started` | 503 | Connection refused and no `worker.pid`: no Claude session has run on this box yet, so the plugin's hooks never started a worker. Not a failure. `reason_code` is `not_started`. | "not started yet: the memory worker starts with the first Claude session", neutral colour, a New session button and Retry |
 | `degraded` | 503 | The worker is slow, answered an HTTP error, sent an answer that is too big, or reported an error, and nothing is cached. | `reason` and Retry |
 | `off` | 503 | `CCBOARD_CLAUDE_MEM=0`. | hide the page's memory parts |
 
@@ -303,7 +304,7 @@ The project's Timeline tab should use `/observations` with the cursor. There is 
 
 | Field | Meaning |
 |---|---|
-| `state` | `up`, `degraded` or `down`. The route can also answer `off`, or `unknown` before the first sample. |
+| `state` | `up`, `degraded`, `down` or `not_started` (refused with no `worker.pid`: a fresh box). The route can also answer `off`, or `unknown` before the first sample. |
 | `reason` | Why the state is not `up`, in one line. |
 | `version` | The running worker's version. |
 | `plugin_version` | The version installed on disk. It differs from `version` until the worker restarts. |
@@ -368,8 +369,8 @@ for a task that failed or has no result. The note is a `POST /api/memory/save` w
 | timeline | `memory_timeline.json` |
 | palace | `memory_palace.json` |
 
-Add `&mem=down|degraded|stale|partial|ambiguous|incompatible|untested` to lay a variant from `memory_states.json` over every project
-route. `down` and `degraded` are thrown as 503 errors, the way `api()` throws them (`err.status`, `err.body`). The fixtures have no
+Add `&mem=down|not_started|degraded|stale|partial|ambiguous|incompatible|untested` to lay a variant from `memory_states.json` over every project
+route. `down`, `not_started` and `degraded` are thrown as 503 errors, the way `api()` throws them (`err.status`, `err.body`). The fixtures have no
 `demo.epoch` (`demoRebase` would shift the millisecond epochs as if they were seconds), so their times stay where they were captured.
 
 `app/static/demo/state.json` still has `memory: null`, so the project Memory tab stays hidden in demo. If you set it, use the fields

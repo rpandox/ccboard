@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.102 - 2026-10-18
+
+### Added
+- Empty states now carry the button for the step their text names (#307). Agents with no live session has a New session button, and its hint no longer sends you to the + menu. Needs you offers New session when the board has no session (and New project when it has no project), and a "See all agents" link when sessions are running. Memory with no project has a New project button, and the empty picker, search box, tabs and filters are hidden so the empty state is the first thing under the title, also on a phone. A project with no session has a New session button in its empty state, because the header's one sits below the repo chips and stats on a phone. Every button runs what the matching Create (+) menu entry runs.
+
+### Fixed
+- Memory no longer shows a red "down" on a box where no Claude session has ever run (#307). With no `worker.pid` and nothing listening, the badge, the Health panel, the Memory read errors and the Doctor now say "not started yet: the memory worker starts with the first Claude session", in the neutral colour, with a New session button. The Doctor's memory check passes instead of warning. A stale `worker.pid` (the worker ran and stopped) and a `CCBOARD_MEM_PORT` that points at nothing stay "down", in red. `?demo=1&mem=not_started` shows the new state.
+
+Upgrade: nothing to do.
+
 ## v0.5.101 - 2026-10-18
 
 ### Added

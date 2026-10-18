@@ -1744,6 +1744,8 @@ def _mem_worker(db, ctx: dict) -> Outcome:
         bits = [f"claude-mem {h['version']}" if h.get("version") else "claude-mem", f"is up on {where}"]
         tail = f"{h['observations']:,} observations" if isinstance(h.get("observations"), int) else ""
         return _pass(" ".join(bits) + (f", {tail}" if tail else ""))
+    if h["state"] == "not_started":              # a fresh box: nothing is wrong, the plugin's hooks start the worker with the first Claude session
+        return _pass(h.get("reason") or memory.NOT_STARTED)
     if h["state"] == "degraded":
         return _warn(f"{where}: {h.get('reason') or 'the worker is not answering'}",
                      fix("Give it a minute; if it stays stuck, stop the worker (its pid is in ~/.claude-mem/worker.pid) and start any Claude session"))
@@ -1954,7 +1956,7 @@ def _mem_bun(db, ctx: dict) -> Outcome:
     exe, where = _mem_find_bun()
     if exe:
         return _pass(f"bun found at {exe}; the plugin's worker runs on it")
-    if _mem_health(ctx)["state"] != "down":
+    if _mem_health(ctx)["state"] not in ("down", "not_started"):
         return _pass("bun is not visible from here, but a worker is running, so the plugin found its own (the board may see another filesystem)")
     return _warn("bun not found and no worker is running, so hooks cannot start one; looked in " + ", ".join(where[4:]),
                  fix("The plugin runs on bun and installs none: install it (https://bun.sh) or point BUN at it. Also read: BUN_PATH, BUN_INSTALL, "

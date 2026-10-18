@@ -298,7 +298,7 @@ function demoMadeState(st) {
   return { ...st, projects: merged };
 }
 
-/* The Memory page's degraded states in demo mode: ?mem=down|degraded|stale|partial|ambiguous|incompatible|untested picks a variant from
+/* The Memory page's degraded states in demo mode: ?mem=down|not_started|degraded|stale|partial|ambiguous|incompatible|untested picks a variant from
    demo/memory_states.json for every /api/memory/<project>/* answer. A 503 variant is thrown the way api() throws one (err.status, err.body);
    the others are laid over the route's own fixture. No flag (or an unknown one) answers the fixture as it is. */
 function demoMemFlag() { try { const m = /[?&]mem=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }

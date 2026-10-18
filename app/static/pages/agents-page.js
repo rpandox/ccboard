@@ -245,7 +245,7 @@ registerPage('agents', {
   mount(root) {
     const summary = agentsSummaryNode();
     const roster = el('div', { class: 'roster' });
-    const none = pageEmpty('console', 'No live sessions', 'Start one from the + menu: every session on this box shows up here.');
+    const none = pageEmpty('console', 'No live sessions', 'Every Claude, Codex or shell session on this box shows up here.', [pageCreateButton('session', 'New session', true)]);
     const ext = agentsExtSection();                                     // v0.5.12: the threads started outside the board, with an Open each
     const loading = !currentState();                                    // first paint before /api/state: skeleton rows, and no empty states yet
     if (loading) none.classList.add('hidden');

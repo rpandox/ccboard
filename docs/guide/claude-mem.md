@@ -75,7 +75,8 @@ To expose the **local worker’s viewer**, leave `CCBOARD_MEM_VIEWER_URL` empty 
 - `partial`: some keys did not answer; the answer names them.
 - `ambiguous`: another project has a repo with the same folder name, so rows are filtered by file path where they name one (best effort).
 - `incompatible`: the worker answered in a shape the board does not know. The lists are empty and `compat` says why; the page never shows that as "no memory".
-- `down` (503): the worker is not listening (connection refused). The body is `{error, state, up: false, reason, reason_code, compat, worker_version, tested_worker}`.
+- `down` (503): the worker is not listening (connection refused) and it was running before (a stale `worker.pid`), or `CCBOARD_MEM_PORT` points at nothing. The body is `{error, state, up: false, reason, reason_code, compat, worker_version, tested_worker}`.
+- `not_started` (503): connection refused and there is no `worker.pid`, so no Claude session has started a worker on this box yet. Nothing is wrong; the Memory page shows it in a neutral colour with a New session button, and the Doctor passes. The body has the same fields as `down`.
 - `degraded` (503): the worker is slow, answered an HTTP error, sent an answer that is too big, or reported an error. A timeout reads as "slow", never "down", because a broad search can take over 15 s on the box while the worker is fine.
 
 The routes, fields and states are in [docs/memory-api.md](../memory-api.md).

@@ -249,6 +249,7 @@ function memPillInfo(h, env) {
     return { cls: 'up', glyph: '✓', text: `up ${v} · ${memCount(h.observations)} obs`, title: h.reason || 'the claude-mem worker answers' };
   }
   if (s === 'degraded') return { cls: 'degraded', glyph: '✻', text: `degraded${h.reason ? ' · ' + memOneLine(h.reason, 80) : ''}`, title: h.reason || 'the worker answers badly' };
+  if (s === 'not_started') return { cls: 'not-started', glyph: '○', text: 'not started yet', title: h.reason || 'the memory worker starts with the first Claude session' };
   if (s === 'down') return { cls: 'down', glyph: '✕', text: `down${h.reason ? ' · ' + memOneLine(h.reason, 80) : ''}`, title: h.reason || 'the worker does not answer' };
   if (s === 'incompatible') return { cls: 'degraded', glyph: '⚠', text: `incompatible${h.reason ? ' · ' + memOneLine(h.reason, 80) : ''}`, title: h.reason || 'the worker answered in a shape this board does not know' };
   if (s === 'off') return { cls: 'off', glyph: '○', text: 'off', title: 'claude-mem is turned off on this box' };
@@ -403,13 +404,16 @@ function memDegradedNode(env, retry, what) {
   const off = e.state === 'off';
   const title = off ? 'claude-mem is turned off on this box'
     : e.state === 'offline' ? 'The board cannot be reached, retrying'
+      : e.state === 'not_started' ? 'claude-mem has not started yet'
       : e.state === 'down' ? 'claude-mem is not running'
         : e.reason_code === 'timeout' ? 'claude-mem is slow'
           : e.state === 'incompatible' ? 'claude-mem answered in a shape this board does not know' : 'claude-mem could not answer';
-  const node = el('div', { class: 'mem-degraded', role: 'alert', 'data-state': e.state },
-    el('span', { class: 'mem-degraded-g', 'aria-hidden': 'true', text: e.state === 'down' || off ? '✕' : '✻' }),
+  const fresh = e.state === 'not_started';                                // nothing is wrong: no Claude session has run yet, so no worker has been started
+  const node = el('div', { class: 'mem-degraded', role: fresh ? 'status' : 'alert', 'data-state': e.state },
+    el('span', { class: 'mem-degraded-g', 'aria-hidden': 'true', text: fresh ? '○' : e.state === 'down' || off ? '✕' : '✻' }),
     el('div', { class: 'mem-degraded-b' }, el('b', { text: title }), el('p', { class: 'mem-reason', text: e.reason || 'no reason was given' }),
-      off ? null : el('button', { class: 'primary', type: 'button', text: 'Retry', title: `Ask the worker again for ${what || 'this view'}`, onclick: () => { if (typeof retry === 'function') retry(); } }),
+      fresh ? pageCreateButton('session', 'New session', true) : null,
+      off ? null : el('button', { class: fresh ? '' : 'primary', type: 'button', text: 'Retry', title: `Ask the worker again for ${what || 'this view'}`, onclick: () => { if (typeof retry === 'function') retry(); } }),
       off ? null : el('p', { class: 'dim mem-retry-note', text: `Retry asks the worker again for ${what || 'this view'}.` })));
   return node;
 }
@@ -593,7 +597,7 @@ function memTileRow(label, ...kids) {
 function memoryHealthTile(h, o) {
   const opt = o || {};
   if (!h || typeof h !== 'object' || h.state === 'off') return null;
-  const down = h.state === 'down';
+  const down = h.state === 'down' || h.state === 'not_started';        // no worker: no figures either way
   const pill = memPillInfo(h, null);
   const node = el('section', { class: 'mem-tile' + (opt.compact ? ' compact' : ''), 'data-state': h.state || 'unknown', 'aria-label': 'claude-mem health' });
   if (!opt.bare) {
@@ -601,6 +605,8 @@ function memoryHealthTile(h, o) {
       el('span', { class: `mem-pill ${pill.cls}`, title: pill.title }, el('span', { class: 'mem-pill-g', 'aria-hidden': 'true', text: pill.glyph }), el('span', { class: 'mem-pill-t', text: pill.text }))));
   }
   if (h.state !== 'up' && h.reason) node.append(el('p', { class: 'mem-reason', text: h.reason }));
+  // a session needs a project to start in; and where the page already shows its own New session (the panel for a read that answered not_started), the tile does not add a second
+  if (h.state === 'not_started' && !opt.noCreate && typeof state !== 'undefined' && state && Array.isArray(state.projects) && state.projects.length) node.append(el('div', { class: 'mem-tile-new' }, pageCreateButton('session', 'New session', true)));
   if (opt.bare && down) {                                              // a stopped worker has no figures: the reason and the footnote are the whole tile
     node.append(el('p', { class: 'mem-tile-foot dim', text: 'The counts come back once the worker answers. Per-day figures come from the board\'s own samples, taken every 5 minutes.' }));
     return node;
@@ -643,6 +649,7 @@ function memErrLevel(h) {
 function memHealthLine(h) {
   const s = h.state || 'unknown';
   if (s === 'down' || s === 'degraded' || s === 'incompatible') return `${s}${h.reason ? ' · ' + memOneLine(h.reason, 120) : ''}`;
+  if (s === 'not_started') return 'not started yet';                    // the full sentence is in the tile under it
   const bits = [s === 'up' ? 'up' : 'checking'];
   const q = memNum(h.queue_depth);
   if (q !== null) bits.push(`${q} queued`);
@@ -655,7 +662,7 @@ function memHealthLine(h) {
    unless the person chose otherwise (o.pref true/false); o.onToggle(open) reports their click. null when claude-mem is off or not sampled. */
 function memoryHealthDisclosure(h, o) {
   const opt = o || {};
-  const tile = memoryHealthTile(h, { bare: true });
+  const tile = memoryHealthTile(h, { bare: true, noCreate: opt.noCreate });
   if (!tile) return null;
   const bad = h.state === 'down' || h.state === 'degraded' || h.state === 'incompatible' || memErrLevel(h) === 'failing';
   const open = typeof opt.pref === 'boolean' ? opt.pref : bad;
@@ -716,7 +723,7 @@ MemoryPage.health = function (P) {
   const st = MemoryPage.st();
   const h = { ...((st && st.memory) || {}), ...(P.healthExtra || {}) };
   const e = P.env;                                                     // what the page's own last read said beats the 3 s poll when it says the worker is not fine
-  if (e && (e.state === 'down' || e.state === 'degraded' || e.state === 'incompatible')) { h.state = e.state; h.reason = e.reason || h.reason; if (e.compat) h.compat = e.compat; }
+  if (e && (e.state === 'down' || e.state === 'not_started' || e.state === 'degraded' || e.state === 'incompatible')) { h.state = e.state; h.reason = e.reason || h.reason; if (e.compat) h.compat = e.compat; }
   return h;
 };
 
@@ -728,11 +735,12 @@ MemoryPage.paintHead = function (P) {
   P.pill.setAttribute('title', info.title || '');
   P.pillG.textContent = info.glyph;
   P.pillT.textContent = info.text;
-  const sig = JSON.stringify([h && h.state, h && h.observations, h && h.queue_depth, h && h.processing, h && h.last_error, h && h.rates, h && h.compat, h && h.reason, h && h.stale_sessions, h && h.active_sessions]);
+  const noCreate = !!(P.env && P.env.state === 'not_started');           // the panel under the tile has the New session button then
+  const sig = JSON.stringify([h && h.state, h && h.observations, h && h.queue_depth, h && h.processing, h && h.last_error, h && h.rates, h && h.compat, h && h.reason, h && h.stale_sessions, h && h.active_sessions, noCreate, st && Array.isArray(st.projects) ? st.projects.length > 0 : null]);
   if (sig !== P.tileSig) {
     P.tileSig = sig;
     P.tileHost.textContent = '';
-    const tile = st && st.memory ? memoryHealthDisclosure(h, { pref: P.healthPref, onToggle: (on) => { P.healthPref = on; } }) : null;
+    const tile = st && st.memory ? memoryHealthDisclosure(h, { noCreate, pref: P.healthPref, onToggle: (on) => { P.healthPref = on; } }) : null;
     if (tile) P.tileHost.append(tile);
     P.tileHost.classList.toggle('hidden', !tile);
   }
@@ -1100,6 +1108,7 @@ MemoryPage.build = function (root, route) {
     if (P.timer) { clearTimeout(P.timer); P.timer = null; }
     MemoryPage.setQuery(P, P.search.value);
   });
+  P.controls = null;
   P.viewer = el('div', { class: 'mem-viewer hidden' });
   P.tileHost = el('div', { class: 'mem-tile-host hidden' });
   P.tabs = tabs(MEM_TABS.map(([id, label]) => ({ id, label })), P.tab, (id) => MemoryPage.setTab(P, id, true));
@@ -1110,7 +1119,7 @@ MemoryPage.build = function (root, route) {
   P.panel = el('div', { class: 'mem-panel', role: 'tabpanel' });
   P.tabs.link(P.panel);
   const head = el('div', { class: 'page-head mem-pagehead' }, el('h1', { text: 'Memory' }), P.pill);
-  const controls = el('div', { class: 'mem-controls' }, el('label', { class: 'mem-fcell mem-proj' }, el('span', { class: 'mem-k', text: 'Project' }), P.select),
+  const controls = P.controls = el('div', { class: 'mem-controls' }, el('label', { class: 'mem-fcell mem-proj' }, el('span', { class: 'mem-k', text: 'Project' }), P.select),
     el('label', { class: 'mem-fcell mem-q' }, el('span', { class: 'mem-k', text: 'Search' }), P.search));
   root.append(el('div', { class: 'memory-page', 'data-memory': '' }, head, controls, P.viewer, P.tileHost, P.tabs.root, P.filterBar, P.newPill, P.notes, P.panel));
   return P;
@@ -1139,9 +1148,12 @@ MemoryPage.start = function (P) {
     return;
   }
   P.waiting = false;
+  P.controls.classList.toggle('hidden', !P.project);                   // no project: the empty Project picker, the search, the tabs and the filters have nothing to act on, so the empty state is the first thing under the title
+  P.tabs.root.classList.toggle('hidden', !P.project);
+  P.filterBar.classList.toggle('hidden', !P.project);
   if (!P.project) {
-    MemoryPage.buildFilters(P);
-    P.panel.append(pageEmpty('database', 'No projects yet', 'Add a project first: Memory is read one project at a time.'));
+    P.filterBar.textContent = '';
+    P.panel.append(pageEmpty('database', 'No projects yet', 'Add a project first: Memory is read one project at a time.', [pageCreateButton('project', 'New project', true)]));
     return;
   }
   if (P.auto) {
@@ -1191,7 +1203,8 @@ registerPage('memory', {
   update(st) {
     const P = Memory.cur;
     if (!P || !st) return;
-    if (P.waiting && Array.isArray(st.projects)) {                       // the first state arrived after the page was mounted: start for real
+    // the first state arrived after the page was mounted, or the first project did (the empty state hides the picker and the tabs): start for real
+    if (Array.isArray(st.projects) && (P.waiting || (!P.project && memProjectNames(st).length))) {
       const r = memParseRoute(P.route, st);
       P.project = r.project; P.auto = r.auto; P.filters = r.filters; P.tab = r.tab; P.q = r.q; P.selSig = null;
       P.panel.textContent = '';

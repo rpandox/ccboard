@@ -1432,12 +1432,14 @@ function menu(button, items) {
   return ctl;
 }
 
-/* emptyState(icon, title, hint): the centred "nothing here" block (icon = a Blueprint icon name). */
-function emptyState(icon, title, hint) {
+/* emptyState(icon, title, hint, actions): the centred "nothing here" block (icon = a Blueprint icon name). actions = nodes (buttons, links) for the next step the text names,
+   centred under the hint (rule 3: an empty state never names an action without the control for it). */
+function emptyState(icon, title, hint, actions) {
   return el('div', { class: 'nonideal empty' },
     el('div', { class: 'empty-visual' }, ic(icon || 'info-sign')),
     el('h2', { class: 'empty-title', text: title || '' }),
-    hint ? el('div', { class: 'empty-hint dim', text: hint }) : null);
+    hint ? el('div', { class: 'empty-hint dim', text: hint }) : null,
+    Array.isArray(actions) && actions.length ? el('div', { class: 'empty-actions' }, ...actions) : null);
 }
 
 /* ---- composer: the multi-line send box ----------------------------------------------------------------------------

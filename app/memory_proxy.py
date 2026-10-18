@@ -107,8 +107,9 @@ clock = time.monotonic            # patched by tests (cache freshness, palace TT
 # ------------------------------------------------------------------ errors and compat
 
 class WorkerError(Exception):
-    """The worker could not give an answer: state 'down' (refused, a non-loopback host) or 'degraded' (slow, an HTTP error, too big, a
-    worker-side error). `code` is one of refused | not_loopback | timeout | http | too_large | worker_error; `reason` is one line."""
+    """The worker could not give an answer: state 'down' (refused, a non-loopback host), 'not_started' (refused and no worker.pid: a fresh box)
+    or 'degraded' (slow, an HTTP error, too big, a worker-side error). `code` is one of refused | not_started | not_loopback | timeout | http |
+    too_large | worker_error; `reason` is one line."""
 
     def __init__(self, state: str, code: str, reason: str, status: int | None = None):
         super().__init__(reason)
@@ -311,6 +312,8 @@ def _get(url: str, deadline: float, timeout: float, allow_404: bool):
     try:
         status, body = memory.fetch(base, url, timeout=t, cap=PROXY_CAP, strict=True)
     except memory.Refused:
+        if memory.refused(memory.discover()["source"])[0] == "not_started":              # no worker.pid: a fresh box, not a worker that stopped
+            raise WorkerError("not_started", "not_started", memory.NOT_STARTED) from None
         raise WorkerError("down", "refused", "connection refused: the claude-mem worker is not running") from None
     except memory.NoAnswer:
         raise WorkerError("degraded", "timeout", f"the worker is slow: no answer within {t:.1f} s") from None
@@ -593,7 +596,7 @@ def _fan(jobs: dict, deadline: float) -> tuple[dict, dict]:
 def _worst(errors) -> WorkerError:
     errs = [e for e in errors if isinstance(e, WorkerError)]
     for e in errs:
-        if e.state == "down":
+        if e.state in ("down", "not_started"):
             return e
     return errs[0] if errs else WorkerError("degraded", "worker_error", "the worker could not answer")
 

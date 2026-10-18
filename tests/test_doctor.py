@@ -1134,6 +1134,24 @@ def test_memory_plugin_disabled_and_enable_state_unknown(mem):
     assert c["status"] == "pass" and c["detail"] == "claude-mem 13.29.0 installed"
 
 
+def test_memory_never_started_is_a_pass_with_the_plain_words_not_a_warning(mem, world):
+    world.which["bun"] = "/usr/local/bin/bun"
+    mem.health.update(state="not_started", reason="not started yet: the memory worker starts with the first Claude session")
+    out, by = mem_report()
+    c = by["memory-worker"]
+    assert c["status"] == "pass" and c["detail"] == "not started yet: the memory worker starts with the first Claude session"
+    assert not c.get("fix") and "no worker on" not in c["detail"] and "refused" not in c["detail"]
+    assert out["ok"] is True and out["summary"]["warn"] == 0 and out["summary"]["fail"] == 0
+    assert by["memory-queue"]["status"] == "skip" and by["memory-api"]["status"] == "skip"
+
+
+def test_memory_bun_missing_on_a_box_that_never_started_a_worker_still_warns(mem, monkeypatch):
+    monkeypatch.setattr(doctor, "_executable", lambda p: False)
+    mem.health.update(state="not_started", reason="not started yet: the memory worker starts with the first Claude session")
+    out, by = mem_report()
+    assert by["memory-bun"]["status"] == "warn" and out["ok"] is True, "no worker has run, so a missing bun is what would stop the first one"
+
+
 def test_memory_worker_states(mem):
     c = mc("memory-worker")
     assert c["status"] == "pass"
