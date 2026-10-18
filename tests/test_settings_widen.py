@@ -73,7 +73,7 @@ def test_switch_off_refuses_save_and_ignores_load(board, monkeypatch, caplog):
 
 def test_confirmation_round_trip_and_audit(board):
     from app import main, nodes
-    trusted(board, CCBOARD_PAGE_WIDEN='1', CCBOARD_EPIC_REPOS='sample/project', CCBOARD_EPIC_WRITES='1')
+    trusted(board, CCBOARD_PAGE_WIDEN='1', CCBOARD_EPIC_REPOS='sample/project', CCBOARD_EPIC_WRITES='1', CCBOARD_EPIC_AUTHORS='owner')
     changes = {WORKER: '1'}
     answer = put(board, changes)
     assert answer.status_code == 409
@@ -117,9 +117,9 @@ def test_worker_requires_saved_or_batched_prerequisites(board, env, missing):
     trusted(board, CCBOARD_PAGE_WIDEN='1', **env)
     answer = put(board, {WORKER: '1'}, confirm='ALLOW WORKER')
     assert answer.status_code == 400
-    assert all(k in answer.json()['reason'] for k in missing)
+    assert answer.json()['reason'] == 'After the restart the worker will refuse to start: ' + ('epic writes off' if WRITES in missing else 'no repository is listed')
     assert not board[1].page_file.exists()
-    changes = {WORKER: '1', WRITES: '1', REPOS: 'sample/project'}
+    changes = {WORKER: '1', WRITES: '1', REPOS: 'sample/project', 'CCBOARD_EPIC_AUTHORS': 'owner'}
     pending = put(board, changes)
     assert pending.status_code == 409
     assert put(board, changes, confirm=pending.json()['phrase']).status_code == 200
@@ -173,6 +173,8 @@ def test_legacy_page_entries_stay_ignored(board, on):
     (REPOS, 'sample/one,sample/two', 'sample/one', False), (REPOS, 'SAMPLE/one', 'sample/one', False),
     (REPOS, 'sample/one', 'sample/one sample/two', True),
     ('CCBOARD_EPIC_AUTHORS', 'alice:1', 'alice', True), ('CCBOARD_EPIC_AUTHORS', 'alice', 'alice,bob', True),
+    ('CCBOARD_EPIC_AUTHORS', 'bob', '', True), ('CCBOARD_EPIC_AUTHORS', '', '', False), ('CCBOARD_EPIC_AUTHORS', '', 'bob', True),
+    ('CCBOARD_EPIC_AUTHORS', 'alice,bob', 'bob', False),
     (HOUR, '6', '7', True), (HOUR, '6', '5', False), ('CCBOARD_EPIC_WORKER_MAX_PER_DAY', '30', '31', True),
     ('CCBOARD_NODE_LANES', '3', '0', True), ('CCBOARD_NODE_LANES', '0', '3', False),
     ('CCBOARD_SUBAGENT_MODEL', '', 'inherit', False), ('CCBOARD_SUBAGENT_MODEL', 'opus', 'haiku', True),

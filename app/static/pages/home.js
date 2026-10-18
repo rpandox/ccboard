@@ -302,7 +302,7 @@ Pages.target = function () {
   return peek || null;
 };
 
-Pages.session = function (tmux) { return tmux ? (Pages.order().find((x) => x.tmux === tmux) || null) : null; };
+Pages.session = function (tmux) { return tmux ? (Pages.order().find((x) => x.tmux === tmux) || Inbox.items(state).find((x) => x.tmux === tmux) || null) : null; };
 
 Pages.targetPerm = function () {
   const t = Pages.target();
@@ -313,6 +313,7 @@ Pages.targetPerm = function () {
 Pages.openNth = function (n) {
   const s = Pages.order()[n - 1];
   if (!s) return false;
+  if (s.bare_device) { bareTerminal(s); return true; }
   navigate(sessionHash(s.tmux));
   return true;
 };
@@ -338,6 +339,7 @@ Pages.act = async function (what) {
   if (what === 'peek') {
     const s = Pages.selected();
     if (!s) return false;
+    if (s.bare_device) { await bareTerminal(s); return true; }
     const h = sessionHash(s.tmux);
     Pages.selHash = h;
     navigate(h);
@@ -348,11 +350,20 @@ Pages.act = async function (what) {
   const s = Pages.session(tmux);
   const name = (s && s.name) || tmux;
   if (what === 'term') {                                       // the same surface as a click on the row's Open link: the dock from 1024 px up, else the terminal page
+    if (s && s.bare_device) { await bareTerminal(s); return true; }
     if (typeof Shell !== 'undefined' && Shell && typeof Shell.openTerm === 'function') Shell.openTerm(tmux);
     else openPage(`/term/${encodeURIComponent(tmux)}`);
     return true;
   }
   if (what === 'reply') {
+    if (s && s.bare_device) {
+      const card = Array.from(document.querySelectorAll('.inbox-card')).find((n) => n.getAttribute('data-tmux') === tmux);
+      if (!card) return false;
+      card.classList.add('open');
+      const box = card.querySelector('textarea');
+      if (box) box.focus();
+      return !!box;
+    }
     if (!Pages.peekTmux() || Pages.peekTmux() !== tmux) { const h = sessionHash(tmux); Pages.selHash = h; navigate(h); }
     return Pages.withSendBox((box) => box.focus());
   }
@@ -391,7 +402,9 @@ Pages.dropSkeleton = function () {
 };
 
 async function decide(pid, decision) {
-  try { await api('POST', `/api/permission/${pid}/${decision}`); setError(null); } catch (e) { setError(e.message); }
+  const pr = (state && state.pending_permissions || []).find((p) => p.id === pid);
+  const path = pr && pr.bare_device ? `/api/bare/${encodeURIComponent(pr.bare_device)}/sessions/${encodeURIComponent(pr.tmux_name)}/${decision}` : `/api/permission/${pid}/${decision}`;
+  try { await api('POST', path, pr && pr.bare_device ? { pid } : undefined); setError(null); } catch (e) { setError(e.message); }
   await poll(true);
 }
 

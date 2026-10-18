@@ -155,7 +155,9 @@ test('off: one sentence on what it would do, the risk in plain words, the env ke
   assert.match(t, /Anyone who can create or edit issues in the listed repositories can steer it/);
   assert.match(t, /private repository and a dedicated epic/);
   assert.deepEqual(off.querySelectorAll('code').map(text), ['CCBOARD_EPIC_WORKER=1', 'CCBOARD_EPIC_WRITES=1', 'CCBOARD_EPIC_REPOS=owner/name']);
-  assert.match(t, /rerun \.\/install\.sh/);
+  assert.match(t, /CCBOARD_PAGE_WIDEN=1/);
+  assert.equal(text(worker(w).querySelector('.ew-setup')), 'Set it up in Settings > Options > Epics & worker');
+  assert.ok(off.querySelector('.ew-setup'), 'the link is part of the off panel');
   assert.equal(worker(w).querySelectorAll('button').filter((b) => !hidden(b)).length, 0, 'no Stop, no Start, nothing that turns it on');
   assert.equal(worker(w).querySelectorAll('input').length, 0, 'no toggle');
   assert.ok(hidden(worker(w).querySelector('.ew-on')));
@@ -382,4 +384,17 @@ test('the sentence under the headline uses this page\'s clock and does not repea
   const w2 = settingsWorld({ worker: view({ state: 'working', issues: ['example/website#12'], text: 'Working on example/website#12.' }) });
   await tick();
   assert.equal(text(worker(w2).querySelector('.ew-text')), '', 'a sentence that only repeats the headline is left out');
+});
+
+test('the setup link is only in the off panel: not while running, not on a paired node, not in the Options form', async () => {
+  const running = settingsWorld({ worker: view() });
+  await tick();
+  assert.ok(hidden(worker(running).querySelector('.ew-off')), 'the off panel is hidden while running');
+  assert.ok(worker(running).querySelector('.ew-off .ew-setup'), 'the link lives in the off panel, which is hidden');
+  assert.equal(worker(running).querySelector('.ew-on .ew-setup'), null);
+  const w = settingsWorld({});
+  w.run('globalThis.__node = EpicWorker.build({ mode: "node" }); globalThis.__form = EpicWorker.build({ mode: "settings", form: true }); globalThis.__plain = EpicWorker.build({ mode: "settings" })');
+  assert.equal(w.ctx.__node.root.querySelector('.ew-setup'), null);
+  assert.equal(w.ctx.__form.root.querySelector('.ew-setup'), null);
+  assert.ok(w.ctx.__plain.root.querySelector('.ew-off .ew-setup'));
 });

@@ -229,11 +229,12 @@ function settingsOptionControl(option) {
 function settingsOptionEdit(p, data, option, row) {
   if (p.ccOptionCancel) p.ccOptionCancel();
   const { control, read, initial } = settingsOptionControl(option);
+  p.querySelector('.set-worker-save')?.classList.add('tinted');
   const error = el('span', { class: 'bad set-option-error', role: 'alert', id: 'option-error-' + option.key });
   control.setAttribute('aria-describedby', error.id);
   const editor = el('div', { class: 'set-option-editor' }, control, error);
   const actions = row.querySelector('.kv-act');
-  const close = () => { editor.remove(); actions.classList.remove('hidden'); p.ccOptionCancel = null; };
+  const close = () => { editor.remove(); actions.classList.remove('hidden'); p.ccOptionCancel = null; p.querySelector('.set-worker-save')?.classList.remove('tinted'); };
   const submit = async (value, confirm) => {
     if (value === initial) { close(); return; }
     for (const button of editor.querySelectorAll('button')) button.disabled = true;
@@ -270,8 +271,11 @@ function settingsOptionEdit(p, data, option, row) {
 
 function settingsWidenDialog(answer, submit, opener) {
   if (settingsPage.widen) settingsPage.widen.close();
+  const tintOpener = opener?.classList.contains('primary') && !opener.classList.contains('tinted');
+  if (tintOpener) opener.classList.add('tinted');
   const shell = modalShell('qr-editor readout set-widen', 'Allow wider agent permissions', () => {
     settingsPage.widen = null;
+    if (tintOpener) opener.classList.remove('tinted');
     if (opener?.isConnected) opener.focus();
   });
   settingsPage.widen = shell;
@@ -285,6 +289,8 @@ function settingsWidenDialog(answer, submit, opener) {
   input.addEventListener('input', () => { confirm.disabled = input.value !== answer.phrase; });
   shell.dlg.append(el('div', { class: 'qr-box' },
     el('h2', { text: 'Allow wider agent permissions' }),
+    answer.worker ? el('p', { class: 'set-worker-safety', text: answer.safety || EW_SAFETY }) : null,
+    settingsWorkerSummary(answer.worker),
     el('ul', {}, ...(answer.widens || []).map(row => el('li', { text: row.plain }))),
     el('label', { class: 'field' }, el('span', { text: 'Type exactly:' }), el('code', { text: answer.phrase }), input),
     el('p', { class: 'dim', text: 'The change takes effect after restarting the board.' }),
@@ -310,7 +316,7 @@ function settingsDemoWidens(row, next) {
 
 let settingsDemoOptions = null;
 async function demoSettingsOptions(body) {
-  if (!settingsDemoOptions) settingsDemoOptions = await demoApi('GET', '/api/settings/options');
+  if (!settingsDemoOptions) settingsDemoOptions = settingsDemoWorkerState(await demoApi('GET', '/api/settings/options'));
   const refuse = (status, reason, detail = {}) => { const e = demoError(status, reason); e.body = { reason, ...detail }; throw e; };
   const wider = [], groups = new Set();
   for (const [key, value] of Object.entries(body.changes)) {
@@ -327,20 +333,14 @@ async function demoSettingsOptions(body) {
       }
     }
   }
-  if (wider.some(r => r.key === 'CCBOARD_EPIC_WORKER')) {
-    const next = key => {
-      const row = settingsDemoOptions.options.find(o => o.key === key);
-      const value = ownKey(body.changes, key) ? body.changes[key] : row.edit_value;
-      return value === null ? row.file_value ?? row.running ?? row.default : value;
-    };
-    const missing = [];
-    if (String(next('CCBOARD_EPIC_WRITES')) !== '1') missing.push('CCBOARD_EPIC_WRITES=1');
-    if (!String(next('CCBOARD_EPIC_REPOS')).trim()) missing.push('CCBOARD_EPIC_REPOS');
-    if (missing.length) refuse(400, 'Worker requires ' + missing.join(' and ') + '.');
+  const worker = settingsWorkerPreview(settingsDemoOptions, body.changes);
+  if (SETTINGS_WORKER_FIELDS.some(([key]) => ownKey(body.changes, key))) {
+    if (!settingsDemoOptions.page_widen) refuse(403, 'widen_off');
+    if (worker.reason) refuse(400, worker.text, { worker });
   }
   if (wider.length) {
     const phrase = [...groups].sort().join(' AND ');
-    if (body.confirm === undefined) refuse(409, 'needs_confirm', { phrase, widens: wider });
+    if (body.confirm === undefined) refuse(409, 'needs_confirm', { phrase, widens: wider, ...(SETTINGS_WORKER_FIELDS.some(([key]) => ownKey(body.changes, key)) ? { worker, safety: typeof EW_SAFETY !== 'undefined' ? EW_SAFETY : '' } : {}) });
     if (body.confirm !== phrase) refuse(403, 'bad_phrase');
   }
   for (const [key, value] of Object.entries(body.changes)) {
@@ -352,9 +352,160 @@ async function demoSettingsOptions(body) {
     row.source = value === null ? row.file_source : 'page';
     row.pending = String(row.running) !== String(row.value);
   }
+  settingsDemoOptions.worker = worker;
   settingsDemoOptions.pending = settingsDemoOptions.options.filter(o => o.pending).map(o => o.key);
   settingsDemoOptions.saved = Object.keys(body.changes);
   return settingsDemoOptions;
+}
+
+/* Worker settings share the option controls, restart badges and Phase 4 confirmation. */
+const SETTINGS_WORKER_FIELDS = [
+  ['CCBOARD_EPIC_WORKER', 'Worker mode'], ['CCBOARD_EPIC_REPOS', 'Repositories'],
+  ['CCBOARD_EPIC_AUTHORS', 'Allowed authors'], ['CCBOARD_EPIC_WRITES', 'Epic writes'],
+  ['CCBOARD_EPIC_WORKER_POLL', 'Look every'], ['CCBOARD_EPIC_WORKER_MAX_PER_HOUR', 'At most per hour'],
+  ['CCBOARD_EPIC_WORKER_MAX_PER_DAY', 'At most per day'],
+];
+function settingsWorkerError(option, value) {
+  if (option.kind === 'int' && (!/^\d+$/.test(value) || Number(value) < option.bounds[0] || Number(value) > option.bounds[1])) return `Use ${option.bounds[0]} to ${option.bounds[1]}.`;
+  const login = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
+  const validLogin = v => v.length <= 39 && login.test(v);
+  if (option.key === 'CCBOARD_EPIC_REPOS') {
+    const entries = value.toLowerCase().split(/[,\s]+/).filter(Boolean);
+    if (entries.length > 25 || entries.some(v => { const [owner, repo, extra] = v.split('/'); return extra !== undefined || !validLogin(owner) || !/^(?![-.])[a-z0-9_.-]{1,100}$/i.test(repo || ''); })) return 'Use owner/name, at most 25 repositories.';
+  }
+  if (option.key === 'CCBOARD_EPIC_AUTHORS') {
+    const entries = value.split(',').map(v => v.trim()).filter(Boolean);
+    if (entries.length > 20 || entries.some(v => { const [name, id, extra] = v.split(':'); return !validLogin(name) || extra !== undefined || (id !== undefined && (!/^[0-9]+$/.test(id) || !(Number(id) > 0 && Number(id) < 1e12))); })) return 'Use comma-separated login or login:id entries, at most 20; a login cannot contain spaces.';
+  }
+  return '';
+}
+/* An env key as text with a break opportunity after each underscore, so a long key wraps between words and never in the middle of one. */
+function settingsKeyBreaks(key) {
+  const parts = String(key).split('_');
+  return parts.flatMap((part, i) => i < parts.length - 1 ? [part + '_', el('wbr')] : [part]);
+}
+function settingsWorkerPreview(data, changes = {}) {
+  const get = key => {
+    const row = data.options.find(o => o.key === key);
+    const value = ownKey(changes, key) ? changes[key] : row?.edit_value ?? row?.value;
+    return value === null ? row.file_value ?? row.running ?? row.default : value;
+  };
+  const repos = String(get('CCBOARD_EPIC_REPOS') || '').toLowerCase().split(/[,\s]+/).filter(Boolean);
+  const authors = String(get('CCBOARD_EPIC_AUTHORS') || '').toLowerCase().split(/[,\s]+/).filter(Boolean);
+  if (!authors.length && data.worker?.known_author) authors.push(data.worker.known_author);
+  const on = String(get('CCBOARD_EPIC_WORKER')) === '1', writes = String(get('CCBOARD_EPIC_WRITES')) === '1';
+  const reason = !on ? null : !writes ? 'writes_off' : !repos.length ? 'repos_empty' : !authors.length ? 'authors_empty' : null;
+  const words = { writes_off: 'epic writes off', repos_empty: 'no repository is listed', authors_empty: 'no allowed author known' };
+  return { on, writes, repos, authors, reason, poll: Number(get('CCBOARD_EPIC_WORKER_POLL')), hour: Number(get('CCBOARD_EPIC_WORKER_MAX_PER_HOUR')), day: Number(get('CCBOARD_EPIC_WORKER_MAX_PER_DAY')),
+    text: reason ? 'After the restart the worker will refuse to start: ' + words[reason] : on ? 'After the restart the worker will start' : 'After the restart the worker will be off' };
+}
+function settingsDemoWorkerState(data) {
+  const flag = new URLSearchParams(location.search).get('workersettings') || 'off';
+  const patch = data.worker_states?.[flag];
+  if (patch) {
+    data.page_widen = patch.page_widen;
+    for (const [key, value] of Object.entries(patch.values)) {
+      const row = data.options.find(o => o.key === key);
+      if (row) { row.value = row.edit_value = row.running = value; row.pending = false; row.source = 'file'; row.line = key + '=' + value; }
+    }
+  }
+  data.worker = settingsWorkerPreview(data);
+  settingsDemoOptions = data;
+  return data;
+}
+function settingsWorkerSummary(worker) {
+  if (!worker) return null;
+  return el('div', { class: 'set-worker-summary' },
+    el('p', { text: 'Repositories: ' + (worker.repos.join(', ') || 'none listed') }),
+    el('p', { text: 'Allowed authors: ' + (worker.authors.join(', ') || 'none known') }),
+    el('p', { text: `Epic writes: ${worker.writes ? 'on' : 'off'}. Look every ${worker.poll} seconds. At most ${worker.hour} per hour and ${worker.day} per day.` }));
+}
+function settingsWorkerForm(p, data) {
+  const root = el('div', { class: 'set-worker' }, el('h3', { text: 'Worker' }),
+    el('p', { class: 'set-worker-safety', text: EW_SAFETY }), el('p', { class: 'dim', text: EW_RISK }));
+  const fields = new Map();
+  for (const [key, label] of SETTINGS_WORKER_FIELDS) {
+    const option = data.options.find(o => o.key === key);
+    if (!option) continue;
+    const edit = option.kind === 'list' ? String(option.edit_value ?? '').split(/[,\s]+/).filter(Boolean).join(',') : option.edit_value;
+    let { control, read, initial } = settingsOptionControl({ ...option, edit_value: edit, label });
+    if (key === 'CCBOARD_EPIC_REPOS') {
+      control = el('textarea', { class: 'set-option-input', rows: '2', maxlength: '500', 'aria-label': label });
+      control.value = initial;
+      read = () => control.value.trim().split(/[,\s]+/).filter(Boolean).join(',');
+    }
+    control.setAttribute('id', 'worker-' + key);
+    control.disabled = !data.page_widen;
+    const error = el('span', { class: 'bad set-option-error', role: 'alert', id: control.id + '-error' });
+    const hint = key === 'CCBOARD_EPIC_AUTHORS' ? 'Comma-separated login or login:id. An id pins the account. Empty uses the already known gh login.' :
+      key === 'CCBOARD_EPIC_REPOS' ? 'One owner/name per line or comma separated, at most 25. Saved repositories are shown below.' :
+      key === 'CCBOARD_EPIC_WRITES' ? 'Required to start. Turning writes on needs its own typed confirmation in the same dialog.' :
+      option.bounds ? `${option.bounds[0]} to ${option.bounds[1]}${key.endsWith('_POLL') ? ' seconds' : ''}; default ${option.default}.` : 'Saved changes take effect after a restart.';
+    const help = el('span', { class: 'dim', id: control.id + '-help', text: hint + (option.bounds ? '' : ' Default: ' + (option.kind === 'bool' ? option.default === '1' ? 'on.' : 'off.' : 'empty.')) });
+    control.setAttribute('aria-describedby', help.id + ' ' + error.id);
+    const chips = el('div', { class: 'set-chips' }, el('span', { class: 'badge', text: ({ default: '○', file: '▤', environment: '◇', page: '▣' }[option.source] || '○') + ' ' + option.source }));
+    if (option.pending) chips.append(el('span', { class: 'badge warn', text: 'saved, needs restart' }));
+    if (option.kind === 'bool') chips.append(el('span', { class: 'badge', text: initial === '1' ? 'on' : 'off' }));
+    if (option.kind === 'list') for (const v of initial.split(/[,\s]+/).filter(Boolean)) chips.append(el('span', { class: 'badge', text: v }));
+    const toggleText = option.kind === 'bool' ? el('span', { text: read() === '1' ? 'On' : 'Off' }) : null;
+    const row = settingsKv('', el('label', { class: option.kind === 'bool' ? 'set-check' : 'field', for: control.id }, control, toggleText), help, chips, error);
+    if (toggleText) control.addEventListener('change', () => { toggleText.textContent = read() === '1' ? 'On' : 'Off'; });
+    row.querySelector('.k').append(el('label', { for: control.id, text: label }), el('code', { class: 'set-option-key' }, settingsKeyBreaks(key)));
+    row.classList.add('set-option'); row.setAttribute('data-key', key);
+    if (option.pending) row.add(el('span', { class: 'set-option-next', text: 'running ' + settingsOptionText(option.running, option) + ', next start ' + settingsOptionText(option.value, option) }));
+    if (option.live_widening) row.add(el('span', { class: 'warn', text: 'Live value is wider than the settings file/environment alone.' }));
+    if (option.problem) row.add(el('span', { class: 'warn', text: option.problem }));
+    if (!data.page_widen) row.add(el('code', { class: 'set-option-line', text: option.line }));
+    const validate = () => { const message = settingsWorkerError(option, read()); error.textContent = message; control.setAttribute('aria-invalid', message ? 'true' : 'false'); return !message; };
+    control.addEventListener('input', validate);
+    fields.set(key, { control, read, initial, validate, error }); root.append(row);
+  }
+  if (!data.page_widen) root.append(el('p', { class: 'dim', text: 'To allow it, set CCBOARD_PAGE_WIDEN=1 in the settings file and restart. The page may not turn it on until that key is set.' }));
+  const next = el('p', { class: 'set-worker-next', role: 'status', text: data.worker?.text || '' });
+  const error = el('p', { class: 'bad set-worker-error', role: 'alert' });
+  let busy = false;
+  const submit = async (changes, confirm) => {
+    if (busy) return;
+    busy = true; save.disabled = true; error.textContent = '';
+    try {
+      const result = await api('PUT', '/api/settings/options', { changes, stamp: data.stamp, ...(confirm === undefined ? {} : { confirm }) });
+      settingsOptionsPaint(p, result);
+      if (state) state.settings_pending = settingsPendingSummary(result);
+    } catch (e) {
+      if (e.status === 409 && e.body?.reason === 'needs_confirm') settingsWidenDialog(e.body, phrase => submit(changes, phrase), save);
+      else {
+        error.textContent = e.body?.reason === 'changed' ? 'Settings changed in another tab. Reload Options, then apply your changes again.' :
+          e.body?.reason === 'widen_off' ? 'Allow in settings: CCBOARD_PAGE_WIDEN=1, then restart.' : e.body?.reason || e.message;
+        const field = fields.get(e.body?.key);
+        if (field) { field.error.textContent = error.textContent; field.control.setAttribute('aria-invalid', 'true'); }
+      }
+    } finally { busy = false; save.disabled = false; }
+  };
+  const save = el('button', { type: 'button', class: 'primary set-worker-save', text: 'Save', disabled: !data.page_widen, onclick: () => {
+    if (!data.page_widen) return;
+    if ([...fields.values()].map(f => f.validate()).includes(false)) return;
+    const changes = Object.fromEntries([...fields].filter(([, f]) => f.read() !== f.initial).map(([k, f]) => [k, f.read()]));
+    if (Object.keys(changes).length) submit(changes);
+  } });
+  const draft = () => {
+    const changes = Object.fromEntries([...fields].map(([key, f]) => [key, f.read()]));
+    const preview = settingsWorkerPreview(data, changes);
+    error.textContent = preview.reason ? preview.text : '';
+  };
+  for (const f of fields.values()) { f.control.addEventListener('input', draft); f.control.addEventListener('change', draft); }
+  save.disabled = !data.page_widen;
+  root.append(next, error, el('div', { class: 'row' }, save));
+  if (typeof EpicWorker !== 'undefined') {
+    EpicWorker.pageWiden = data.page_widen;
+    const live = EpicWorker.build({ mode: 'settings', form: true, onChange: () => paintLive() });
+    const paintLive = () => live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
+    // /api/epic-worker is the truth, even when the saved switch says off.
+    if (data.worker_live) EpicWorker.override = EpicWorker.clean(data.worker_live);
+    p.ccWorkerPaint = paintLive;
+    live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
+    root.append(el('h3', { text: 'Running worker' }), el('p', { class: 'dim', text: 'Stop and Start act now. Saving the form only changes the next restart.' }), live.root);
+  }
+  return root;
 }
 
 function settingsOptionsPaint(p, data) {
@@ -376,7 +527,13 @@ function settingsOptionsPaint(p, data) {
     section.open = !settingsPage.optionGroup || settingsPage.optionGroup === group.id;
     section.append(el('summary', {}, settingsHead(group.label)));
     const rows = [];
+    if (group.id === 'epics' && typeof EW_SAFETY !== 'undefined') {
+      const worker = settingsWorkerForm(p, data);
+      section.append(worker);
+      rows.push({ row: worker, match: ('Worker mode Repositories Allowed authors Epic writes Look every At most per hour At most per day ' + SETTINGS_WORKER_FIELDS.map(([k]) => k).join(' ')).toLowerCase() });
+    }
     for (const option of data.options.filter((o) => o.group === group.id)) {
+      if (group.id === 'epics' && typeof EW_SAFETY !== 'undefined' && SETTINGS_WORKER_FIELDS.some(([key]) => key === option.key)) continue;
       const chips = el('div', { class: 'set-chips' }, el('span', { class: 'badge', text: (glyphs[option.source] || '○') + ' ' + option.source }));
       if (option.applies === 'restart') chips.append(el('span', { class: 'badge warn', text: option.pending ? 'saved, needs restart' : 'needs restart' }));
       if (option.cls === 'file' || option.cls === 'installer') chips.append(el('span', { class: 'badge', text: option.cls === 'file' ? 'file only' : 'install.sh' }));
@@ -386,7 +543,7 @@ function settingsOptionsPaint(p, data) {
         el('span', { class: 'dim', text: option.help }));
       row.classList.add('set-option');
       row.setAttribute('data-key', option.key);
-      row.querySelector('.k').append(el('code', { class: 'mono set-option-key', text: option.key }));
+      row.querySelector('.k').append(el('code', { class: 'mono set-option-key' }, settingsKeyBreaks(option.key)));
       if (option.pending) row.add(el('span', { class: 'set-option-next', text: 'running ' + settingsOptionText(option.running, option) + ', next start ' + settingsOptionText(option.value, option) }));
       if ((option.cls === 'page' || (option.cls === 'confirm' && data.page_widen)) && !option.secret) row.add(el('button', { type: 'button', text: 'Edit', onclick: () => settingsOptionEdit(p, data, option, row) }));
       if (option.cls === 'confirm') {
@@ -437,7 +594,9 @@ function settingsOptions(p) {
   p.append(el('p', { class: 'dim', role: 'status', text: 'Loading options…' }));
   const request = {};
   p.ccOptionsRequest = request;
-  api('GET', '/api/settings/options').then((data) => {
+  const ready = typeof Lazy !== 'undefined' ? Lazy.load('worker') : Promise.resolve();
+  ready.then(() => typeof EpicWorker !== 'undefined' ? EpicWorker.warm() : null).then(() => api('GET', '/api/settings/options')).then((data) => {
+    if (typeof demoOn === 'function' && demoOn() && !settingsDemoOptions) data = settingsDemoWorkerState(data);
     if (settingsPage.refs && settingsPage.refs.panels.options === p && p.ccOptionsRequest === request) settingsOptionsPaint(p, data);
   }, (err) => {
     if (p.ccOptionsRequest !== request) return;
@@ -1265,14 +1424,18 @@ function settingsNdPaintWorker(ui, st) {
     ui.workerHost.append(ui.worker.root);
     ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
   }
-  ui.worker.paint(EpicWorker.pick(st), {});
+  ui.worker.paint(EpicWorker.pick(st), { page_widen: EpicWorker.pageWiden });
 }
 
 function settingsNdWorkerOpen() {
   const have = typeof EpicWorker !== 'undefined';
   const demo = typeof demoOn === 'function' && demoOn();
-  if (settingsNd.workerAsked || (have && !(demo && !EpicWorker.fixture))) return;
-  const warm = () => (typeof EpicWorker !== 'undefined' ? EpicWorker.warm() : null);
+  if (settingsNd.workerAsked || (have && EpicWorker.pageWiden !== undefined && !(demo && !EpicWorker.fixture))) return;
+  const warm = async () => {
+    if (typeof EpicWorker === 'undefined') return;
+    await EpicWorker.warm();
+    try { EpicWorker.pageWiden = (await api('GET', '/api/settings/options')).page_widen; } catch (_) { /* setup link stays available */ }
+  };
   let p = null;
   if (have) p = warm();
   else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.worker) p = Lazy.load('worker').then(warm);
@@ -1700,6 +1863,40 @@ function settingsBareMessage(device, row) {
   return `${device.name} is offline (last seen ${age}). Nothing was started.`;
 }
 
+/* Optional hooks on the device that log state changes (no prompt text). Two taps, like Stop: Install or Remove, then Confirm. */
+function settingsBareStateLog(d, check) {
+  const B = settingsBare, on = !!(d.state_log && d.state_log.installed), verb = on ? 'remove' : 'install';
+  const checkOk = !!(check && check.ok);
+  const codex = on ? !!(d.state_log.agents || []).includes('codex')
+    : !!(check && Array.isArray(check.rows) && check.rows.some((r) => r.key === 'codex' && r.ok));
+  const trust = codex ? ' Codex asks you to review new hooks once: run /hooks in a Codex session on the device.' : '';
+  const label = on ? 'Remove state log' : 'Install state log';
+  let armed = false, timer;
+  const notice = el('span', { role: 'status' });
+  const go = el('button', { type: 'button', text: label, disabled: B.busy || (!on && !checkOk) });
+  const cancel = el('button', { class: 'hidden', type: 'button', text: 'Cancel', hidden: true });
+  const disarm = () => {
+    armed = false; clearTimeout(timer); go.textContent = label;
+    cancel.classList.add('hidden'); cancel.setAttribute('hidden', ''); notice.textContent = '';
+  };
+  cancel.addEventListener('click', disarm);
+  go.addEventListener('click', () => {
+    if (!armed) {
+      armed = true; go.textContent = 'Confirm'; cancel.classList.remove('hidden'); cancel.removeAttribute('hidden');
+      notice.textContent = on ? 'Remove the state log hooks and files from this device? Your other hook settings stay. Tap Confirm, or Cancel.'
+        : 'Add small hooks to this user\u2019s Claude and Codex settings on the device? Your other settings stay.' + trust + ' Tap Confirm, or Cancel.';
+      timer = setTimeout(disarm, 5000);
+      return;
+    }
+    disarm();
+    settingsBareAction('POST', `/api/bare/${encodeURIComponent(d.ts_id)}/state-log/${verb}`, { confirm: true });
+  });
+  return el('div', { class: 'bare-statelog' },
+    el('p', { class: 'dim', text: on ? 'State log installed: hooks on the device write one line per state change (no prompt text) to ~/.ccboard-bare/state.log, and the board prefers it to the screen read.' + trust
+      : 'State log not installed. Optional: small hooks on the device record state changes for a better state than the screen read.' }),
+    go, cancel, notice);
+}
+
 function settingsBarePaint() {
   const B = settingsBare, ui = B.ui;
   if (!ui) return;
@@ -1756,6 +1953,7 @@ function settingsBarePaint() {
     const refused = check && Array.isArray(check.rows) && check.rows.some((r) => ['user', 'groups'].includes(r.key) && !r.ok && !r.skipped);
     body.append(el('p', { class: 'dim', text: added ? 'Saved device. Nothing was started.' : refused
       ? 'Device was refused and was not added.' : 'Not added yet: fix the rows marked ✕ and check again.' }), actions);
+    if (added && ((check && check.ok) || (d.state_log && d.state_log.installed))) body.append(settingsBareStateLog(d, check));
     for (const r of check && Array.isArray(check.rows) ? check.rows : []) {
       body.append(el('div', { class: 'bare-check' }, el('span', { class: r.ok ? 'ok' : 'bad', text: r.ok ? '✓' : '✕', 'aria-label': r.ok ? 'Passed' : 'Failed' }),
         el('div', {}, el('div', { text: settingsBareMessage(d, r) }), r.fix ? el('div', { class: 'dim', text: r.fix }) : null)));
@@ -1794,7 +1992,10 @@ async function settingsBareAction(method, path, body) {
     const data = await api('GET', '/api/bare');
     if (seq === B.seq) B.data = data;
     settingsNdLoadPeers();
-  } catch (e) { if (seq === B.seq) B.err = e.message || 'The device did not answer. Check again.'; }
+  } catch (e) {
+    if (seq === B.seq) B.err = e.message || 'The device did not answer. Check again.';
+    if (seq === B.seq && /\/state-log\//.test(path)) { try { const data = await api('GET', '/api/bare'); if (seq === B.seq) B.data = data; } catch (_) { /* the message above stands */ } }  // a part-done install changed the record
+  }
   finally { if (seq === B.seq) { B.busy = false; settingsBarePaint(); } }
 }
 
@@ -3468,7 +3669,7 @@ registerPage('settings', {
       document.addEventListener('visibilitychange', settingsPage.vis);
     }
   },
-  update() { settingsFill(settingsPage.active, false); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
+  update() { settingsFill(settingsPage.active, false); if (settingsPage.active === 'options') settingsPage.refs?.panels.options.ccWorkerPaint?.(); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
   onRoute(route) {
     settingsPage.optionGroup = (route && route.query && route.query.group) || null;
     settingsPage.focus = (route && route.query && route.query.acct) || null;

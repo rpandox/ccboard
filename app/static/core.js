@@ -411,7 +411,10 @@ async function demoApi(method, path, body) {
   }
   if (name === 'state') {
     if (typeof Lazy !== 'undefined') await Lazy.load('demobare');
-    if (typeof demoBare === 'function') data.bare_devices = (await demoBare('GET', '/api/bare')).devices;
+    if (typeof demoBare === 'function') {
+      data.bare_devices = (await demoBare('GET', '/api/bare')).devices;
+      data.pending_permissions = [...(data.pending_permissions || []), ...demoBarePending(data.bare_devices)];
+    }
     const st = demoTaskEpic(demoMadeState(demoUsageRefresh(demoRebase(data))));
     return typeof settingsRestartDemoState === 'function' ? settingsRestartDemoState(st) : st;
   }                 // the usage reading's own time follows the make-believe refresh above

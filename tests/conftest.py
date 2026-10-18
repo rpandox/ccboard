@@ -1092,7 +1092,7 @@ def bare_runner(monkeypatch, projects_dir):
     from app import bare
     fake = SimpleNamespace(answers=[], calls=[])
 
-    def run(argv, *, stdin=None):
+    def run(argv, *, stdin=None, stdout_limit=32768):
         fake.calls.append((list(argv), stdin))
         assert fake.answers, "unexpected device command"
         answer = fake.answers.pop(0)

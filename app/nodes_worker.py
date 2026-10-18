@@ -152,6 +152,17 @@ def enabled() -> bool:
     return bool(getattr(settings, "epic_worker", False))
 
 
+def refusal_reason(writes, repos, authors, *, login_pending=False) -> str | None:
+    """Pure prerequisite check shared by the running worker and next-start settings."""
+    if not writes:
+        return "writes_off"
+    if not repos:
+        return "repos_empty"
+    if not authors:
+        return "login_pending" if login_pending else "authors_empty"
+    return None
+
+
 def reason_text(word: str) -> str:
     return SKIP_TEXT.get(word) or STATE_TEXT.get(word) or nodes_work.WORK_TEXT.get(word) or nodes_epics.CLAIM_TEXT.get(word) or word
 
@@ -177,6 +188,11 @@ def _load(db) -> dict:
     trying = v.get("trying") if isinstance(v.get("trying"), str) else None
     return {"stopped": v.get("stopped") is True, "stopped_at": v.get("stopped_at") if isinstance(v.get("stopped_at"), (int, float)) else None, "starts": starts,
             "decisions": decisions, "held": held, "mine": mine, "ids": ids, "trying": trying}
+
+
+def kept_stop(db) -> bool:
+    """Read-only: has a person's Stop been kept in the row? False with no db or no row."""
+    return db is not None and _load(db)["stopped"]
 
 
 def _save(db, row: dict) -> None:
@@ -245,13 +261,10 @@ class Worker:
     def refusal(self, probe: bool = True) -> str | None:
         """Why the worker may not run (a word of STATE_TEXT), or None. Off is not a refusal: an off worker is simply not there. `probe=False` (a view) never asks gh for the
         login: with none known yet the word is `login_pending` until the worker thread has asked once."""
-        if not github_write.writes_enabled():
-            return "writes_off"
-        if not settings.epic_repos:
-            return "repos_empty"
-        if not self.allowed(probe):
-            return "authors_empty" if probe or self._probed else "login_pending"
-        return None
+        writes = github_write.writes_enabled()
+        # Keep the existing short circuit: never probe an author before writes and repos pass.
+        authors = self.allowed(probe) if writes and settings.epic_repos else ()
+        return refusal_reason(writes, settings.epic_repos, authors, login_pending=not (probe or self._probed))
 
     def repos_here(self) -> list[str]:
         """The listed repositories that are cloned here, spelled as this board's own remote spells them."""

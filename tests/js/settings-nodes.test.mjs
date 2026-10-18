@@ -174,7 +174,7 @@ test('no timer polls the tailnet; the local forget confirmation may expire', () 
   const start = src.indexOf('const settingsNd =');
   const end = src.indexOf('function settingsBox');
   const block = src.slice(start, end).replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace('timer = setTimeout(disarm, 5000);', ''); // Local confirmation only; covered by settings-bare.test.mjs.
+    .replaceAll('timer = setTimeout(disarm, 5000);', ''); // Local confirmation only; covered by settings-bare.test.mjs.
   assert.ok(start > 0 && end > start);
   assert.doesNotMatch(block, /setInterval|setTimeout|requestAnimationFrame|visibilitychange/);
   assert.equal((block.match(/api\('GET', '\/api\/nodes\/discover'/g) || []).length, 1, 'one place asks the tailnet');

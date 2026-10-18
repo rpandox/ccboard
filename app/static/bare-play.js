@@ -10,7 +10,7 @@ async function demoBare(method, path, body = {}) {
   const { data, template } = demoBareStore;
   const route = path.split('?')[0];
   if (method === 'GET' && route === '/api/bare') return JSON.parse(JSON.stringify(data));
-  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/(stop|attach))?$/.exec(route);
+  const sessionRoute = /^\/api\/bare\/([^/]+)\/sessions(?:\/(read)|\/([^/]+)\/(stop|attach|allow|deny|reply))?$/.exec(route);
   if (sessionRoute && method === 'POST') {
     const device = data.devices.find((d) => d.ts_id === decodeURIComponent(sessionRoute[1]));
     if (!device || !device.check.ok) throw demoError(400, 'Add and check your device first.');
@@ -22,6 +22,17 @@ async function demoBare(method, path, body = {}) {
     if (sessionRoute[3]) {
       const row = device.sessions.find((s) => s.tmux_name === decodeURIComponent(sessionRoute[3]));
       if (row && sessionRoute[4] === 'attach') return { attach_url: '/term/bare-ticket-' + '0'.repeat(64) };
+      if (row && ['allow', 'deny', 'reply'].includes(sessionRoute[4])) {
+        const verb = sessionRoute[4];
+        if (verb === 'reply') {
+          if (row.state !== 'waiting') throw demoError(409, 'The session is not at its input prompt. Open the terminal; nothing was sent.');
+          if (typeof body.text !== 'string' || !body.text.trim()) throw demoError(400, 'Write a reply first.');
+        } else if (row.state !== 'dialog' || body.pid !== row.prompt_id) {
+          throw demoError(409, 'The terminal prompt changed or is no longer available; nothing was sent.');
+        }
+        row.state = verb === 'deny' ? 'waiting' : 'working';
+        return { ok: true };
+      }
       if (!row || !body.confirm) throw demoError(400, 'Confirm Stop with a second tap.');
       row.state = 'stopping';
       return { status: 'stopping' };
@@ -35,6 +46,15 @@ async function demoBare(method, path, body = {}) {
     const row = { tmux_name: 'bare-demo-' + (++demoBareStore.next), host: device.ts_id, agent, repo: body.repo, state: 'alive' };
     device.sessions.push(row);
     return { session: { ...row }, status: 'alive' };
+  }
+  const hookRoute = /^\/api\/bare\/([^/]+)\/state-log\/(install|remove)$/.exec(route);
+  if (hookRoute && method === 'POST') {
+    const device = data.devices.find((d) => d.ts_id === decodeURIComponent(hookRoute[1]));
+    if (!device || !device.check.ok) throw demoError(400, 'Add and check your device first.');
+    if (body.confirm !== true) throw demoError(400, 'Confirm ' + (hookRoute[2] === 'install' ? 'installing' : 'removing') + ' the state log with a second tap.');
+    if (hookRoute[2] === 'install') device.state_log = { installed: true, agents: ['claude'], at: new Date().toISOString() };
+    else delete device.state_log;
+    return { ok: true, state_log: device.state_log || null, changed: [] };
   }
   const match = /^\/api\/bare\/([^/]+)(?:\/(check|forget-host-key))?$/.exec(route);
   const id = match ? decodeURIComponent(match[1]) : body.ts_id;
@@ -59,8 +79,16 @@ async function demoBare(method, path, body = {}) {
   const check = JSON.parse(JSON.stringify(template.check));
   const wording = (s) => s.replaceAll(template.name, candidate.name).replaceAll(template.user, user).replaceAll('~/projects', `~/${folder}`).replaceAll(template.os === 'Linux' ? 'Linux' : 'Darwin (macOS)', candidate.os === 'Linux' ? 'Linux' : 'Darwin (macOS)');
   check.rows = check.rows.map((row) => ({ ...row, message: wording(row.message), fix: wording(row.fix) }));
-  const device = { ...candidate, user, folder, owner: template.owner, check, sessions: saved ? saved.sessions || [] : [] };
+  const device = { ...candidate, user, folder, owner: template.owner, check, sessions: saved ? saved.sessions || [] : [], ...(saved && saved.state_log ? { state_log: saved.state_log } : {}) };
   data.devices = [...data.devices.filter((d) => d.ts_id !== id), device];
   return { added: true, device, check };
 }
 
+
+function demoBarePending(devices) {
+  return devices.flatMap((d) => (d.sessions || []).filter((s) => s.state === 'dialog' && s.prompt_id).map((s) => ({
+    id: s.prompt_id, kind: 'terminal_prompt', tmux_name: s.tmux_name, bare_device: d.ts_id,
+    tool_name: 'Bash', summary: 'Bash command: npm test', created_at: new Date().toISOString(),
+    choices: [{ number: '1', label: 'Yes' }, { number: '2', label: 'No' }],
+  })));
+}
