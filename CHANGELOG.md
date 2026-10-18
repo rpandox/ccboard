@@ -2,6 +2,19 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.96 - 2026-10-18
+
+### Added
+- `docs/uninstall.md` is now complete and checked against `install.sh`, `scripts/install-macos.sh` and `scripts/uninstall-macos.sh`: every unit and timer (including `ccboard-backup.service` and `.timer`), `/etc/ccboard/env`, `/etc/sudoers.d/ccboard`, the ntfy package and apt source, the `tailscale serve` mappings (by port, never `reset`), the Claude and Codex hooks and MCP registrations, the code-server bits, the tmux server (with the warning that ending it ends every session) and the data folder, in order, for Linux, the container, a Mac and WSL2. No uninstall script was added for Linux.
+- `docs/troubleshooting.md` opens with a symptom, cause and fix table built from the Doctor's own messages and the installer's stop messages, and ends with an FAQ (Tailscale, the same machine, API keys, multi-user, what leaves the machine, offline). `docs/security.md` opens with a "who can reach what" table, and the security model below it is unchanged. `SECURITY.md` says how to report a vulnerability privately through GitHub.
+- New tests pin the uninstall page against the installers and the shape of the new pages.
+
+### Changed
+- `docs/upgrade.md` covers each kind of install (Linux, Mac, WSL2, Docker), how to read the changelog `Upgrade:` line before pulling, backing up first and going back; the Mac and container update text that sat in other pages moved into it.
+- `CONTRIBUTING.md` opens with a short path for a person (fork, venv, both test commands, a demo board, the changelog rule, a pull request) and the agent and model tables follow it unchanged. `docs/maintainers/deploying.md` now says first that ordinary users do not need it.
+
+Upgrade: nothing to do.
+
 ## v0.5.95 - 2026-10-18
 
 ### Changed

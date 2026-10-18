@@ -19,11 +19,11 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 | Page | What it covers |
 |---|---|
 | [Configuration reference](configuration.md) | The few settings most people set, then one table per group, the options page, the advanced and test-only variables, and Restart board. |
-| [Upgrade](upgrade.md) | How to update an install, and how the changelog is written. |
-| [Uninstall ccboard](uninstall.md) | The uninstall commands for Linux. |
+| [Upgrade](upgrade.md) | How to update each kind of install (Linux, Mac, WSL2, Docker), what the changelog's `Upgrade:` line means, backing up first, going back, and updating Claude Code. |
+| [Uninstall ccboard](uninstall.md) | Every command in order, with what it removes and what it keeps, for Linux, the container, a Mac and WSL2. |
 | [Backup and restore](backup-and-restore.md) | What is backed up on each system, the restore runbook and backup branches in your repos. |
-| [Security](security.md) | The security model, node scopes and routes, and the settings permission classes. |
-| [Troubleshooting and FAQ](troubleshooting.md) | The known problems and what to do. |
+| [Security](security.md) | Who can reach what, the security model, node scopes and routes, and the settings permission classes. |
+| [Troubleshooting and FAQ](troubleshooting.md) | A symptom, cause and fix table, where the logs are, the longer notes, and answers to the questions people ask first. |
 
 ## Use it
 
@@ -69,7 +69,7 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 |---|---|
 | [Team](team.md) | Who is working on what, publishing your status, conflict warnings and working with a team. |
 | [Developing ccboard](development.md) | Run the board locally, the tests, the lock files and demo mode. |
-| [Deploying](maintainers/deploying.md) | Updating the container and the outage per push, and what to do when GitHub Actions is down. |
+| [Deploying](maintainers/deploying.md) | For the maintainer of a public deployment: updating the container, the outage per push, and what to do when GitHub Actions is down. Ordinary users do not need it. |
 | [Design notes](maintainers/design-notes.md) | Deviations from the original spec. |
 
 ## Other files
@@ -78,5 +78,7 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 |---|---|
 | [memory-api.md](memory-api.md) | The claude-mem worker API the board talks to. |
 | [security-audit-2026-10.md](security-audit-2026-10.md) | The October 2026 security audit and what it changed. |
+| [SECURITY.md](../SECURITY.md) | How to report a vulnerability privately, and which versions get fixes. |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | The short path for a person (fork, tests, demo board, pull request, changelog entry), then the maintainer's agent workflow. |
 | [moved.md](moved.md) | Where each old README heading went (temporary). |
 | [img/README.md](img/README.md) | The two README screenshots: what they show and how to retake them. |

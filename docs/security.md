@@ -4,6 +4,35 @@ For the owner of a board: what it trusts, what it exposes and what the scopes al
 
 [Back to the documentation index](README.md)
 
+To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+
+## Who can reach what
+
+The one sentence to read first: **the terminal (`/tty`) and code-server do not check the list of allowed logins.** Any device your tailnet rules let reach those ports gets a shell as your user, so the tailnet access rules, not the board, are what protect them. Everything else in the table is checked by the board itself.
+
+Every surface sits behind `tailscale serve` on a loopback port, and nothing is public (the board never turns Funnel on). "Reach" below means a device your tailnet rules let connect to that port. The details of each row are in the [security model](#security-model) further down.
+
+| Surface | Who can reach it | How it is checked |
+|---|---|---|
+| The board in a browser: pages and `/api/*`, on `CCBOARD_HTTPS_PORT` | Devices your tailnet rules let reach that port, but only the logins in `CCBOARD_ALLOWED_USERS` get in | The `Tailscale-User-Login` header that `tailscale serve` adds. A missing, empty or unknown login is a 403. Every request that is not a GET also needs `X-CCBoard: 1`. Pages carry a strict Content-Security-Policy |
+| Local sign-in (`/auth/local`, `bin/ccboard-open`) | Only a process on this machine that can read the hook token file, and only when you set `CCBOARD_LOCAL_SIGNIN=1` (off by default) | The hook token mints a one-time link valid for 60 seconds; the cookie is host-only, HttpOnly and SameSite=Strict, and lasts 12 hours. Requests must come from loopback with an exact `127.0.0.1`, `localhost` or `[::1]` Host and no proxy or Tailscale headers |
+| Changing settings (the options page, Restart board) | The same logins as the board | A signed-in person, `X-CCBoard: 1` and a matching Origin. Hook, hub, node and device tokens are refused. A change that widens what an agent may do also needs the master switch and a typed phrase |
+| The terminal, `/tty` (ttyd), on `CCBOARD_HTTPS_PORT` | Every device your tailnet rules let reach that port | **Tailnet access rules only.** No login check. A shell as your user. ttyd runs with `-O`, so another web page cannot open its WebSocket |
+| code-server, on `CODE_HTTPS_PORT` | Every device your tailnet rules let reach that port | **Tailnet access rules only.** code-server runs with `auth: none` on loopback. An editor and a shell as your user |
+| The ntfy server, on `NTFY_HTTPS_PORT` | Every device your tailnet rules let reach that port | **Tailnet access rules only.** Anyone who can reach it could publish to or read the topic |
+| The claude-mem viewer, only when `CCBOARD_MEM_HTTPS_PORT` is set | Every device your tailnet rules let reach that port | **Tailnet access rules only.** It has no sign-in of its own and can read and change the worker |
+| Task previews, one port each from `PREVIEW_HTTPS_BASE` | Every device your tailnet rules let reach that port | **Tailnet access rules only.** The board refuses to publish its own services or port 443 as a preview |
+| Hooks and the statusline (`/api/hook`, `/api/permission`, `/api/deploy/gate`) | Anyone who holds the hook token, which in practice means programs on this machine that can read its file | The hook token in `<data dir>/hook-token` (mode 0600). POST only; any other token or none is a 403 |
+| Scripts and the stdio MCP shim (`scripts/ccboard_mcp.py`) on this machine | Anyone who holds that same token | The same token, which opens the whole `/api` surface. The shim refuses any board address that is not loopback |
+| Remote MCP (`/mcp`) | Off by default. When on, the allowed logins | An allowed identity and a device token (stored as a digest, scoped, expiring, revocable, rate limited). A device token opens `/mcp` and nothing under `/api/`; the hook token opens nothing at `/mcp` |
+| Paired boards (the `/api/node/*` routes and the relay) | Boards you paired | A node token (`ccbnode_...`) limited to the scopes `read`, `tasks`, `sessions` and `permissions` you granted, plus the pair's Ed25519 signature on a keyed pair. A closed list of routes, in [Node scopes and routes](#node-scopes-and-routes). Optionally also the device it was paired from (`CCBOARD_NODE_AUTH`) |
+| Pairing (`POST /api/nodes/pair` and its confirm callback) | The tailnet, because a tagged board has no login | A one-time pairing code (50 bits, ten minutes by default, burned after five wrong tries, 20 tries a minute per source). Nothing happens before the code is right |
+| The fleet summary (`GET /api/node/summary`) | Another board that holds the legacy shared token, or a signed-in person | `CCBOARD_HUB_TOKEN` (legacy; counts, health and usage only) or an allowed login |
+| `GET /api/node/hello` and `GET /healthz` | Anyone who can connect | Nothing. `hello` answers three fixed keys (`app`, `api`, `node_id`), 30 a minute per source address; `healthz` answers the word `ok` |
+| The board's own loopback port (`127.0.0.1:8000`) | Only programs on this machine | A local process can connect directly and forge the identity header. On a single-user machine that process already is you; the optional device check does not defend against a hostile local user either |
+
+What this means in practice: keep your tailnet access rules tight, because three of the surfaces above (the terminal, code-server and ntfy) are protected by them alone. Never tag a device you browse from, because a tagged device carries no login. Keep `CCBOARD_ALLOWED_USERS` to people you would hand a shell to.
+
 ## Security model
 
 - **Optional local sign-in (issue #127).** `CCBOARD_LOCAL_SIGNIN=1` enables `bin/ccboard-open`; the default is `0`, also under systemd and docker. The command authenticates with the existing local hook-token file, creates a random link valid for 60 seconds, and opens `http://127.0.0.1:<port>/auth/local#<token>`. The fragment is removed before redemption and never sent in a URL query. The only token delivery is a no-store response header to the command; API bodies, session listings, audit rows and logs contain neither token nor cookie. Redemption signs in as the first non-empty login in `CCBOARD_ALLOWED_USERS`; an empty list refuses sign-in. The host-only cookie is HttpOnly, SameSite=Strict, Path=/, and lasts 12 hours (`CCBOARD_LOCAL_SIGNIN_HOURS`, 1–168). It uses HTTP on loopback, so it has no Secure flag. Only hashes are held in memory; restarting revokes everything. Run one board process, as shipped: sessions are not shared across workers. Settings > App lists created and last-seen times and lets a signed-in person sign out all local sessions and pending links.

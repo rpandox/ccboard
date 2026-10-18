@@ -130,8 +130,8 @@ Every page is listed in [docs/README.md](docs/README.md). The old README heading
 | [Tailscale](docs/install/tailscale.md) | Why the board needs it, the two admin-console switches and the command per system. |
 | [Configuration](docs/configuration.md) | Every setting, grouped, starting with the few most people set. |
 | [Upgrade](docs/upgrade.md), [Uninstall](docs/uninstall.md), [Backup and restore](docs/backup-and-restore.md) | Keeping an install current, removing it, and getting it back. |
-| [Security](docs/security.md) | What the board trusts and exposes, and the node scopes. |
-| [Troubleshooting and FAQ](docs/troubleshooting.md) | Known problems and what to do. |
+| [Security](docs/security.md) and [SECURITY.md](SECURITY.md) | Who can reach what, what the board trusts, the node scopes, and how to report a vulnerability. |
+| [Troubleshooting and FAQ](docs/troubleshooting.md) | A symptom, cause and fix table, and the questions people ask first. |
 | [Getting started](docs/guide/getting-started.md) | The tour of the board, with a page per feature under `docs/guide/`. |
 | [Several devices](docs/nodes/overview.md) | Nodes, pairing, the hub, epics and the device check. |
 | [Doctor](docs/reference/doctor.md) and [Hooks](docs/reference/hooks.md) | The self-check and the hook scripts. |
@@ -145,8 +145,8 @@ Every page is listed in [docs/README.md](docs/README.md). The old README heading
 - The terminal (`/tty`) and code-server do not check that list: any device your tailnet rules let reach those ports gets a shell as your user, so keep your tailnet access rules tight.
 - Everything runs as your own Unix user, with that user's files.
 
-More in [Security](docs/security.md).
+More in [Security](docs/security.md), which starts with a table of who can reach what. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Contributing, support and licence
 
-Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). For help or a bug report, open an issue at <https://github.com/rpandox/ccboard/issues>. ccboard is released under the MIT licence ([LICENSE](LICENSE)).
+Contributions are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) starts with a short path (fork, tests, a demo board, a pull request). For help or a bug report, open an issue at <https://github.com/rpandox/ccboard/issues>. ccboard is released under the MIT licence ([LICENSE](LICENSE)).

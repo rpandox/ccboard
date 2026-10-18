@@ -75,7 +75,7 @@ Open the printed Dashboard address from another device on your tailnet, then cli
 
 ### A rerun
 
-A rerun changes nothing it should not: a plist that renders the same is neither rewritten nor reloaded, the board restarts (`kickstart -k`) only when the checkout, the requirements or the settings file changed, a changed plist of the board, ttyd or an optional job is booted out and in again, and `dev.ccboard.tmux` is never booted out or kickstarted once it runs (a changed tmux plist only prints a warning, because reloading it would end every session). A job you switched off is booted out and its plist removed.
+Updating, and what a rerun does and does not restart, are on [Upgrade](../upgrade.md#updating-a-mac).
 
 ## What the installer changes
 
@@ -139,7 +139,7 @@ On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/
 | read a log | `tail -n 30 ~/Library/Logs/ccboard/board.log` (also `tmux.log`, `ttyd.log`) |
 | stop the board, keep the sessions | `launchctl bootout gui/$(id -u)/dev.ccboard.board` |
 | start it again | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.ccboard.board.plist` |
-| update | `git pull`, then rerun `./install.sh` |
+| update | see [Upgrade](../upgrade.md#updating-a-mac) |
 | uninstall | `scripts/uninstall-macos.sh` (asks first; `--yes` skips the question, `--keep-tmux` leaves the sessions running). It boots out and removes every `dev.ccboard.*` job, the tmux job last, and keeps the data folder, the settings file, the logs, the hook registrations and the `tailscale serve` mappings, saying how to remove each |
 
 Never restart or boot out `dev.ccboard.tmux` while sessions run: it is the tmux server that owns them, the same rule as `ccboard-tmux.service` on Linux. `bootout` of the tmux job kills the server and every session, and the socket file stays behind as a stale file. A socket file that exists therefore does not mean a server is alive: ask tmux (`tmux -L ccboard list-sessions`, which says "no server running on <path>"), never test for the file. tmux started under launchd with `-D` takes no command and stays in the foreground, which is how the job holds it.

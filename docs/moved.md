@@ -58,6 +58,7 @@ For anyone following an old link or an old name: the README used to be one file;
 | ### B. Shadow run (no sudo, nothing of the live board touched) | [install/docker.md](install/docker.md) | [#b-shadow-run-no-sudo-nothing-of-the-live-board-touched](install/docker.md#b-shadow-run-no-sudo-nothing-of-the-live-board-touched) |
 | ### C. Switch (you run it; it needs sudo) | [install/docker.md](install/docker.md) | [#c-switch-you-run-it-it-needs-sudo](install/docker.md#c-switch-you-run-it-it-needs-sudo) |
 | ### C. Switch (you run it; it needs sudo) (Updating and The outage per push paragraphs) | [maintainers/deploying.md](maintainers/deploying.md) | [#updating-and-the-outage-per-push](maintainers/deploying.md#updating-and-the-outage-per-push) |
+| ### C. Switch (the sentences about rerunning install.sh and recreating the container after an edit) | [upgrade.md](upgrade.md) | [#updating-the-container](upgrade.md#updating-the-container) |
 | ### When GitHub Actions is down | [maintainers/deploying.md](maintainers/deploying.md) | [#when-github-actions-is-down](maintainers/deploying.md#when-github-actions-is-down) |
 | ## Using it | [guide/getting-started.md](guide/getting-started.md) | [#using-it](guide/getting-started.md#using-it) |
 | ### Home and the inbox | [guide/home-and-projects.md](guide/home-and-projects.md) | [#home-and-the-inbox](guide/home-and-projects.md#home-and-the-inbox) |
