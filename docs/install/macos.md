@@ -10,7 +10,7 @@ The board runs natively on a Mac as per-user launchd jobs, for a person who is l
 
 - [ ] macOS 13 or newer.
 - [ ] [Homebrew](https://brew.sh). The tools come from Homebrew ([macOS tools](#macos-tools)).
-- [ ] Tailscale installed and signed in, with MagicDNS and HTTPS certificates enabled for your tailnet ([Tailscale](tailscale.md#tailscale-on-each-system-issue-126) covers the three variants: App Store, Standalone and open-source `tailscaled`).
+- [ ] Tailscale installed and signed in, with MagicDNS and HTTPS certificates enabled for your tailnet ([Tailscale](tailscale.md#tailscale-on-each-system) covers the three variants: App Store, Standalone and open-source `tailscaled`).
 - [ ] A second device on the same tailnet, such as your phone or laptop. You open the board from it. A request from the Mac to plain `http://localhost` carries no Tailscale identity and is rejected with a 403 (the optional local sign-in below is the exception).
 - [ ] A terminal, as yourself. The installer never uses `sudo` and refuses to run as root.
 - [ ] A Mac that stays logged in (a locked screen is fine). After a logout or a reboot nothing runs until you log in again, and the tmux sessions are gone.
@@ -117,7 +117,7 @@ On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/
 | GitHub CLI | `gh` | required | bottle (to verify) | bottle (to verify) | "gh is not installed", with the install command |
 | ttyd | `ttyd` | required | no bottle: a source build of many minutes that may upgrade other packages (measured 2026-10-10 on an Intel Mac, macOS 14, see "Evidence and open checks") | bottles on Sequoia and Tahoe, source on Sonoma | "ttyd is not installed and nothing listens on its port"; it also needs version 1.7.4 or newer with `-W`, `-O` and `-a` |
 | code-server | `code-server` | optional | bottle (to verify) | bottle (to verify) | "nothing listens on 127.0.0.1:<port>", with the restart command |
-| restic | `restic` | optional | bottle (to verify) | bottle (to verify) | the [Backup section](../backup-and-restore.md#backup-on-each-system-issue-129) reports it (wording to verify) |
+| restic | `restic` | optional | bottle (to verify) | bottle (to verify) | the [Backup section](../backup-and-restore.md#backup-on-each-system) reports it (wording to verify) |
 | bun | `oven-sh/bun/bun` (tap `oven-sh/bun`) | optional | to verify | to verify | "bun not found and no worker is running, so hooks cannot start one" (claude-mem) |
 | shellcheck | `shellcheck` | optional | bottle (to verify) | bottle (to verify) | not checked: only people who change the scripts need it |
 
@@ -178,5 +178,5 @@ Everything below comes from one run of the device check (issue #130) on an Intel
 - **Stopping the tmux job (measured 2026-10-10 on an Intel Mac, macOS 14, tmux 3.6b, M5 and M6).** `bootout` of the tmux job kills the server and every session, and the socket file stays behind as a stale file, as it did after most `tmux kill-server` runs.
 - **What survives what.** Measured: sessions survived `kickstart -k` and `bootout` of other jobs (M5), and an attribute-only Keychain lookup returned at once from a normal shell and from `gui/<uid>` and `user/<uid>` jobs (M17). Not run: lid closed on battery (M11), logout and reboot (M4). Everything marked "to verify" in the table is open.
 - **The claude-mem plugin.** Not yet run with a real `claude plugin install` on a Mac.
-- **Variants and architectures.** One run, on an Intel Mac with macOS 14 (2026-10-10); none on Apple silicon. The Standalone and Homebrew Tailscale variants were not installed on the measured Mac ([Tailscale](tailscale.md#tailscale-on-each-system-issue-126)).
+- **Variants and architectures.** One run, on an Intel Mac with macOS 14 (2026-10-10); none on Apple silicon. The Standalone and Homebrew Tailscale variants were not installed on the measured Mac ([Tailscale](tailscale.md#tailscale-on-each-system)).
 - **Background.** Issue #117 (the Mac port), #128 (the Homebrew tools), #122 (the claude-mem plugin step), #127 (local sign-in) and #130 (the device check).

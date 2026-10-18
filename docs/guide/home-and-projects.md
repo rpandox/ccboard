@@ -24,17 +24,10 @@ What the tree leaves out, and how to see it: names that start with a dot are hid
 
 The two read endpoints behind it sit behind the same identity check as the rest of the API: `GET /api/projects/<project>/repos/<repo>/tree?path=&hidden=0&ignored=0&repos=1&refresh=0` (the repo name `root` means the project folder; a weak `ETag`, and a matching `If-None-Match` gets a bare 304) and `GET /api/projects/<project>/repos/<repo>/file?path=&reveal=0` (400 for a bad path or a symlink, 403 for a secret-looking name without `reveal=1`, 404, 415 for a binary file). Demo mode (`?demo=1`) answers both from `app/static/demo/tree.json` and `file.json`, maps keyed `<repo>|<path>`.
 
-## What v0.1 does
+## Projects, repos, login and session state
 
 - **Projects and repos.** A project is a folder under `/srv/projects/<project>/`; each repo is a git repo in a subfolder (`/srv/projects/shop/api`, `/srv/projects/shop/web`). One-repo projects have one subfolder. Create a project, add repos (blank `git init` or clone from a URL), remove repos, delete projects (kills their sessions and removes the folder). Each repo shows branch and dirty state.
 - **Open in code-server**, per repo or per project (all repos in one explorer).
 - **Claude login from the board.** Click *Log in*: ccboard runs `claude auth login` in a tmux session, shows you the sign-in link, and you paste the code the browser gives you back into the board. Nothing is scraped from transcripts; the real CLI does the login.
+- **Transcript search.** The search field in the header searches your Claude and Codex transcripts (an FTS5 index, display only); a hit links to its session when the board knows it.
 - **Session state from Claude Code hooks.** `install.sh` registers async hooks and a statusLine command in `~/.claude/settings.json`; each session shows idle / working / needs you / done / error, the last prompt, the last line Claude printed, its model and context usage. Nothing reads transcripts.
-
-## What v0.2 adds: the attention layer
-
-- **Needs-attention inbox** at the top: sessions waiting for you, done, or errored, oldest first. `j`/`k` move, `Enter` attaches, `a` acks, `y`/`n` allow or deny a pending permission. The tab title shows the count.
-
-## What v0.3 adds: git & tasks
-
-- **Transcript search**: the header box searches an FTS5 index over `~/.claude/projects` transcripts (display only; hits link to the session when known).

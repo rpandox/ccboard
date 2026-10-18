@@ -4,6 +4,8 @@ For people who use Codex next to Claude.
 
 [Back to the documentation index](../README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 ## Codex
 
 ccboard starts, resumes and tracks Codex sessions next to Claude ones. Codex is a second agent, not a mode: the launcher takes `codex`, `codex-resume`, `codex-continue` and `codex-fork` (or `agent: "codex"` on the plain launchers, or the agent picker of the launcher sheet), a task takes `agent: "codex"`, and a Codex row carries the `◇` glyph. The adapter was written against codex-cli 0.145.0 (what the box runs) and uses a newer flag only when `codex --help` lists it. Below: how the board starts Codex, then the box setup (hooks, the one-time trust review, the MCP server). `./install.sh` does the box setup when `codex` is on the box, and in container mode `docker-entrypoint.sh` repeats it on every start (guarded by `command -v codex`; `CCBOARD_SHADOW=1` leaves Codex alone).
@@ -39,7 +41,7 @@ The advanced Sandbox and Approval options replace their half of the mode (`appro
 
 **Bypass rules.**
 
-- `bypassPermissions` and `bypass: true` skip every prompt and the sandbox. **Owner decision on #104 (v0.5.62): they are allowed only for an interactive Claude session inside the repo's devcontainer.** The launcher sheet offers them there, asks for the red acknowledgement once per repo and sends `bypass: true` with `mode: "bypass"` and `devcontainer: true` (see [The launcher](launcher.md#the-launcher-v0513)); everywhere else the board answers 400 with the owner's sentence.
+- `bypassPermissions` and `bypass: true` skip every prompt and the sandbox. **Owner decision on #104 (v0.5.62): they are allowed only for an interactive Claude session inside the repo's devcontainer.** The launcher sheet offers them there, asks for the red acknowledgement once per repo and sends `bypass: true` with `mode: "bypass"` and `devcontainer: true` (see [The launcher](launcher.md#the-launcher)); everywhere else the board answers 400 with the owner's sentence.
 - `sandbox: danger-full-access`, `bypass: true` and the Codex bypass flags are the same class, and Codex never runs in a devcontainer, so a Codex session has no bypass at all: they are refused with the same sentence, acknowledged or not. `approval: never` together with an explicit sandbox is your own call (Claude's `dontAsk`), not a bypass.
 - Tasks, backlog dispatch, scheduled and headless runs, resume and reboot recovery never carry one: they refuse `bypassPermissions`, `danger-full-access`, any `bypass`/`yolo`/`dangerous` option and any such spelling in extra arguments, and a stored option set never holds one, so a relaunch cannot inherit it.
 - Extra arguments cannot carry `-c`, `-p`, `-s`, `-a`, `-m`, `-C`, `--enable`, `--disable`, `--strict-config`, `--remote*`, `--search`, `--no-alt-screen`, `--sandbox`, `--ask-for-approval`, a bare `--`, or anything containing `dangerously`, `yolo` or `bypass`; use the launch controls instead.
@@ -59,7 +61,7 @@ A Codex started by a person in the same folder as a board row is not that row's 
 
 **Recovery limits.** Until the rollout Tailer of v0.5.12 binds conversation ids, a Codex session row has no id before you have trusted the hooks. After a reboot such a row comes back with `codex resume --last` only when it is the only open Codex row in its directory; with a second one (or a bound one) next to it, it starts a fresh `codex` instead (the earlier conversation is not resumed) and `last_recovery.notes` says so, and no `continue` is typed into it. Another program's Codex run in the same directory is invisible to the board, so even a lone row's `--last` is a best guess; trust the hooks once and the ids bind on the first event.
 
-### Headless Codex runs (schedules, batches, v0.5.16)
+### Headless Codex runs (schedules and batches)
 
 A schedule or a batch takes `agent: "claude" | "codex"` (`POST /api/projects/{p}/repos/{r}/jobs` and `POST /api/batch`; unset is Claude, so every old client works). A Codex job also takes `model` and `reasoning_effort` (or `opts: {model, reasoning_effort}`), stored in `jobs.opts` (an additive column). What a Codex run does:
 
@@ -97,3 +99,5 @@ Other tools' hooks in `hooks.json` are kept, and the installer is idempotent: it
 ### Updating Codex on the box
 
 Update with `npm install -g --prefix ~/.local @openai/codex@latest`, and never accept Codex's own update prompt. On 2026-10-04 that prompt ran `npm install -g` with the system prefix `/usr`, failed with a permission error on `/usr/bin/codex`, and left the user-local install without its native binary; the repair was the command above. The board's container uses the host's `~/.local/bin/codex`, so a broken install breaks every Codex session and the board's Codex features at once. Settings > Doctor's `codex-update-path` row says where Codex is installed (the real path of the binary, walked up to `<prefix>/lib/node_modules`), npm's global prefix (from `NPM_CONFIG_PREFIX`, the `prefix` line of `~/.npmrc` or of the npmrc beside node, else npm's default beside node; only that key is read) and whether both are writable by the user the board runs as (in container mode that should be the box user; if the board ran as root, `/usr` would read as writable and the warning could not fire, which is unverified on the box): it warns when Codex's own update would fail or would install a second copy elsewhere, and says "unknown" when npm's prefix cannot be learned offline. It never runs npm and makes no network call. After an update, re-check Settings > Doctor: the capability probe re-runs by itself when the binary changes.
+
+**Background.** Headless Codex runs: v0.5.16.

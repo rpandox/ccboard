@@ -1,4 +1,6 @@
-# Memory API (v0.5.20): the board's claude-mem proxy
+# Memory API: the board's claude-mem proxy
+
+In this page, "the box" means the machine that runs the board.
 
 Developer notes for the Memory page (#6), the project Memory tab and the gotchas strip (#7), the health tile (#8) and the write-back
 switch (#10). The backend is `app/memory_proxy.py` (routes in `app/main.py`, the low-level client in `app/memory.py`). The worker facts
@@ -373,7 +375,7 @@ route. `down` and `degraded` are thrown as 503 errors, the way `api()` throws th
 `app/static/demo/state.json` still has `memory: null`, so the project Memory tab stays hidden in demo. If you set it, use the fields
 of `memory_health.json`.
 
-## Pinned worker names (from the box check, #12)
+## Pinned worker names (from the box check)
 
 The board sends these names to the worker:
 
@@ -398,3 +400,5 @@ After a plugin update, run this on the box:
 ```
 CCBOARD_TEST_CLAUDE_MEM=1 .venv/bin/pytest -q tests/test_memory_contract.py -k live
 ```
+
+**Background.** Memory API: v0.5.20; Pinned worker names: issue #12.

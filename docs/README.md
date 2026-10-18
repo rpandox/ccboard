@@ -29,11 +29,11 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 
 | Page | What it covers |
 |---|---|
-| [Getting started with the board](guide/getting-started.md) | The overview of Using it, and the v0.5 feature list. |
+| [Getting started with the board](guide/getting-started.md) | New projects, sessions and tasks, the backlog, state badges and the phone. |
 | [Home and projects](guide/home-and-projects.md) | Home, the attention inbox, the project page, repos, code-server and transcript search. |
 | [The launcher](guide/launcher.md) | The one sheet that starts every kind of run. |
 | [Tasks, diffs and pull requests](guide/tasks-and-prs.md) | Tasks, the diff and PR modal, CI status, previews and work from GitHub issues. |
-| [Schedules, batches and auto-continue](guide/automation.md) | Schedules, batch prompts, auto-continue and reboot recovery. |
+| [Schedules, batches, auto-continue and reboot recovery](guide/automation.md) | Schedules, batch prompts, auto-continue, and how sessions come back after a restart. |
 | [Notifications](guide/notifications.md) | Push through ntfy and Web Push, remote approve, and notifications across nodes. |
 | [The terminal](guide/terminal.md) | Terminal commands, the terminal page, the terminal on a phone and the live grid. |
 | [Usage and cost](guide/usage-and-cost.md) | The usage strip and page, series, accounts usage and cost. |
@@ -82,3 +82,11 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | The short path for a person (fork, tests, demo board, pull request, changelog entry), then the maintainer's agent workflow. |
 | [moved.md](moved.md) | Where each old README heading went (temporary). |
 | [img/README.md](img/README.md) | The two README screenshots: what they show and how to retake them. |
+
+## Still to do by a person
+
+Some checks need a real, empty machine and a person who did not write these pages. They have not been done, and no page here says they were.
+
+- A fresh Linux install: on an Ubuntu 24.04 machine with no ccboard and a Tailscale login, follow only [README.md](../README.md) and the pages it links, from clone to a first Claude session opened on a phone or a second device. Write down the start and end time, every point where you stopped or guessed, and the fix.
+- A fresh Mac install: the same on a Mac that has no ccboard (Homebrew may be present). Say which Mac you used; Apple silicon is not available to the project today.
+- Open the rendered pages on GitHub once, including the longest page, and look at the two screenshots.

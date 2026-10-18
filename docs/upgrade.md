@@ -4,6 +4,8 @@ For people updating a running install and reading the CHANGELOG `Upgrade:` line.
 
 [Back to the documentation index](README.md)
 
+In this page, "the box" means the machine that runs the board.
+
 Every kind of install updates differently, and every release says in one line whether you have to do more than update. Find your install in the table, read the changelog first ([below](#changelog)), back up, then follow its section.
 
 | Your install | Update with | Section |
@@ -104,6 +106,6 @@ If the older version fails to start, restore the backup you made ([Restoring fro
 
 The board does not update Claude Code. `install.sh` installs it with the native installer (`curl -fsSL https://claude.ai/install.sh | bash`) only when it is missing, and does not update it afterwards. Update it on the box as the user who owns the sessions: run `claude update`, or update it the way you installed it. On a docker-mode box the container uses the host's `claude`, so update that one, on the host.
 
-Some board options need a newer Claude Code than the one installed (for example `auto` as the starting permission mode needs 2.1.283, `--permission-prompts none` needs 2.1.259). Until you update, the launcher hides or refuses those options with the reason, instead of sending a flag the CLI would reject. Settings > Doctor lists them in the `claude-features` row (a warning, with `claude update` as the fix) and makes no network call; the full table of versions is in [Doctor and agents reference](reference/doctor.md#backup-ci-and-version-checks-v0521). Press Re-check in the Doctor after updating.
+Some board options need a newer Claude Code than the one installed (for example `auto` as the starting permission mode needs 2.1.283, `--permission-prompts none` needs 2.1.259). Until you update, the launcher hides or refuses those options with the reason, instead of sending a flag the CLI would reject. Settings > Doctor lists them in the `claude-features` row (a warning, with `claude update` as the fix) and makes no network call; the full table of versions is in [Doctor and agents reference](reference/doctor.md#backup-ci-and-version-checks). Press Re-check in the Doctor after updating.
 
 Codex is updated by hand too, and never through its own update prompt: see [Updating Codex on the box](guide/codex.md#updating-codex-on-the-box).

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.97 - 2026-10-18
+
+### Changed
+- Docs: 58 headings in `docs/` lost their issue, phase and version labels (for example "(issue #134; phase P2)" and "(v0.5.13)"); the numbers moved to a "Background" line at the end of each page. `docs/moved.md` and every link and anchor follow.
+- Docs: the "What v0.x adds" blocks are gone as headings. The release-note bullets that repeated `CHANGELOG.md` and `ROADMAP.md` were removed (11 bullets and the v0.5 feature list), and the behaviour they described is kept as one sentence on its feature page (the PR and CI status, Fix CI and overlap warning, transcript search, batch prompt, reboot recovery, the live grid, Import from GitHub and the usage strip); the bullets that hold facts found nowhere else stayed under plain topical headings. `docs/moved.md` says which rows were dropped.
+- Docs: a page says "the box" only after it says what it means (the machine that runs the board). `docs/README.md` ends with "Still to do by a person": the fresh Linux and fresh Mac walkthroughs, which have not been done.
+- New tests (`tests/test_docs_guards.py`, two in `tests/test_env_keys.py`) keep labels out of headings, every Markdown file under 400 KB, a title on every page, the "the box" rule, every `docs/...md` path in the code real, and the Default cell of each setting equal to what `install.sh` binds. Two tests that pinned an old heading now pin the new one.
+
+Upgrade: nothing to do.
+
 ## v0.5.96 - 2026-10-18
 
 ### Added

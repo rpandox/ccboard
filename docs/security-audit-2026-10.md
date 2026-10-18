@@ -1,5 +1,7 @@
 # Security audit of the board's own surface (2026-10)
 
+In this page, "the box" means the machine that runs the board.
+
 Issue #44. Reviewed on 2026-10-08 in a worktree of `main` plus the uncommitted phase work beside it: the remote `/mcp` endpoint and
 device tokens (#13, #14), and the hash-pinned locks and SHA-pinned CI actions (#110). Everything was reproduced on a temp board,
 using the test client, temp data and projects dirs and a fake tmux. Nothing was run against a live box, the real home, or the real
@@ -21,7 +23,7 @@ Severity scale:
 - **Medium:** the board widens the owner's exposure beyond what the owner asked for.
 - **Low:** robustness or hygiene, with no new capability for an attacker.
 
-## Settings follow-up (v0.5.83)
+## Settings follow-up
 
 Settings writes now require a signed-in person, the CSRF header and a matching Origin when present. Hook, hub, node and MCP callers cannot use them. The file-only `CCBOARD_PAGE_WIDEN` switch gates confirmed changes; bypass and other access controls remain file/installer-only. See [Settings permission classes](security.md#settings-permission-classes) and `tests/test_settings_widen.py` for the threat boundary, legacy page migration and pinned keys. This supersedes the broad hook-token route statements below for Settings writes.
 
@@ -172,3 +174,5 @@ Nothing found is High.
 - F-A2 (accepted): a narrower token for the MCP shim.
 - Supply chain: digest-pin `ubuntu:24.04` and `nickfedor/watchtower:1`, check the apt key fingerprints, and sign the image.
 - F-10 is already tracked by the public repo hygiene issue.
+
+**Background.** Settings follow-up: v0.5.83.

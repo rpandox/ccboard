@@ -8,15 +8,15 @@ For people who run more than one board and want them to work together.
 
 A **node** is a board with its own sessions, tasks, agents and data. Any board becomes a **hub** for the nodes paired with it: it reads their trimmed state and relays the actions their scopes allow. Each keeps working when the hub is gone.
 
-Start in **Settings > Nodes**: Refresh finds candidates; create a code on the other board, choose its scopes, then **Add node** here. **Both ways** also lets the other board call this one with `read` and `tasks`. The panel holds discovery, incoming and outgoing pairs, token and signing-key rotation, Device check, Worker and Activity. Discovery grants no access. See [pairing](pairing.md#pairing-two-boards-issue-135-phase-p3) and the [scopes table](../security.md#node-scopes-and-routes).
+Start in **Settings > Nodes**: Refresh finds candidates; create a code on the other board, choose its scopes, then **Add node** here. **Both ways** also lets the other board call this one with `read` and `tasks`. The panel holds discovery, incoming and outgoing pairs, token and signing-key rotation, Device check, Worker and Activity. Discovery grants no access. See [pairing](pairing.md#pairing-two-boards) and the [scopes table](../security.md#node-scopes-and-routes).
 
-Pick a node in the launcher to [start work there](hub-and-relay.md#starting-work-on-another-node-issue-141-phase-p8). A remote session's peek has [Reply, keys and permission answers](hub-and-relay.md#steering-a-session-on-another-node-issue-142-phase-p9). **Open terminal** opens that node's own page; quad and dock tiles are [read-only tails with a separate prompt box](hub-and-relay.md#remote-terminals-and-tiles-issue-144-phase-p10). Devices without ccboard have a separate [SSH start, read and stop flow](device-check.md#devices-without-a-board).
+Pick a node in the launcher to [start work there](hub-and-relay.md#starting-work-on-another-node). A remote session's peek has [Reply, keys and permission answers](hub-and-relay.md#steering-a-session-on-another-node). **Open terminal** opens that node's own page; quad and dock tiles are [read-only tails with a separate prompt box](hub-and-relay.md#remote-terminals-and-tiles). Devices without ccboard have a separate [SSH start, read and stop flow](device-check.md#devices-without-a-board).
 
-**Tasks > Epics** has [labels and pins](epics.md#epics-issue-147-phase-p12), [Run and Pause](epics.md#routing-an-epic-to-a-node-issues-150-and-152-phase-p15), and [report, auto_pr and close settings](epics.md#working-an-epic-issue-issue-149-phase-p14). Read the [unattended worker warning](epics.md#the-epic-worker-issue-157-phase-p17) before enabling it. Each node [pushes its own notifications](../guide/notifications.md#notifications-across-nodes-issue-151); the hub merges the inbox, while the app badge counts only the board that last drew it. [MCP across nodes](agents-and-mcp.md#using-nodes-from-an-agent-issue-152-phase-p10) is off by default. Use the [platform table](platforms.md#several-devices-issue-154-phase-p6), [failure table](epics.md#when-something-goes-wrong-issue-153-phase-p16) and [settings table](../configuration.md#settings) for setup and fixes.
+**Tasks > Epics** has [labels and pins](epics.md#epics), [Run and Pause](epics.md#routing-an-epic-to-a-node), and [report, auto_pr and close settings](epics.md#working-an-epic-issue). Read the [unattended worker warning](epics.md#the-epic-worker) before enabling it. Each node [pushes its own notifications](../guide/notifications.md#notifications-across-nodes); the hub merges the inbox, while the app badge counts only the board that last drew it. [MCP across nodes](agents-and-mcp.md#using-nodes-from-an-agent) is off by default. Use the [platform table](platforms.md#several-devices), [failure table](epics.md#when-something-goes-wrong) and [settings table](../configuration.md#settings) for setup and fixes.
 
 Sources and limits: the [epic's evidence table](https://github.com/rpandox/ccboard/issues/131) records the design sources; the [two-node check](https://github.com/rpandox/ccboard/issues/155) records partial device results, including remote tasks, permission answers and a three-issue epic. Phone terminals, sleep and wake, notification delivery, idle cost and remote MCP remain **to verify** there. The details below describe shipped code, not a claim that every device check passed.
 
-### Nodes: identity, the node card and names (issues #131, #133, #137; phase P1)
+### Nodes: identity, the node card and names
 
 A board is one **node** on the tailnet. Its stable identity survives restarts. Pairing enables the hub poller; the separate epic worker can run without a hub when explicitly enabled.
 
@@ -31,7 +31,7 @@ A board is one **node** on the tailnet. Its stable identity survives restarts. P
 - **`tasks.origin`** (`TEXT`, null) is added by a forward-only migration: the board that asked for the task, as JSON `{node, user}`, null for work asked for here. It never holds a token or a prompt and is not part of `state.tasks`.
 - `?demo=1` reads `app/static/demo/node.json` for the card and `state.json` carries `node`.
 
-#### Finding other nodes (issue #134; phase P2)
+#### Finding other nodes
 
 `GET /api/nodes/discover` lists the devices on your tailnet that could be nodes and asks each one whether ccboard answers. It gives a device no access: pairing does. Nothing runs on a timer: no request leaves the board until a person opens the Nodes panel or presses Refresh, and a board with no Tailscale (or none that is signed in) answers `{"tailscale": {"ok": false, "reason": "…"}, "rows": []}` with status 200 and sends nothing.
 
@@ -42,3 +42,5 @@ A board is one **node** on the tailnet. Its stable identity survives restarts. P
 - **`?refresh=1`** is what sends the probes, so it needs the `X-CCBoard: 1` header like a change does; a plain read needs only the login and never sends one.
 - **Doctor rows (group Box, read only).** `tailscale-status` (signed in, a MagicDNS suffix, HTTPS certificates, and how many devices could be a node), `nodes-port` (this board is served on a port in `CCBOARD_NODE_PORTS`) and `nodes-tagged-self` ("this device is tagged: browsers on it carry no identity": fine for a server nobody browses from; also names a malformed `CCBOARD_NODE_TAGS`). Never tag a device you browse from.
 - `?demo=1` reads `app/static/demo/nodes-discover.json` (a found, a refusing, an offline and a no-ccboard device). To verify in the two-node check (#155): a real second board and a Mac with only the Tailscale app.
+
+**Background.** Nodes: identity, the node card and names: issues #131, #133 and #137 (phase P1); Finding other nodes: issue #134 (phase P2).

@@ -135,7 +135,7 @@ CCBOARD_TAILSCALE_PLACEMENT=host CCBOARD_ALLOWED_USERS=you@provider \
 
 **`host` widens who can sign in.** The board trusts the `Tailscale-User-Login` header on its loopback port. Inside the distro only the distro's own programs reach that port; with `host`, Windows forwards its localhost to the distro, so every program on the Windows PC, and every other Windows user signed in to it, can send that header and act as any allowed user. Use `host` only on a PC you alone use; the installer never picks it for you and the Doctor warns while it is set.
 
-`tailscale serve` only takes `http://127.0.0.1` proxies. That the Windows host reaches a port of the distro on its own `127.0.0.1` follows from the localhost forwarding rules but is not documented (UNVERIFIED until the device check). Previews open ports with the local `tailscale` command and cannot reach a Windows Tailscale from the distro (calling `tailscale.exe` through interop is the route described in [Tailscale on each system](tailscale.md#tailscale-on-each-system-issue-126), also UNVERIFIED), so with `host` the Doctor's `wsl-placement` row marks previews unavailable and says why. If you use port 443 for something else on Windows, choose `CCBOARD_HTTPS_PORT=8443`; the board never runs `tailscale serve reset`.
+`tailscale serve` only takes `http://127.0.0.1` proxies. That the Windows host reaches a port of the distro on its own `127.0.0.1` follows from the localhost forwarding rules but is not documented (UNVERIFIED until the device check). Previews open ports with the local `tailscale` command and cannot reach a Windows Tailscale from the distro (calling `tailscale.exe` through interop is the route described in [Tailscale on each system](tailscale.md#tailscale-on-each-system), also UNVERIFIED), so with `host` the Doctor's `wsl-placement` row marks previews unavailable and says why. If you use port 443 for something else on Windows, choose `CCBOARD_HTTPS_PORT=8443`; the board never runs `tailscale serve reset`.
 
 ### 8. The browser on Windows
 
@@ -145,7 +145,7 @@ A Windows browser at `http://localhost:<port>` gets a 403, because a request to 
 
 ### 9. Backups
 
-Besides the board's own backup ([Backup on each system](../backup-and-restore.md#backup-on-each-system-issue-129)), `wsl --export <distro> <file>.vhd --format vhd` in Windows PowerShell writes a copy of the whole distro.
+Besides the board's own backup ([Backup on each system](../backup-and-restore.md#backup-on-each-system)), `wsl --export <distro> <file>.vhd --format vhd` in Windows PowerShell writes a copy of the whole distro.
 
 ### 10. The Doctor on WSL
 

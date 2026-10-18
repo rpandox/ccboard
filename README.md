@@ -24,7 +24,7 @@ ccboard is a status-and-attention layer. It starts the real `claude` or `codex` 
 - **Projects and sessions.** Start, resume and watch Claude and Codex sessions per project from one sheet. See [Home and projects](docs/guide/home-and-projects.md) and [The launcher](docs/guide/launcher.md).
 - **An attention inbox and push.** Sessions that wait for you, hit a limit or finish rise to the top, and your phone is told. See [Notifications](docs/guide/notifications.md).
 - **Tasks in worktrees, with pull requests and CI.** One task, one branch, one worktree, with the diff, the PR and the CI result on the board. See [Tasks, diffs and pull requests](docs/guide/tasks-and-prs.md).
-- **Schedules.** Run a prompt on a timer, in a batch, or continue a session when its limit resets. See [Schedules, batches and auto-continue](docs/guide/automation.md).
+- **Schedules.** Run a prompt on a timer, in a batch, or continue a session when its limit resets. See [Schedules, batches, auto-continue and reboot recovery](docs/guide/automation.md).
 - **Codex next to Claude.** The same launcher, state and usage for both agents. See [Using Codex with the board](docs/guide/codex.md).
 - **Usage and accounts.** What each subscription has used, and several saved logins. See [Usage and cost](docs/guide/usage-and-cost.md) and [Accounts and login](docs/guide/accounts.md).
 
