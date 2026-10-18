@@ -1103,3 +1103,96 @@ def bare_runner(monkeypatch, projects_dir):
 
     monkeypatch.setattr(bare, "runner", run)
     return fake
+
+
+# ---- hermetic binaries (issue #291) -----------------------------------------------------------------------------------------------
+# The full doctor (GET /api/doctor, doctor.run()) asks about the machine's own tools, and several have absolute fallbacks
+# (/usr/local/bin/tailscale, /Applications/Tailscale.app, /usr/local/bin/ttyd, the Homebrew folders), so on a developer's Mac a test that
+# ran the full doctor ran the REAL tailscale, gh, ttyd ... and its answer depended on that machine's state. Rule for the suite: a program
+# in MACHINE_TOOLS is found only on a PATH directory under the temp dirs (a fake the test wrote), never anywhere else; asking for any
+# other copy reads as "not installed" (FileNotFoundError, what a missing program raises). tmux is guarded only while the doctor runs,
+# because tests marked needs_tmux start the real one on a private socket.
+MACHINE_TOOLS = frozenset({
+    "tailscale", "tailscaled", "ttyd", "claude", "codex", "gh", "restic", "docker", "systemctl", "launchctl", "bun", "code-server",
+    "ccusage", "security", "devcontainer", "pmset", "sudo",
+})
+DOCTOR_ONLY_TOOLS = frozenset({"tmux", "ps"})      # ps: the process list the tmux socket check reads
+SPAWNED: list[str] = []             # the executable of every process a test started (reset per test); tests/test_doctor_hermetic.py reads it
+_doctor_runs = 0
+_real_which = shutil.which
+
+
+def temp_roots() -> tuple[str, ...]:
+    import tempfile
+    return tuple(dict.fromkeys(os.path.realpath(p) for p in (tempfile.gettempdir(), "/tmp")))
+
+
+def under_temp(path) -> bool:
+    real = os.path.realpath(os.fspath(path))
+    return any(real == r or real.startswith(r + os.sep) for r in temp_roots())
+
+
+def _guarded(name: str) -> bool:
+    return name in MACHINE_TOOLS or (_doctor_runs > 0 and name in DOCTOR_ONLY_TOOLS)
+
+
+def _hermetic_which(cmd, mode=os.F_OK | os.X_OK, path=None):
+    name = os.fspath(cmd)
+    if not _guarded(os.path.basename(name)):
+        return _real_which(cmd, mode, path)
+    if os.sep in name:
+        return _real_which(cmd, mode, path) if under_temp(name) else None
+    kept = [d for d in (path if path is not None else os.environ.get("PATH", os.defpath)).split(os.pathsep) if d and under_temp(d)]
+    return _real_which(cmd, mode, os.pathsep.join(kept)) if kept else None
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_binaries(monkeypatch):
+    """See the block comment above: PATH lookups, the doctor's absolute fallbacks and every process start obey MACHINE_TOOLS. A test that
+    wants a program writes a fake into a temp dir and puts that on PATH (tests/test_tailscale.py's box fixture); a test-level monkeypatch
+    of any of these names runs after this one and wins. Yields SPAWNED."""
+    import subprocess
+    import tempfile
+    from app import doctor, platform as plat, tailscale as ts
+    nowhere = pathlib.Path(tempfile.gettempdir()) / "ccboard-test-no-such-install"
+    monkeypatch.setattr(shutil, "which", _hermetic_which)
+    monkeypatch.setattr(plat, "BREW_BIN_DIRS", ())
+    monkeypatch.setattr(ts, "MAC_CLI_CANDIDATES", (nowhere / "tailscale",))
+    monkeypatch.setattr(ts, "MAC_DAEMON_CANDIDATES", (nowhere / "tailscaled",))
+    for name in ("MAC_APP", "MAC_APP_CLI", "MAS_RECEIPT", "MAC_DAEMON_SOCKET"):
+        monkeypatch.setattr(ts, name, nowhere / name)
+    monkeypatch.setattr(doctor, "TTYD_BIN", str(nowhere / "ttyd"))
+    monkeypatch.setattr(doctor, "_login_path", lambda: "")              # a login shell would run the owner's profile
+    real_executable = doctor._executable
+    monkeypatch.setattr(doctor, "_executable", lambda p: bool(p) and under_temp(p) and real_executable(p))
+    SPAWNED.clear()
+    real_init = subprocess.Popen.__init__
+
+    def guarded_init(self, args, *a, **kw):
+        if not kw.get("shell"):
+            argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
+            exe = os.fsdecode(kw.get("executable") or (argv[0] if argv else ""))
+            env = kw.get("env")
+            if os.sep in exe:
+                found = exe if os.access(exe, os.X_OK) else None
+            else:
+                found = _real_which(exe, path=(env if env is not None else os.environ).get("PATH", os.defpath)) if exe else None
+            if exe and _guarded(os.path.basename(exe)) and not (found and under_temp(found)):
+                raise FileNotFoundError(2, "not installed (hermetic test run, issue #291)", exe)
+            if found:
+                SPAWNED.append(found)
+        real_init(self, args, *a, **kw)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
+    real_run = doctor.run
+
+    def counted_run(*a, **kw):
+        global _doctor_runs
+        _doctor_runs += 1
+        try:
+            return real_run(*a, **kw)
+        finally:
+            _doctor_runs -= 1
+
+    monkeypatch.setattr(doctor, "run", counted_run)
+    yield SPAWNED
