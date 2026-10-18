@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs_util import CONFIGURATION, ROOT, read_doc, settings_rows, settings_span
+from tests.docs_util import CONFIGURATION, ROOT, read_doc, section, settings_rows, settings_span
 
 INSTALL = ROOT / "install.sh"
 PREFIXES = ("CCBOARD_", "NTFY_", "CODE_", "CODEX_", "TTYD_", "PREVIEW_", "PROJECTS_")
@@ -114,6 +114,22 @@ def problems(keys, rows, reads, not_remembered=NOT_REMEMBERED, internal=INTERNAL
 
 def test_the_three_lists_agree():
     assert problems(env_keys(), readme_rows(), code_reads()) == []
+
+
+def test_the_settings_are_split_into_groups_and_no_key_has_two_rows():
+    """Slice 2 of #244: the settings are one short table most people read plus one table per group; every key is in exactly one of them."""
+    text = read_doc(CONFIGURATION)
+    names = re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", settings_span(text), re.M)
+    assert len(names) > 60 and len(names) == len(set(names)), "a key in two tables: " + ", ".join(sorted({n for n in names if names.count(n) > 1}))
+    short = re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", section(text, "#### Most people set at most these"), re.M)
+    assert 5 <= len(short) <= 8 and {"PROJECTS_DIR", "CCBOARD_HTTPS_PORT", "CCBOARD_ALLOWED_USERS", "CCBOARD_RUNTIME"} <= set(short)
+    for group in ("Ports and addresses", "Sign-in and access", "Notifications", "Backup", "Install and runtime", "Agents and claude-mem",
+                  "Nodes and epics", "Platform specific"):
+        assert re.search(r"^\| `[A-Z]", section(text, f"#### {group}"), re.M), f"the {group} table has rows"
+
+
+def test_the_readme_has_no_settings_table_so_the_reference_cannot_fork():
+    assert not re.search(r"^\| `[A-Z][A-Z0-9_]+` \|", read_doc("README.md"), re.M), "settings live in docs/configuration.md only"
 
 
 def test_the_parsers_see_something():

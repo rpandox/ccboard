@@ -821,7 +821,7 @@ def readme():
 
 def test_the_readme_section_states_the_support_and_the_recipe():
     t = readme()
-    sec = t[t.index("## Windows (WSL2) (issue #118)"):]
+    sec = t[t.index("## Before you start"):]
     for needle in ("Windows 11 22H2 or newer", "Windows 10 build 19041", "best effort", "NAT networking only", "UNVERIFIED",
                    "wsl --install -d Ubuntu", "wsl --update", "wsl -l -v", "systemd=true", "wsl --shutdown", "systemctl is-system-running",
                    "ccboard-wsl-keepalive.ps1", "-Remove", "-WriteWslConfig", "-Method dbus", "instanceIdleTimeout", "vmIdleTimeout",

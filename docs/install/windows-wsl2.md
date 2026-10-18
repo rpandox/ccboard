@@ -4,9 +4,18 @@ For people running ccboard on Windows 11 inside WSL2.
 
 [Back to the documentation index](../README.md)
 
-## Windows (WSL2) (issue #118)
+**This path has not yet been run on a real Windows machine (issue #130, W1 to W9): everything below is to verify.** Nothing here is worded as tested. The board's code does not change for WSL2: it rests on the Linux install, which is the reference platform, and the keep-alive script and the Doctor rows added for WSL2 have tests of their own. The open checks are listed at the end of this page under "Evidence and open checks". Other systems: [Linux](linux.md), [a Mac](macos.md). One line per system: [Supported systems](../../README.md#supported-systems).
 
-The board runs on Windows inside WSL2, as the unmodified Linux install inside an Ubuntu distro. The board's code does not change for it: WSL2 is Linux. What is added is a Windows-side keep-alive (without it WSL stops the machine and takes every tmux session with it), a stated networking mode, a stated place for Tailscale, the installer's WSL branch and a few Doctor checks.
+## Before you start
+
+The board runs on Windows inside WSL2, as the unmodified Linux install inside an Ubuntu distro. WSL2 is Linux. What is added is a Windows-side keep-alive (without it WSL stops the machine and takes every tmux session with it), a stated networking mode, a stated place for Tailscale, the installer's WSL branch and a few Doctor checks.
+
+- [ ] Windows 11 22H2 or newer, with WSL2 and an Ubuntu 22.04 or 24.04 distro that runs systemd (parts 1 and 2 below set that up).
+- [ ] Tailscale, signed in, on the Windows host or inside the distro (part 7 says which placement and why), with MagicDNS and HTTPS certificates enabled for your tailnet ([Tailscale](tailscale.md)).
+- [ ] A second device on the same tailnet, such as your phone. You open the board from it. A Windows browser at `http://localhost:<port>` is rejected with a 403 (part 8 has the optional local sign-in).
+- [ ] The checkout, the projects folder, the data folder, `~/.claude` and `~/.codex` on the distro's own disk, never under `/mnt/c`.
+- [ ] A Windows PowerShell window for the WSL commands and the keep-alive script, and a terminal inside the distro for `sudo`.
+- [ ] Claude Code and Codex installed inside the distro, not as Windows programs (part 4).
 
 | Setup | Status |
 |---|---|
@@ -16,6 +25,10 @@ The board runs on Windows inside WSL2, as the unmodified Linux install inside an
 | WSL1 | not supported (Claude Code has no WSL1 sandbox; Codex ended WSL1 support at 0.114) |
 | Docker Desktop's WSL backend | not supported; docker-ce installed inside the distro is fine (see [where the container runtime works](docker.md#where-the-container-runtime-works)) |
 | Projects, data folder, `~/.claude` or `~/.codex` on `/mnt/c` | not supported: the Doctor warns (see below) |
+
+## Install
+
+Do the parts in order: 1 and 2 prepare the distro, 3 and 4 install the board and the agents, 5 keeps the distro alive, 6 and 7 settle networking and where Tailscale runs, 8 opens the board in a Windows browser, 9 is a backup tip and 10 lists the Doctor rows to check.
 
 ### 1. WSL and the distro
 
@@ -43,12 +56,21 @@ Then, in Windows PowerShell, `wsl --shutdown` (it ends every running session, so
 
 ### 3. Install the board inside the distro, on the distro's own disk
 
-Use the normal Linux install ([Install](linux.md#install)) from a checkout under your Linux home, never under `/mnt/c`:
+Use the normal Linux install ([Install on Linux](linux.md#install)) from a checkout under your Linux home, never under `/mnt/c`:
 
 ```sh
 git clone https://github.com/rpandox/ccboard ~/ccboard && cd ~/ccboard
 ./install.sh
 ```
+
+**Decide where Tailscale runs before you start.** `./install.sh` as written needs a `tailscale` command inside the distro, and it stops with an error when there is none. If Tailscale runs only on Windows, you must run it with `CCBOARD_TAILSCALE_PLACEMENT=host` and name your tailnet login and the PC's address yourself, because the installer cannot read them from Windows:
+
+```sh
+CCBOARD_TAILSCALE_PLACEMENT=host CCBOARD_ALLOWED_USERS=you@provider \
+  CCBOARD_PUBLIC_URL=https://<this PC>.<your tailnet>.ts.net ./install.sh
+```
+
+`CCBOARD_ALLOWED_USERS` is the login you use on the tailnet and `CCBOARD_PUBLIC_URL` is the PC's name as `tailscale status` shows it on Windows; the installer stops when either is missing. `host` also widens who can sign in, and it prints the `tailscale serve` commands to run on Windows afterwards: read part 7 first.
 
 Keep the projects, the data folder, `~/.claude` and `~/.codex` on the distro's ext4 disk. On a Windows drive (`/mnt/c`, a drvfs or 9p mount) file owners look wrong (the projects folder must be owned by the board's user), modes 0600 and 0700 are ignored, change stamps are weak and everything is slow. The installer warns when `PROJECTS_DIR`, `CCBOARD_DATA_DIR` or the checkout is below `/mnt/`, and the Doctor's `wsl-files` check warns when any of the four folders is on a Windows drive.
 
@@ -104,7 +126,7 @@ The board's only identity is the `Tailscale-User-Login` header that `tailscale s
 | `wsl` | Tailscale inside the distro (against Tailscale's advice) | The unchanged Linux path: checks Tailscale, maps `/`, `/tty` and code-server with `tailscale serve`, previews work |
 | `host` | Tailscale on Windows | Skips the Tailscale checks and the `serve` mappings. You must give `CCBOARD_ALLOWED_USERS` and `CCBOARD_PUBLIC_URL`. It prints one PowerShell `tailscale serve` command per mapping (`/`, `/tty`, code-server, and ntfy when it is on) to run on Windows |
 
-Empty picks `wsl` when the distro has a `tailscale` command, else `host`; the default may change after the device check (issue #130). The choice is remembered in `/etc/ccboard/env` so the Doctor can read it.
+Left empty, the installer uses `wsl`, and it stops with an error when the distro has no `tailscale` command; it never falls back to `host` for you, so set `host` yourself when Tailscale runs only on Windows. The default may change after the device check (issue #130). The choice is remembered in `/etc/ccboard/env` so the Doctor can read it.
 
 ```sh
 CCBOARD_TAILSCALE_PLACEMENT=host CCBOARD_ALLOWED_USERS=you@provider \
@@ -140,3 +162,38 @@ These rows (group Box, ids start with `wsl-`) exist only when the board runs ins
 | `wsl-placement` | Tailscale is where `CCBOARD_TAILSCALE_PLACEMENT` says; `host` is a warning (every Windows program can reach the board and claim a login; previews unavailable) |
 
 A Doctor inside the distro cannot say that the distro is stopped, because the board stops with it: `wsl-restarts` reports the stop afterwards. Settings, Box host says the CPU, memory and disk numbers describe the Linux machine, not Windows.
+
+## What you should see
+
+- Part 1: `wsl -l -v` lists the distro with VERSION 2. Part 2: `systemctl is-system-running` prints `running`.
+- Part 3: the installer ends with the same summary as on Linux ([Install on Linux](linux.md#what-you-should-see)): "ccboard is installed." and the Dashboard address. With `host` it also prints one PowerShell `tailscale serve` command per mapping, to run on Windows before the addresses answer.
+- Part 5: `Get-ScheduledTask -TaskName ccboard-wsl-keepalive` shows State `Running`.
+- Open the Dashboard address from another tailnet device and click *Log in*.
+
+## Verify
+
+- Settings > Doctor lists the seven `wsl-` rows of part 10. A row that is not passing says why and what to do.
+- Close every terminal, wait a few minutes, and check that `tmux -L ccboard list-sessions` inside the distro still answers: that is the keep-alive working.
+- `systemctl status ccboard ccboard-tmux ccboard-ttyd` inside the distro shows three running services.
+
+## What the installer changes
+
+Inside the distro it is the Linux install ([What the installer changes](linux.md#what-the-installer-changes)). The WSL branch adds: an early stop when systemd is not running, warnings when `PROJECTS_DIR`, `CCBOARD_DATA_DIR`, the checkout, `claude` or `codex` are on a Windows drive, and, with `CCBOARD_TAILSCALE_PLACEMENT=host`, no Tailscale checks and no `serve` mappings. On the Windows side, only the keep-alive script changes anything: it registers the `ccboard-wsl-keepalive` Scheduled Task, and with `-WriteWslConfig` edits `%UserProfile%\.wslconfig` after a backup copy. `-Remove` undoes the task.
+
+## Next steps
+
+- [Your first ten minutes](../../README.md#your-first-ten-minutes) on the board.
+- [Configuration](../configuration.md), [Upgrade](../upgrade.md), [Backup and restore](../backup-and-restore.md), [Security](../security.md) and [Troubleshooting](../troubleshooting.md).
+
+## Evidence and open checks
+
+Not run on a real Windows machine (issue #130, W1 to W9). Open:
+
+- Whether `[boot] systemd` works on Windows 10 is UNVERIFIED.
+- That `-Method sleep` holds the distro on every WSL version is to verify. Field reports say `instanceIdleTimeout=-1` and `vmIdleTimeout=-1` alone do not stop the distro after the last terminal closes (WSL discussion 9245), and that WSL 2.6.1.0 stops an instance 15 to 20 seconds after the last terminal closes even with an active unit (WSL issue 13416); the task is what holds the distro. Behaviour on WSL 3.x is UNVERIFIED.
+- Whether WSL can start before logon to Windows is UNVERIFIED.
+- That the Windows host reaches a port of the distro on its own `127.0.0.1` is UNVERIFIED until the device check.
+- Calling `tailscale.exe` through Windows interop from the distro is UNVERIFIED.
+- The default value of `CCBOARD_TAILSCALE_PLACEMENT` may change after the device check.
+- Microsoft's documented idle timeouts (15000 ms and 60000 ms) and its statement that systemd services do not keep an instance alive are from its documentation, not from a run here.
+- **Background.** Issue #118 (WSL2 support), #124 (native Windows is not supported), #127 (local sign-in) and #130 (the device check, W1 to W9).

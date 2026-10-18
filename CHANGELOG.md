@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.95 - 2026-10-18
+
+### Changed
+- Docs: `README.md` is now a short front page (143 lines, 11.7 KB; the limit is 200 lines and 25 KB): what it does, what it is not, the supported systems with a "Tested on" column, what you need, a quick start for Ubuntu, macOS, Windows with WSL2 and Docker, the first ten minutes, the docs index and the licence. It says early that the board is opened from another device on the tailnet, not from `localhost` on the machine that runs it (a 403), and names the optional local sign-in. It shows two screenshots (`docs/img/home-1280.png`, `docs/img/terminal-390.png`, taken in demo mode) and `tests/test_docs.py` checks that both files exist.
+- `docs/install/linux.md`, `macos.md`, `windows-wsl2.md`, `docker.md` and `tailscale.md` are rewritten as procedures: a prerequisites checklist, the commands, what you should see, how to verify, what the installer changes, next steps. Every "measured on ... on 2026-10-10", "to verify" and "UNVERIFIED" line is kept and gathered under "Evidence and open checks" at the end of each page. The maintainer's deploy loop stays in `docs/maintainers/deploying.md`.
+- `docs/configuration.md` splits the settings table into "Most people set at most these" (seven rows) and one table per group (ports, sign-in, notifications, backup, install, agents and claude-mem, nodes and epics, platform), then the advanced and test-only table. Every key is in exactly one table; no cell was reworded.
+- A few headings were renamed with the pages (`## Where ccboard runs` is now `## Supported systems`; the macOS and WSL2 pages have new section names), `docs/moved.md` and every link follow, and the tests that read those pages now read the new names. New tests pin the README size, its outline, the settings split and the two screenshots.
+
+Upgrade: nothing to do.
+
 ## v0.5.94 - 2026-10-18
 
 ### Changed

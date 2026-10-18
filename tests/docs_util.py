@@ -75,10 +75,12 @@ def nodes_text():
 
 
 def settings_span(text):
-    """The settings section as written today: `### Settings` (with its page-options subsection) and `### Advanced and testing variables`."""
+    """Every settings table of docs/configuration.md: `### Settings` (its page-options subsection and one `####` table per group, from
+    "Most people set at most these" to "Platform specific") and `### Advanced and testing variables`. `section` stops at the next heading
+    of the same or a higher level, so a new `####` group table is read without a change here; a new `###` heading is not."""
     return section(text, "### Settings") + section(text, "### Advanced and testing variables")
 
 
 def settings_rows(text):
-    """Names that open a row of the settings tables: a line that starts with a back-ticked NAME in the first cell."""
+    """Names that open a row of any settings table (all the groups and the advanced table): a line that starts with a back-ticked NAME in the first cell."""
     return set(re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", settings_span(text), re.M))
