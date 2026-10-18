@@ -32,14 +32,12 @@ async function peekSend(input) {
   const tmux = sessionPeek.tmux;
   if (!text.trim() || !tmux) return;
   if (sessionPeek.node) { pageToast('This session is on another node: sending to it arrives with the relay.', 'warn'); return; }      // the keys route below is this board's
-  /* #311: the box empties at once and a "sending…" note stands in for the text; the answer only confirms. A refusal puts the text back (unless something new was typed meanwhile)
-     and says why in the board's words. */
-  const typed = String(input.value || '');
-  const clear = () => { if (typeof rowCleared === 'function') rowCleared(input); else if (typeof composerGrow === 'function') composerGrow(input); };
+  const typed = input.value;                                        // #311: empty at once; a refusal puts the text back
+  const clear = () => rowCleared(input);
   input.value = '';
   clear();
-  const note = typeof toast === 'function' ? toast('sending…', { kind: 'info', ttl: 0 }) : null;
-  const drop = () => { if (note && typeof note.remove === 'function') note.remove(); };
+  const note = toast('sending…', { kind: 'info', ttl: 0 });
+  const drop = () => { if (note) note.remove(); };
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { text, enter: true });
     drop();
@@ -47,7 +45,7 @@ async function peekSend(input) {
   } catch (e) {
     drop();
     if (!input.value) { input.value = typed; clear(); }
-    pageToast(typeof errorText === 'function' ? errorText(e) : e.message, 'bad');
+    pageToast(errorText(e), 'bad');
   }
 }
 

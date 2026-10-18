@@ -580,15 +580,13 @@ function sessionPerm(tmux) {
   return null;
 }
 
-/* 10x pass: the row echoes a sent text at once ('› continue'); the next poll's last_prompt is the same text. `from` is any node inside the row.
-   Returns a function that puts the line back as it was (a refused send, #311). */
+/* 10x pass: the row echoes a sent text at once ('› continue'); the next poll's last_prompt is the same text. `from` is any node inside the row. Returns the undo (#311). */
 function sessionEcho(from, text) {
   const row = from && typeof from.closest === 'function' ? from.closest('.rrow, .peek, .inbox-card') : null;
   const line = row && row.querySelector('.rr-last .dim, .peek-block .dim');
-  if (!line) return () => {};
-  const before = line.textContent;
-  setTextIfChanged(line, '› ' + String(text).split('\n')[0].slice(0, 160));
-  return () => setTextIfChanged(line, before);
+  const before = line && line.textContent;
+  if (line) setTextIfChanged(line, '› ' + String(text).split('\n')[0].slice(0, 160));
+  return () => { if (line) setTextIfChanged(line, before); };
 }
 
 async function sessionNudge(s, text, btn) {
@@ -607,8 +605,8 @@ async function sessionNudge(s, text, btn) {
 async function sessionSend(s, ta) {
   const text = String(ta.value || '').replace(/\r\n?/g, '\n');
   if (!s || !text.trim()) return;
-  const typed = String(ta.value || '');
-  ta.value = '';                                               // #311: the box empties at once and the echo line shows the text as sent; a refusal puts both back
+  const typed = ta.value;
+  ta.value = '';                                               // #311: empty at once; a refusal puts text and echo back
   rowCleared(ta);
   const undo = sessionEcho(ta, text);
   try {
@@ -617,7 +615,7 @@ async function sessionSend(s, ta) {
   } catch (e) {
     if (!ta.value) { ta.value = typed; rowCleared(ta); }
     undo();
-    pageToast(typeof errorText === 'function' ? errorText(e) : e.message, 'bad');
+    pageToast(errorText(e), 'bad');
   }
 }
 
@@ -944,7 +942,7 @@ function sessionCard(s, opts) {
     Nodes.mark(where, s2);                                     // the node chip (dim for this board) once nodes are paired (nodes.js)
     if (o.showProject && s2.project) chipHueSet(where, chipHue('project', s2.project));
     agentsAgeNode(age, sessionActivity(s2));
-    const closing = sessionClosing.has(tmux);                  // #311: the Kill was confirmed and the board has not answered yet: the row is a dimmed ghost until it does
+    const closing = sessionClosing.has(tmux);                  // #311
     node.classList.toggle('closing', closing);
     if (moreBtn) moreBtn.disabled = closing;
     setTextIfChanged(meta, closing ? 'closing…' : rich ? limitParkedText(s2) || GLYPH_LABEL[sk] : sessionMetaText(s2, sk));       // #71: a parked session says the limit, not 'error'
@@ -987,7 +985,7 @@ function sessionCard(s, opts) {
     if (cur.kill !== killState) {
       cur.kill = killState;
       killSlot.textContent = '';
-      if (closing) killSlot.append(el('button', { class: 'danger small minimal', type: 'button', disabled: true, text: 'Closing…' }));
+      if (closing) killSlot.append(el('button', { class: 'danger small minimal', disabled: true, text: 'Closing…' }));
       else if (confirming || o.peek) killSlot.append(confirmButton(killKey, 'Kill', () => sessionKill(cur.s.tmux), true));
     }
     const nudge = sessionNudgeable(s2);

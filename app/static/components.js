@@ -44,49 +44,36 @@ function confirmButton(key, label, action, quiet, onChange) {
   return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => { if (onChange) { ui.confirm = key; repaint(); } else confirmArm(key); }, text: label });
 }
 
-/* #311: Kill paints at once. The tmux names that are closing -> 0 while the DELETE is in flight, then the time the name stops counting. A session row (agents.js sessionCard) dims and says
-   "closing…" for as long as its name is here, and a poll that still lists the session does not bring it back. A refusal puts the row back at once and says why in the board's words.
-   A success keeps the name until a poll no longer lists the session (sessionClosingPrune, called by every poll), or SESSION_CLOSING_TTL later if the session survived the kill. */
+/* #311: sessions being closed -> 0 while the DELETE is out, then when to stop counting; their rows (agents.js) dim and say "closing…". */
 const sessionClosing = new Map();
-const SESSION_CLOSING_TTL = 15000;
 
-function sessionClosingRepaint() { if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); }
-
-/* Drop the settled names the state no longer lists, and the ones past their time. True when a name was dropped by time (the caller repaints: the survivor comes back). */
+/* Run by every poll: drop a settled name once the state lacks it; true when one outlived its 15 s (the caller repaints). */
 function sessionClosingPrune(st) {
+  if (!sessionClosing.size) return false;
   let expired = false;
-  if (!sessionClosing.size) return expired;
-  const live = new Set();
-  for (const p of ((st && st.projects) || [])) {
-    for (const r of [p.root, ...(p.repos || [])]) for (const x of ((r && r.sessions) || [])) live.add(x.tmux);
-    for (const x of (p.orphan_sessions || [])) live.add(x.tmux);
-  }
-  const now = Date.now();
+  const live = new Set(rosterSessions(st).map((x) => x.tmux));            // pages/agents.js
   for (const [tmux, until] of Array.from(sessionClosing)) {
-    if (!until) continue;                                                        // the DELETE is still out
+    if (!until) continue;
     if (!live.has(tmux)) sessionClosing.delete(tmux);
-    else if (now > until) { sessionClosing.delete(tmux); expired = true; }
+    else if (Date.now() > until) { sessionClosing.delete(tmux); expired = true; }
   }
   return expired;
 }
 
 async function sessionKill(tmux) {
   sessionClosing.set(tmux, 0);
-  sessionClosingRepaint();
+  repaintPage();
   try {
     await api('DELETE', `/api/sessions/${encodeURIComponent(tmux)}`);
-    sessionClosing.set(tmux, Date.now() + SESSION_CLOSING_TTL);
-    return true;
+    sessionClosing.set(tmux, Date.now() + 15000);
   } catch (e) {
     sessionClosing.delete(tmux);
-    sessionClosingRepaint();
-    const why = typeof errorText === 'function' ? errorText(e) : e.message;
-    if (typeof toast === 'function') toast(`${tmux} was not closed: ${why}`, { kind: 'bad' }); else setError(why);
-    return false;
+    repaintPage();
+    toast(`${tmux} was not closed: ${errorText(e)}`, { kind: 'bad' });
   }
 }
 
-/* A small "Copy" button for a command or a link (v0.5.19,the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
+/* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
    reads "Copied" for a moment. Without a clipboard (an insecure origin) it says to select the text instead. `what` names the thing for the screen reader and the toast. */
 function copyButton(text, what) {
   const name = what ? String(what) : 'text';
@@ -394,16 +381,6 @@ function taskOverrideSet(row, keys, extra) {
 
 function taskOverrideDrop(id) { delete store.tasksOverride[id]; }
 
-/* #311: Add to backlog paints at once. The card the person just added stands in the Backlog (dimmed, "adding…", no actions) under a client-side id until the board answers: the
-   caller drops it (taskOverrideDrop(id)) and lays the real card over, or drops it alone when the board refused. boardTasks hides it when a poll already lists a card of the same
-   title in the same place that was not there when it was added. */
-let taskPendingSeq = 0;
-function taskPendingAdd(row) {
-  const id = -(Date.now() * 100 + (taskPendingSeq++ % 100));
-  const seen = boardTasks(typeof state !== 'undefined' ? state : null).filter((t) => t.project === row.project && t.repo === row.repo && t.title === row.title).map((t) => t.id);
-  taskOverrideSet({ ...row, id, pending: true }, null, { _new: true, _seen: seen });
-  return id;
-}
 function taskRepaint() { if (typeof repaintPage === 'function') repaintPage(); }
 function taskStartingSession() { return { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' }; }
 
@@ -442,7 +419,7 @@ function boardTasks(st) {
     const o = ov[id];
     if (used.has(id)) continue;
     if (o._gone || (!keep && now - o._at > TASK_OVERRIDE_TTL)) { if (!keep) delete ov[id]; continue; }    // a delete the poll has caught up with
-    if (o.pending && base.some((t) => t.project === o.project && t.repo === o.repo && t.title === o.title && !(o._seen || []).includes(t.id))) continue;      // the poll already has the real card
+    if (o.pending && base.some((t) => t.project === o.project && t.repo === o.repo && t.title === o.title && !o._seen.includes(t.id))) continue;
     if (o._new) fresh.push(taskApply(null, o));
   }
   return fresh.concat(out);
@@ -1084,13 +1061,12 @@ function backlogCard(t, ctx) {
       { id: 'edit', label: 'Edit', onClick: () => taskEditSheet(t) }],
     danger: { key: 'tdel:' + t.id, label: 'Delete', run: () => taskDelete(t) },
   });
-  const pending = !!t.pending;                                                           // #311: just added, the board has not answered: no actions until it has
-  return taskCardShell(t, ' backlog' + (queued ? ' queued' : '') + (pending ? ' pending' : ''), !queued && !pending,
+  return taskCardShell(t, ' backlog' + (queued ? ' queued' : '') + (t.pending ? ' pending' : ''), !queued && !t.pending,       // #311
     el('div', { class: 'row tk-title-row' }, el('span', { class: 'title', text: t.title }), queued ? el('span', { class: 'state ended', text: 'waiting for a step' }) : null),
     more ? el('div', { class: 'tk-prompt', text: more }) : null,
-    el('div', { class: 'meta' }, taskWhere(t), pending ? ' · adding…' : (added ? ` · ${added}` : '')),
+    el('div', { class: 'meta' }, taskWhere(t), t.pending ? ' · adding…' : (added ? ` · ${added}` : '')),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
-    pending ? null : acts);
+    t.pending ? null : acts);
 }
 
 /* Preview: expose the task's dev server on its own tailnet HTTPS port. When the server cannot find the listening port on its own it asks, in a small

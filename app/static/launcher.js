@@ -1504,6 +1504,16 @@ const LX_CX_DEFAULT = 'auto';
 /* Can this box's Claude start in auto? app/agents/claude.py FEATURE_GATES auto_start_mode: 2.1.283. The schema the board answered (GET /api/agents) has auto left out below it; until that answer is in,
    the version in state.agents.claude says the same, so a sheet never opens on auto for a Claude that refuses it (#311). A version nobody can read is a yes. */
 const LX_AUTO_MIN = [2, 1, 283];
+/* #311: the card just added stands in the Backlog under a client id (dimmed, "adding…") until the board answers; the caller drops it and lays the real card over, or drops it alone on a refusal.
+   boardTasks (components.js) hides it once a poll lists a same-title card that was not there when it was added. */
+let taskPendingSeq = 0;
+function taskPendingAdd(row) {
+  const id = -(Date.now() * 100 + (taskPendingSeq++ % 100));
+  const seen = boardTasks(typeof state !== 'undefined' ? state : null).filter((t) => t.project === row.project && t.repo === row.repo && t.title === row.title).map((t) => t.id);
+  taskOverrideSet({ ...row, id, pending: true }, null, { _new: true, _seen: seen });
+  return id;
+}
+
 function lxClaudeAuto() {
   if (!launcherSchema('claude').permission_modes.includes('auto')) return false;
   if (LX_LOAD.agents && LX_LOAD.agents.claude) return true;
