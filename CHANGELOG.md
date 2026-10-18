@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.91 - 2026-10-17
+
+### Changed
+- README: a new section, Several devices (nodes), linked from the top and from the Fleet paragraph, points to each part of the nodes feature; the repeated tables moved into one place.
+- README Security model: the old fleet paragraph is replaced. It now has one table of every node route and its scope, and the hub token is marked legacy.
+- README text now matches the shipped code: epic settings, the Run button, and the failure table gains the discovery words and the signature refusals.
+- ROADMAP: the nodes line lists the version each sub-issue shipped in, and the do-not-build list gains seven items with their evidence.
+- Claims about Tailscale or GitHub carry a source link or the words "to verify".
+
+Upgrade: nothing to do.
+
 ## v0.5.90 - 2026-10-17
 
 ### Added
