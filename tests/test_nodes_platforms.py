@@ -471,18 +471,24 @@ def test_the_readme_names_the_mac_browser_limit_and_the_decision_without_a_bypas
     assert "CCBOARD_DEV_BYPASS_USER" not in sec
 
 
-def test_where_ccboard_runs_has_one_line_per_platform_of_the_support_table():
-    """Issue #115: the short support section and the node platform table share the platform list, so they cannot disagree."""
+def test_supported_systems_has_one_line_per_platform_of_the_support_table():
+    """Issue #115 (renamed in #244 slice 2): the short support section of README.md and the node platform table share the platform list, so they
+    cannot disagree. The README table has a fourth column, the install page, and a "Tested on" column in plain words."""
     text = read_doc("README.md")
-    sec = text[text.index("## Where ccboard runs"):]
+    sec = text[text.index("## Supported systems"):]
     sec = sec[3:sec.index("\n## ", 3)]
-    rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in sec.splitlines() if ln.startswith("|")][2:]
+    table = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in sec.splitlines() if ln.startswith("|")]
+    assert table[0] == ["System", "Support", "Tested on", "Install page"]
+    rows = table[2:]
     assert [r[0] for r in rows] == list(nodes.SUPPORT_PLATFORMS)
+    assert all(len(r) == 4 and all(r) for r in rows)
     by = {r[0]: r[1] for r in rows}
     assert by["Native Windows"].startswith("Not supported")
     assert "arm64 image is not Docker Desktop support" in by["Linux container"]
     assert "another device" in by["Mac"] and "to verify" in by["Mac"] and "to verify" in by["WSL2"]
+    tested = {r[0]: r[2] for r in rows}
+    assert "Apple silicon" in tested["Mac"] and "Not run on a real Windows machine" in tested["WSL2"]
     top = text[:text.index("## What it is not")]
-    assert "(#where-ccboard-runs-issue-115)" in top, "linked from the top of the README"
+    assert "(#supported-systems)" in top, "linked from the top of the README"
     install = read_doc(INSTALL_LINUX)
-    assert "(../../README.md#where-ccboard-runs-issue-115)" in install[install.index("## Install"):install.index("### What install.sh sets up")], "and from Install"
+    assert "(../../README.md#supported-systems)" in install[install.index("# Install on Linux"):install.index("## What the installer changes")], "and from the Linux install page"

@@ -10,7 +10,7 @@ For anyone following an old link or an old name: the README used to be one file;
 | ## Restart board | [configuration.md](configuration.md) | [#restart-board](configuration.md#restart-board) |
 | ## What v0.1 does (the bullets that belong here) | [guide/home-and-projects.md](guide/home-and-projects.md) | [#what-v01-does](guide/home-and-projects.md#what-v01-does) |
 | ## What v0.1 does (the bullets that belong here) | [guide/launcher.md](guide/launcher.md) | [#what-v01-does](guide/launcher.md#what-v01-does) |
-| ## What v0.1 does (the bullets that belong here) | [install/linux.md](install/linux.md) | [#what-v01-does](install/linux.md#what-v01-does) |
+| ## What v0.1 does (the bullets that belong here) | [install/linux.md](install/linux.md) | [#run-it-again](install/linux.md#run-it-again) |
 | ## What v0.2 adds: the attention layer (the bullets that belong here) | [guide/home-and-projects.md](guide/home-and-projects.md) | [#what-v02-adds-the-attention-layer](guide/home-and-projects.md#what-v02-adds-the-attention-layer) |
 | ## What v0.2 adds: the attention layer (the bullets that belong here) | [guide/usage-and-cost.md](guide/usage-and-cost.md) | [#what-v02-adds-the-attention-layer](guide/usage-and-cost.md#what-v02-adds-the-attention-layer) |
 | ## What v0.2 adds: the attention layer (the bullets that belong here) | [guide/notifications.md](guide/notifications.md) | [#what-v02-adds-the-attention-layer](guide/notifications.md#what-v02-adds-the-attention-layer) |
@@ -29,19 +29,19 @@ For anyone following an old link or an old name: the README used to be one file;
 | ## What v0.4 adds: autonomy & fleet (the bullets that belong here) | [nodes/pairing.md](nodes/pairing.md) | [#what-v04-adds-autonomy--fleet](nodes/pairing.md#what-v04-adds-autonomy--fleet) |
 | ## What v0.5 adds: the dashboard redesign | [guide/getting-started.md](guide/getting-started.md) | [#what-v05-adds-the-dashboard-redesign](guide/getting-started.md#what-v05-adds-the-dashboard-redesign) |
 | ## What it is not | [README.md](../README.md) | [#what-it-is-not](../README.md#what-it-is-not) |
-| ## Where ccboard runs (issue #115) | [README.md](../README.md) | [#where-ccboard-runs-issue-115](../README.md#where-ccboard-runs-issue-115) |
+| ## Where ccboard runs (issue #115) | [README.md](../README.md) | [#supported-systems](../README.md#supported-systems) |
 | ## Install | [install/linux.md](install/linux.md) | [#install](install/linux.md#install) |
 | ### Settings | [configuration.md](configuration.md) | [#settings](configuration.md#settings) |
 | #### Changing options from the page | [configuration.md](configuration.md) | [#changing-options-from-the-page](configuration.md#changing-options-from-the-page) |
 | ### Advanced and testing variables | [configuration.md](configuration.md) | [#advanced-and-testing-variables](configuration.md#advanced-and-testing-variables) |
-| ### What install.sh sets up | [install/linux.md](install/linux.md) | [#what-installsh-sets-up](install/linux.md#what-installsh-sets-up) |
+| ### What install.sh sets up | [install/linux.md](install/linux.md) | [#what-the-installer-changes](install/linux.md#what-the-installer-changes) |
 | ### What install.sh sets up (Update paragraph) | [upgrade.md](upgrade.md) | [#updating-a-linux-install](upgrade.md#updating-a-linux-install) |
-| ### macOS tools (issue #128) | [install/macos.md](install/macos.md) | [#macos-tools-issue-128](install/macos.md#macos-tools-issue-128) |
+| ### macOS tools (issue #128) | [install/macos.md](install/macos.md) | [#macos-tools](install/macos.md#macos-tools) |
 | ### Tailscale on each system (issue #126) | [install/tailscale.md](install/tailscale.md) | [#tailscale-on-each-system-issue-126](install/tailscale.md#tailscale-on-each-system-issue-126) |
-| ## macOS (issue #117) | [install/macos.md](install/macos.md) | [#macos-issue-117](install/macos.md#macos-issue-117) |
+| ## macOS (issue #117) | [install/macos.md](install/macos.md) | [#install](install/macos.md#install) |
 | ### Backup on each system (issue #129) | [backup-and-restore.md](backup-and-restore.md) | [#backup-on-each-system-issue-129](backup-and-restore.md#backup-on-each-system-issue-129) |
 | ### Restoring from a backup | [backup-and-restore.md](backup-and-restore.md) | [#restoring-from-a-backup](backup-and-restore.md#restoring-from-a-backup) |
-| ## Windows (WSL2) (issue #118) | [install/windows-wsl2.md](install/windows-wsl2.md) | [#windows-wsl2-issue-118](install/windows-wsl2.md#windows-wsl2-issue-118) |
+| ## Windows (WSL2) (issue #118) | [install/windows-wsl2.md](install/windows-wsl2.md) | [#install](install/windows-wsl2.md#install) |
 | ### 1. WSL and the distro | [install/windows-wsl2.md](install/windows-wsl2.md) | [#1-wsl-and-the-distro](install/windows-wsl2.md#1-wsl-and-the-distro) |
 | ### 2. systemd | [install/windows-wsl2.md](install/windows-wsl2.md) | [#2-systemd](install/windows-wsl2.md#2-systemd) |
 | ### 3. Install the board inside the distro, on the distro's own disk | [install/windows-wsl2.md](install/windows-wsl2.md) | [#3-install-the-board-inside-the-distro-on-the-distros-own-disk](install/windows-wsl2.md#3-install-the-board-inside-the-distro-on-the-distros-own-disk) |
@@ -54,7 +54,7 @@ For anyone following an old link or an old name: the README used to be one file;
 | ### 10. The Doctor on WSL | [install/windows-wsl2.md](install/windows-wsl2.md) | [#10-the-doctor-on-wsl](install/windows-wsl2.md#10-the-doctor-on-wsl) |
 | ## Run the board as a container (optional) | [install/docker.md](install/docker.md) | [#run-the-board-as-a-container-optional](install/docker.md#run-the-board-as-a-container-optional) |
 | ### Where the container runtime works | [install/docker.md](install/docker.md) | [#where-the-container-runtime-works](install/docker.md#where-the-container-runtime-works) |
-| ### A. Build in GitHub (nothing on the box changes) | [install/docker.md](install/docker.md) | [#a-build-in-github-nothing-on-the-box-changes](install/docker.md#a-build-in-github-nothing-on-the-box-changes) |
+| ### A. Build in GitHub (nothing on the box changes) | [install/docker.md](install/docker.md) | [#a-get-the-image-nothing-on-this-machine-changes](install/docker.md#a-get-the-image-nothing-on-this-machine-changes) |
 | ### B. Shadow run (no sudo, nothing of the live board touched) | [install/docker.md](install/docker.md) | [#b-shadow-run-no-sudo-nothing-of-the-live-board-touched](install/docker.md#b-shadow-run-no-sudo-nothing-of-the-live-board-touched) |
 | ### C. Switch (you run it; it needs sudo) | [install/docker.md](install/docker.md) | [#c-switch-you-run-it-it-needs-sudo](install/docker.md#c-switch-you-run-it-it-needs-sudo) |
 | ### C. Switch (you run it; it needs sudo) (Updating and The outage per push paragraphs) | [maintainers/deploying.md](maintainers/deploying.md) | [#updating-and-the-outage-per-push](maintainers/deploying.md#updating-and-the-outage-per-push) |
@@ -133,4 +133,4 @@ For anyone following an old link or an old name: the README used to be one file;
 | ## Development | [development.md](development.md) | [#development](development.md#development) |
 | ### Changelog | [upgrade.md](upgrade.md) | [#changelog](upgrade.md#changelog) |
 | ### Demo mode | [development.md](development.md) | [#demo-mode](development.md#demo-mode) |
-| ## License | [README.md](../README.md) | [#license](../README.md#license) |
+| ## License | [README.md](../README.md) | [#contributing-support-and-licence](../README.md#contributing-support-and-licence) |

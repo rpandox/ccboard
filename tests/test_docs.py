@@ -3,6 +3,7 @@ ROADMAP.md, CHANGELOG.md, SECURITY.md, deploy/README.md and docs/**/*.md, those 
 GitHub's slug rules, every relative link points at a file in the repository, and every image link points at an image that exists.
 Text checks only; no network."""
 import re
+from pathlib import Path
 
 import pytest
 
@@ -92,6 +93,36 @@ def test_image_links_point_at_files_that_exist(doc):
             if not file_part or not (path.parent / file_part).is_file():
                 bad.append(target)
     assert not bad, f"{doc}: image links to missing files: {bad}"
+
+
+def test_the_two_screenshots_the_readme_shows_exist():
+    """The README shows two screenshots with real alt text, both files exist in docs/img/ and docs/img/README.md describes them."""
+    readme = read_doc("README.md")
+    shown = {target: alt for alt, target in re.findall(r"!\[([^\]]*)\]\(([^)\s]+)\)", readme)}
+    assert set(shown) == {"docs/img/home-1280.png", "docs/img/terminal-390.png"}, "README.md shows exactly the two screenshots"
+    assert all((ROOT / name).is_file() for name in shown), "both screenshot files exist"
+    assert all(len(alt.split()) >= 6 for alt in shown.values()), "each screenshot has real alt text"
+    listing = read_doc("docs/img/README.md")
+    assert all(Path(name).name in listing for name in shown)
+
+
+def test_readme_is_short_and_has_the_outline_of_the_issue():
+    """Slice 2 of #244: at most 200 lines and 25 KB, no heading with an issue, phase or version label, no settings table, and the
+    localhost 403 said before the first quick start."""
+    raw = (ROOT / "README.md").read_bytes()
+    text = raw.decode("utf-8")
+    assert len(text.splitlines()) <= 200 and len(raw) <= 25 * 1024, (len(text.splitlines()), len(raw))
+    headings = [ln for ln in text.splitlines() if ln.startswith("#")]
+    assert not [h for h in headings if re.search(r"issue #\d|phase P\d|Team P\d|\(v\d+\.\d+", h)], headings
+    for needed in ("## What it does", "## What it is not", "## Supported systems", "## What you need", "## Quick start", "### Ubuntu 22.04 or 24.04",
+                   "### macOS 13 or newer", "### Windows 11 with WSL2", "### Docker on a Linux host", "## Your first ten minutes", "## Documentation"):
+        assert needed in headings, needed
+    assert not re.search(r"^\| `[A-Z][A-Z0-9_]+` \|", text, re.M), "settings rows live in docs/configuration.md only"
+    assert "—" not in text, "plain words, no em dashes"
+    assert "the box" not in text.lower()
+    first_quick_start = text.index("## Quick start")
+    assert "plain `http://localhost`" in text[:first_quick_start] and "403" in text[:first_quick_start]
+    assert "another device" in text[:first_quick_start]
 
 
 def test_the_docs_list_covers_the_files_that_exist():
