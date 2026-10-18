@@ -187,6 +187,12 @@ test('the list refreshes every 30 s while the page is open and stops at unmount;
   assert.equal(timers.filter((x) => x && x.ms === 30000).length, 0, 'the timer is cleared with the page');
 });
 
+test('#309: a 503 with no sentence from the board is worded, not shown as "503 Service Unavailable"', async () => {
+  const { w } = world({ answer: () => { throw Object.assign(new Error('503 Service Unavailable'), { status: 503 }); } });
+  await mount(w);
+  assert.match(text(sec(w).querySelector('[role=alert]')), /^Could not read the outside threads: the board answered with an error \(HTTP 503\)$/);
+});
+
 test('a failed read with no rows says so; with rows on screen the last list stays and nothing is announced', async () => {
   const { w } = world({ answer: () => { throw new Error('the board did not answer'); } });
   await mount(w);

@@ -931,6 +931,8 @@ def build_state(user: str) -> dict:
     from .options import pending_state
     st = _scan_entry()
     st["boot"] = BOOT
+    if st.get("tmux_down"):
+        st["tmux_fix"] = plat.hint("start", "ccboard-tmux")      # #309: the banner names this platform's start command, the one Doctor's tmux check shows; absent while tmux is up, and not in the scan cache, so GET /api/node/state is untouched
     st["restart"] = restart.info()
     st["settings_pending"] = {**pending_state(settings), "restart_hint": st["restart"]["hint"]}
     st["user"] = user

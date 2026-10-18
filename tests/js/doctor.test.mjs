@@ -197,6 +197,18 @@ test('opening the tab asks GET /api/doctor once (quietly, from the cache); Re-ch
   assert.ok(btn(panel(w), 'Re-check'));
 });
 
+test('#309: a failed ask with no sentence from the board says what happened, not the transport text', async () => {
+  const w = await mount(docWorld());
+  w.ctx.__doctor = () => { throw Object.assign(new Error('503 Service Unavailable'), { status: 503 }); };
+  btn(panel(w), 'Re-check').click();
+  await tick(); await tick();
+  assert.match(text(panel(w).querySelector('.set-err')), /Could not run the checks: the board answered with an error \(HTTP 503\)/);
+  w.ctx.__doctor = () => { throw new TypeError('Failed to fetch'); };
+  btn(panel(w), 'Re-check').click();
+  await tick(); await tick();
+  assert.match(text(panel(w).querySelector('.set-err')), /Could not run the checks: the board did not answer/);
+});
+
 test('a failed ask keeps the last good answer on screen and says so; an empty checklist says "Press Re-check"; an answer that is not a checklist is called that', async () => {
   const w = await mount(docWorld());
   w.ctx.__doctor = () => { throw new Error('the board is busy'); };

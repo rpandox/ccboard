@@ -118,7 +118,7 @@ async function doctorRun(c, action) {
       if (r && r.ok) pageToast('Test sent to ntfy. If the phone stays silent, check the ntfy app and the Tailscale VPN.', 'ok'); else pageToast('ntfy did not take the test (is it running?)', 'warn');
     }
   } catch (e) {
-    pageToast(`Could not send the test: ${(e && e.message) || 'the board did not answer'}`, 'bad');
+    pageToast(`Could not send the test: ${errorText(e)}`, 'bad');
   }
   doctorStore.acting = null;
   doctorPaint();
@@ -135,7 +135,7 @@ async function doctorLoad(refresh) {
   try { d = await api('GET', '/api/doctor' + (refresh ? '?refresh=1' : '')); } catch (e) {
     if (mine !== doctorStore.seq) return false;
     doctorStore.busy = false;
-    doctorStore.err = (e && e.message) || 'the board did not answer';
+    doctorStore.err = errorText(e);
     doctorPaint();
     return false;
   }

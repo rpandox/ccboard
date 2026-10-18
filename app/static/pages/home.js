@@ -69,7 +69,9 @@ function renderBanner() {
     own(el('span', { text: `Rate limited: ${rl.message || ''}${rl.session ? ' (' + rl.session + ')' : ''}` }),
       el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (state && state.tmux_down) {
-    own(el('span', { text: 'The ccboard tmux server is not running. On the box: sudo systemctl start ccboard-tmux' }));
+    const fix = typeof state.tmux_fix === 'string' ? state.tmux_fix : '';       // this platform's start command (#309); an older board sends none
+    own(el('span', null, 'The ccboard tmux server is not running.', fix ? [' Start it on the box: ', el('code', { text: fix })] : false),
+      el('button', { class: 'primary small', type: 'button', onclick: () => { const h = '#/settings?sec=doctor'; if (typeof navigate === 'function') navigate(h); else location.hash = h; }, text: 'Open Doctor' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
     b.classList.add('warn');
     own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary small', type: 'button', onclick: () => accountLogin(), text: 'Log in' }));

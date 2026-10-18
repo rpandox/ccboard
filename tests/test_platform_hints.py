@@ -236,3 +236,35 @@ def test_macos_main_messages(mac, monkeypatch):
     resp = asyncio.run(main._down(None, tmux.TmuxDown("x")))
     body = json.loads(resp.body)["error"]
     assert "systemctl" not in body and "launchctl kickstart" in body
+
+
+# ---------------------------------------------------------------- #309: the state poll carries this platform's tmux start command
+
+H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+
+
+def _tmux_state(lite_client, monkeypatch, *, down):
+    def lister():
+        if down:
+            raise tmux.TmuxDown("no server running")
+        return {}
+    monkeypatch.setattr(tmux, "list_sessions", lister)
+    main._invalidate_scan()
+    return lite_client.get("/api/state", headers=H).json()
+
+
+@pytest.mark.parametrize("system, want", [("linux", "sudo systemctl start ccboard-tmux"),
+                                           ("macos", "launchctl kickstart gui/$(id -u)/dev.ccboard.tmux")])
+def test_state_names_the_tmux_start_command_only_while_tmux_is_down(lite_client, monkeypatch, system, want):
+    _system(monkeypatch, system)
+    st = _tmux_state(lite_client, monkeypatch, down=True)
+    assert st["tmux_down"] is True and st["tmux_fix"] == want == plat.hint("start", "ccboard-tmux")
+    st = _tmux_state(lite_client, monkeypatch, down=False)
+    assert st["tmux_down"] is False and "tmux_fix" not in st
+
+
+def test_node_state_body_does_not_carry_the_tmux_fix(lite_client, monkeypatch):
+    _system(monkeypatch, "linux")
+    _tmux_state(lite_client, monkeypatch, down=True)
+    body = lite_client.get("/api/node/state", headers=H).json()
+    assert "tmux_fix" not in body
