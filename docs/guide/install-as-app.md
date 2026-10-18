@@ -1,0 +1,26 @@
+# Installing the board as an app
+
+For people who want the board in its own window or on a Home Screen.
+
+[Back to the documentation index](../README.md)
+
+### Install as an app
+
+The board is a PWA, so it can live in its own window on a laptop and on the Home Screen of an iPad or phone (open it from a tailnet device over the HTTPS URL `install.sh` printed; installation needs HTTPS). **Settings › App** shows whether this window is installed, has the Install button where the browser offers one, lists these steps, shows the build id and has a *Reload app* button (an installed app has no browser reload).
+
+- **Chrome or Edge (Windows, Linux, macOS)**: the install icon at the right of the address bar, or menu › *Install ccboard* (Edge: … › Apps › *Install this site as an app*). The installed window uses the title-bar overlay: the board's topbar is the title bar, its empty part drags the window, and the window buttons sit over its right edge (macOS: the traffic lights over its left edge). A shortcut or a notification tap refocuses the window that is already open instead of starting a second one.
+- **Safari on a Mac (Sonoma or later)**: File › *Add to Dock*. The board then opens in its own window.
+- **Safari on iPadOS or iPhone**: Share › *Add to Home Screen*. This is the only way to get Web Push on iOS and iPadOS (16.4 or later). In Split View the board follows the window width (a narrow split gets the phone layout, a wider one the rail layout), and it works with a hardware keyboard and a trackpad.
+- **Chrome on Android**: menu › *Install app*.
+
+What the installed app adds:
+
+- **Keyboard shortcuts** (⌘ on a Mac and iPad, Ctrl elsewhere; `?` lists them in the app): ⌘/Ctrl+K opens the command palette (sessions by name, routes, the nudges *continue / merge / push / pr / add commit push / do it*, `/compact`, `/context`, `/cost`, `/usage`, `/status` for the selected session, the *ultracode* and *plan* modes, up to three *Move: <backlog card>* rows that open the card's Move sheet, and, for a Claude session, the box's skills; see *Skills in the palette* below), ⌘/Ctrl+1…9 jumps to the nth session of the Agents roster, ⌘/Ctrl+\ toggles the sidebar, ⌘/Ctrl+J the terminal dock (once the dock exists), `/` focuses the search, `g` then `h i a t q u m s` goes to Home, Needs you, Agents, Tasks, Quad, Usage, Memory, Settings, `c` then `s t p r` opens the new session, task, project and import sheets, and in the Needs you and Agents lists `j`/`k` move, Enter opens the peek, `o` the terminal, `a` acks, `y` allows, `d` denies and `r` focuses the reply box. Shortcuts do nothing while you type in a field, while a dialog is open or while the terminal has the focus (the terminal keeps every key).
+- **Resizable sidebar**: drag the strip at the sidebar's right edge (200 to 400 px; arrow keys work when it is focused, double-click resets). The width is remembered per device.
+- **Skills in the palette (issue #102).** For a Claude session the palette has a *Skills* group under the nudges and controls: the skills installed on the box, most used first, five rows and *All skills…* to open the rest (type to filter). A row shows the name, one line of its description and *Insert*; Enter puts `/<name> ` into the composer you came from (or the peek's send box) and never sends. `GET /api/skills` lists the user's `<Claude config>/skills/*/SKILL.md` and the installed plugins' (`installed_plugins.json` decides which version; a plugin skill is `/<plugin>:<skill>`), reading only the front matter (8 KB at most per file), names matching `^[a-z0-9][a-z0-9:_-]{0,63}$`, at most 300, cached for 60 s, no symlink followed out of the skills folder. The *seen N×* count is what this board saw typed (a `UserPromptSubmit` that starts with `/<skill>` of a known skill, kept in `kv skill_uses`), not lifetime use; a skill never seen has no count. The group is hidden for Codex and shell sessions (no Codex list is verified), and a scan that fails or finds nothing leaves it out without a toast. Not verified: that Claude hands a typed skill command to the hook as the typed text (the count depends on it), and the layout of the `skills/synced/` folders some boxes have (they are not scanned).
+- **Share target** (Chrome and Edge, desktop and Android): once installed, *ccboard* appears in the system share sheet; sharing a page or a text snippet opens the board with the palette's *send to session* list and the shared text prefilled, so it can go to a session as a prompt. Safari does not support share targets: on iPadOS copy the text and paste it into a session's send box instead.
+- **Fast and never stale**: the app shell is cached by a service worker whose cache name changes with every deploy, vendored fonts and Blueprint are served `immutable`, and an open window reloads itself when the box is updated.
+
+## What v0.2 adds: the attention layer
+
+- **PWA**: installable (Add to Home Screen), works offline showing the last known state.

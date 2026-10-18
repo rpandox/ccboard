@@ -11,6 +11,7 @@ import pytest
 from app import agents
 from app.agents import codex
 from app.agents.base import Check
+from tests.docs_util import ROOT, doc_paths
 
 
 def npm_install(prefix: Path) -> Path:
@@ -139,9 +140,10 @@ def test_the_doctor_group_carries_the_row_and_no_remedy_says_codex_update(tmp_pa
 
 
 def test_no_unprefixed_global_install_is_suggested_anywhere():
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     hits = []
-    for p in [*(root / "app").rglob("*.py"), *(root / "app" / "static").rglob("*.js"), root / "README.md"]:
+    docs = [root / rel for rel in doc_paths()]
+    for p in [*(root / "app").rglob("*.py"), *(root / "app" / "static").rglob("*.js"), *docs]:
         if "vendor" in p.parts:
             continue
         for i, line in enumerate(p.read_text(errors="replace").splitlines(), 1):

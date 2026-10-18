@@ -103,7 +103,7 @@ LABEL_MAX = 60
 TS_TIMEOUT = 3.0                                              # seconds a request waits for `tailscale status --json`
 TS_TTL = 120.0                                                # a reading is reused this long (a failed one for TS_TTL_FAIL)
 TS_TTL_FAIL = 60.0
-SUPPORT_PLATFORMS = ("Linux box", "Linux container", "Mac", "WSL2", "Native Windows")   # the rows of the README table "Several devices" (issue #154); tests/test_nodes_platforms.py keeps the two equal
+SUPPORT_PLATFORMS = ("Linux box", "Linux container", "Mac", "WSL2", "Native Windows")   # the rows of the platform table in docs/nodes/platforms.md (issue #154); tests/test_nodes_platforms.py keeps the two equal
 WINDOWS_SIDE = "Tailscale runs on the Windows side: type the other node's address in Pair a node"   # the reason discovery gives on WSL2 with no Tailscale client it may use
 
 

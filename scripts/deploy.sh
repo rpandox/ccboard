@@ -8,7 +8,7 @@
 #  - docker + --local-build (GitHub Actions is down): still push main, but build the image on the box from the pulled
 #    checkout (ccboard-local:<sha>) and run it through a compose override that turns Watchtower off for the container.
 #    The open-terminal deploy gate is asked first (exit 75 = hold; --force goes on anyway). Running this script again
-#    WITHOUT the flag removes the override and returns to the registry image (README, "When GitHub Actions is down").
+#    WITHOUT the flag removes the override and returns to the registry image (docs/maintainers/deploying.md).
 # Usage: scripts/deploy.sh [--local-build] [--force] <ssh-host> [remote-dir]     e.g. scripts/deploy.sh my-box
 set -euo pipefail
 localbuild=0; force=0; pos=()

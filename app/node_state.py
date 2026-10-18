@@ -13,7 +13,7 @@ scan row, so a field a later change gives a session cannot leak by itself):
   needs_you{permissions, input, errors}, usage{claude, codex}, lanes{cap, running, free}, login_problems[agent], truncated
 
 No prompt, reply, result, transcript, account label, e-mail address or path (project and repo names only). Task titles and session names are shown to
-every paired node; the README says so. Strings are cut to 200 characters, control characters dropped; at most 200 sessions and 200 tasks (newest and
+every paired node; docs/nodes/hub-and-relay.md says so. Strings are cut to 200 characters, control characters dropped; at most 200 sessions and 200 tasks (newest and
 not-finished first); the encoded body is at most 100 KB: if it is larger, finished tasks older than 24 hours go first, then ended sessions, then the
 tail of the lists; `truncated` is true whenever any row was left out for any of these reasons.
 

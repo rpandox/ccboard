@@ -123,7 +123,7 @@ def _c_survival(db):
     if auto == "set" and fv != "on" and domain == "gui":
         return d._pass(f"{detail}: they start after a reboot, and they stop when that user logs out")
     return d._warn(f"{detail}: {SURVIVAL_SENTENCE}",
-                   d.fix("Keep this Mac logged in (a locked screen is fine). Automatic login is available only with FileVault off. The README's macOS section "
+                   d.fix("Keep this Mac logged in (a locked screen is fine). Automatic login is available only with FileVault off. docs/install/macos.md "
                          "has the table of what a logout, a sleep and a reboot do"))
 
 

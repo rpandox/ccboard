@@ -43,7 +43,7 @@ PRICES: dict[str, dict[str, float | None]] = {
     "haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": None},
     "haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": None},      # the `haiku` alias since 2026-10; NOT the 4.5 row (a tenth of it)
 }
-# Where a row came from when it is not the pricing page read on PRICE_DATE (the README sentence and a test pin it).
+# Where a row came from when it is not the pricing page read on PRICE_DATE (the sentence in docs/guide/usage-and-cost.md and a test pin it).
 ROW_SOURCES = {"haiku-5-5": "box check 2026-10-09: the statusline and ccusage 20.0.26 both charged 0.10 / 0.50 per million, cache read 0.01"}
 
 _DATE_SUFFIX = re.compile(r"-(?:20\d{6}|latest)$")

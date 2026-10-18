@@ -360,7 +360,8 @@ def test_no_personal_path_or_array_in_the_scripts():
 
 # sha256 of the first 30 lines of install.sh as committed before the dispatch line was added (the dispatch line sits further down), without the
 # ENV_KEYS line: that line is the one place every new remembered setting is added to (issue #118 added CCBOARD_TAILSCALE_PLACEMENT), the rest is pinned
-INSTALL_HEAD_SHA = "42bbfaf04a00c4b6642ca16ab155cd006d63352487e3d3a57f5c47dcaab8b967"
+# Slice 1 of #244 changed one word of line 7, a comment that said "see the README", to the path docs/install/docker.md: the only edit, so the pin moved.
+INSTALL_HEAD_SHA = "2a478e88b75497d907e8f1d72609ffc516b8b67d20f99a966695236f3fb96e33"
 
 
 def test_install_sh_has_exactly_one_dispatch_line_before_the_first_guard():

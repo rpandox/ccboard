@@ -4,7 +4,7 @@
 #   scripts/qa-ui.sh [BASE_URL] [OUT_DIR]
 #
 #   BASE_URL  the board to test, default http://127.0.0.1:8777 (a local app started with CCBOARD_DEV_BYPASS_USER, see
-#             README "Development"); every URL gets ?demo=1 so the pages read app/static/demo/*.json and need no tmux.
+#             docs/development.md); every URL gets ?demo=1 so the pages read app/static/demo/*.json and need no tmux.
 #   OUT_DIR   screenshots land here as <route>-<width>.png (<route>-pwa-<width>.png for the installed-desktop pass,
 #             <route>-ipad-<width>x<height>.png for the iPad passes), default ${TMPDIR:-/tmp}/ccboard-qa-ui
 #             (keep it under /tmp, $TMPDIR or the repo: the gstack browse CLI refuses to write anywhere else)
@@ -76,16 +76,16 @@ CURL_H=()
 code="$(curl -s -o /dev/null -w '%{http_code}' ${CURL_H[@]+"${CURL_H[@]}"} "$BASE/" 2>/dev/null || true)"
 case "$code" in
   200) ;;
-  000|"") echo "qa-ui: $BASE is not reachable (start the board, see README Development)" >&2; exit 2 ;;
+  000|"") echo "qa-ui: $BASE is not reachable (start the board, see docs/development.md)" >&2; exit 2 ;;
   403) echo "qa-ui: $BASE answered 403: start the board with CCBOARD_DEV_BYPASS_USER=<user> or pass QA_HEADER" >&2; exit 2 ;;
   *) echo "qa-ui: warning: GET $BASE/ answered $code" >&2 ;;
 esac
 # issue #100: a board that could reach the real home is not a QA target. /api/state carries dev.sandboxed under the dev bypass only;
 # false or absent (a production board, an old build, an unreachable API) is refused. Start it with the four directories on temp paths and
-# scripts/dev/fake_agents first on PATH (README, Development).
+# scripts/dev/fake_agents first on PATH (docs/development.md).
 sandboxed="$(curl -s ${CURL_H[@]+"${CURL_H[@]}"} "$BASE/api/state" 2>/dev/null | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("dev",{}).get("sandboxed") is True else "no")' 2>/dev/null || true)"
 if [ "$sandboxed" != yes ]; then
-  echo "qa-ui: $BASE does not report dev.sandboxed=true in /api/state: refusing to run against it. Start the dev board with PROJECTS_DIR, CCBOARD_DATA_DIR, CLAUDE_CONFIG_DIR and CODEX_HOME on temp paths and scripts/dev/fake_agents first on PATH (README, Development)" >&2
+  echo "qa-ui: $BASE does not report dev.sandboxed=true in /api/state: refusing to run against it. Start the dev board with PROJECTS_DIR, CCBOARD_DATA_DIR, CLAUDE_CONFIG_DIR and CODEX_HOME on temp paths and scripts/dev/fake_agents first on PATH (docs/development.md)" >&2
   exit 2
 fi
 mkdir -p "$OUT" || exit 2
