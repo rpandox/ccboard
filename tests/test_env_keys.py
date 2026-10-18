@@ -38,6 +38,7 @@ NOT_REMEMBERED = {
     "CCBOARD_APP_ROOT": "where the image keeps the app; tests point it elsewhere",
     "CLAUDE_MEM_PROJECT_ENVIRONMENTS": "claude-mem's own variable, read by the board; not a ccboard setting",
     "CCBOARD_ENV_FILE": "names the settings file the board reads itself on macOS (launchd has no EnvironmentFile); the installer sets it in each job's plist, not in /etc/ccboard/env",
+    "CCBOARD_TMUX_TMPDIR": "macOS installer switch: the TMUX_TMPDIR written into the board, tmux and ttyd launchd jobs (default /tmp); it lives in the plists, not in /etc/ccboard/env, so it is not remembered",
     "CCBOARD_LAUNCHD_DOMAIN": "macOS launchd layout (gui or user); an installer-time choice written into the plists, not remembered in /etc/ccboard/env",
 }
 
@@ -63,7 +64,6 @@ EXTRA_INTERNAL = {
     "CCBOARD_MACOS_VENV_READY": "macOS installer test seam: the venv is already built, so pip is never run; documented in the script header",
     "CCBOARD_MACOS_HEALTH_TRIES": "macOS installer: seconds to wait for /healthz after the jobs start (default 30); installer-time only",
     "CCBOARD_REPLACE_CODE_SERVER_CONFIG": "an installer-run switch (install.sh, scripts/install-macos.sh) that backs up and replaces a code-server config ccboard did not write; never remembered",
-    "CCBOARD_TMUX_TMPDIR": "macOS installer: the TMUX_TMPDIR written into every launchd job (default /tmp); it lives in the plists, not in the settings file",
     "CODE_SERVER_SETTINGS": "points the code-server settings merge (and its doctor check) at another file; tests and unusual installs only",
 }
 INTERNAL = {**NOT_REMEMBERED, **EXTRA_INTERNAL}
