@@ -233,7 +233,7 @@ def test_codex_persistent_or_stale_menus_are_not_answerable(screen):
 
 
 @pytest.mark.parametrize('verb', ['allow', 'deny', 'reply'])
-def test_tokens_cannot_answer_even_with_person_headers(lite_client, bare_runner, device, verb):
+def test_tokens_cannot_answer_even_with_person_headers(lite_client, bare_runner, device, verb, unsigned_node_keys):
     from app import hooks, mcp_tokens, nodes
     from .test_nodes_auth import mint
     name, = seed()

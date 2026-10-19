@@ -2492,6 +2492,13 @@
     },
     "key_mode": "prefer"
   },
+  "node_keys": {
+    "mode": "prefer",
+    "setting": "require",
+    "explicit": false,
+    "unkeyed": ["old-laptop"],
+    "unkeyed_count": 1
+  },
   "claude_defaults": {
     "subagent_model": "inherit",
     "fable_cap": 25.0

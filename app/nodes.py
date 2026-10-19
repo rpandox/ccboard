@@ -487,7 +487,7 @@ def card(db, *, health_snap: dict | None = None, sessions=None, full: bool = Tru
            "owner_id": uid if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0 else None,
            "now": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}
     out["key"] = node_keys.card()
-    out["key_mode"] = node_keys.mode()
+    out["key_mode"] = node_keys.mode(db)
     if full:
         out["agents"] = agents_view(db)
         out["accounts"] = accounts_view(db)
@@ -869,7 +869,7 @@ class PairError(Exception):
         "rate_limited": "Too many tries; wait a minute.",
         "bad_request": "The pairing request is not valid.",
         "bad_url": "The address is not one this board may call.",
-        "key_required": "Pairing requires signing keys: both boards need the key update and signing enabled, or use mode prefer.",
+        "key_required": node_keys.KEY_REQUIRED_MESSAGE,
         "key_changed": "This node id is pinned to another key on this board; the pair for it must be removed here first.",
         "callback_unreachable": "The other address did not answer the check in time; nothing was paired. Make a new code and try again.",
         "answer_unverified": "The other board did not prove it holds its signing key; nothing was paired. Make a new code and try again.",
@@ -2128,7 +2128,7 @@ def handle_pair(body, caller: str, db=None, bind=None, *, will_ack: bool = False
         audit("in", "", "pair_refused", False, "key_changed", db=d)
         raise PairError("key_changed", pinned_on="acceptor")
     keyed = bool(node.get("pubkey") and node_keys.available())
-    if node_keys.mode() == "require" and not keyed:
+    if node_keys.pairing_mode() == "require" and not keyed:
         raise PairError("key_required")
     r = redeem_code(code, caller, node=node, bind=bind, pending=True, db=d)
     pid = r["peer_id"]
@@ -2303,7 +2303,7 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         audit("out", "", "pair_refused", False, f"pairs full ({MAX_PEERS} nodes)", status="refused", db=d)
         raise PairError("registry_full")
     me = own_claim()
-    if node_keys.mode() == "require" and not me.get("pubkey"):
+    if node_keys.pairing_mode() == "require" and not me.get("pubkey"):
         raise PairError("key_required")
     if not me["url"]:
         raise ValueError("this node does not know its own address, so the other node could not call back; set CCBOARD_PUBLIC_URL")
@@ -2322,7 +2322,7 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         try:
             reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, headers={"X-CCBoard-Pair-Ack": "1"}, timeout=8.0)
             if reply.status == 400 and isinstance(reply.json, dict) and reply.json.get("reason") == "bad_request" and "pubkey" in me:
-                if node_keys.mode() == "require":
+                if node_keys.pairing_mode() == "require":
                     raise PairError("key_required")
                 end_confirm(pending)
                 me.pop("pubkey")
@@ -2351,7 +2351,7 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
             raise PairError("answer_unverified")
         if node_keys.conflict(theirs["id"], pub, d):
             raise PairError("key_changed")
-        if node_keys.mode() == "require" and not pub:
+        if node_keys.pairing_mode() == "require" and not pub:
             raise PairError("key_required")
         if pub:
             proof = confirm_proof(norm, nonce, me["id"], me["url"], target.url, me["pubkey"])

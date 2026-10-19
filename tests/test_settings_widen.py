@@ -183,7 +183,7 @@ def test_widening_direction(key, old, new, wider):
     assert options.widens(key, old, new) is wider
 
 
-def test_person_gate_and_node_audit(board):
+def test_person_gate_and_node_audit(board, unsigned_node_keys):
     from app import main, hooks, nodes, mcp_tokens
     trusted(board, CCBOARD_PAGE_WIDEN='1', CCBOARD_EPIC_WRITES='1', CCBOARD_EPIC_REPOS='sample/project')
     headers = [{}, {'Tailscale-User-Login': 'alice'},

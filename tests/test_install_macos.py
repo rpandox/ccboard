@@ -453,6 +453,14 @@ def test_the_runtime_flag_is_an_alias_for_the_variable(mac):
     assert "CCBOARD_RUNTIME=launchd" in (mac.data / "env").read_text().splitlines()
 
 
+def test_the_mac_installer_stores_no_node_keys_default_so_the_app_default_applies(mac):
+    mac.install()
+    lines = (mac.data / "env").read_text().splitlines()
+    assert "CCBOARD_NODE_KEYS=" in lines, "empty = the app default, require"
+    mac.install(env={"CCBOARD_NODE_KEYS": "prefer"})
+    assert "CCBOARD_NODE_KEYS=prefer" in (mac.data / "env").read_text().splitlines()
+
+
 def test_root_old_macos_and_a_non_mac_are_refused_before_any_change(mac):
     r = mac.run(env={"FAKE_UID": "0"})
     assert r.returncode == 1 and "not as root" in r.stderr

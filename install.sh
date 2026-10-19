@@ -209,6 +209,24 @@ sudo -v
 SUDO_KEEPALIVE=$!
 trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
 
+# >>> node signing keys
+# Node signing keys are required by default (v0.5.89). Installers before that stored CCBOARD_NODE_KEYS=prefer as their own default, so an
+# existing install would stay on prefer for ever. The first rerun turns a stored prefer into empty (the app reads empty as require) unless
+# the person passed a value on the command line. A marker file next to the env file records that this happened, so a prefer set on purpose
+# later is kept.
+NODE_KEYS_MARKER=${NODE_KEYS_MARKER:-/etc/ccboard/node-keys-required}
+NODE_KEYS_MARK=0
+node_keys_migrate() { # $1 = what the caller passed (may be empty); CCBOARD_NODE_KEYS = the stored value or the caller's
+  if [ -n "$1" ]; then NODE_KEYS_MARK=1; return 0; fi
+  [ ! -e "$NODE_KEYS_MARKER" ] || return 0
+  NODE_KEYS_MARK=1
+  if [ "${CCBOARD_NODE_KEYS:-}" = prefer ]; then
+    CCBOARD_NODE_KEYS=
+    note "Node signing keys are now required by default; set CCBOARD_NODE_KEYS=prefer to keep the old behaviour."
+  fi
+}
+# <<< node signing keys
+
 # ---------------------------------------------------------------- config
 # Explicit environment beats the previous env file, which beats the defaults.
 declare -A CALLER
@@ -227,6 +245,7 @@ if [ -f "$ENV_FILE" ]; then
   done < "$ENV_FILE"
 fi
 for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${CALLER[$k]}"; done
+node_keys_migrate "${CALLER[CCBOARD_NODE_KEYS]}"
 : "${PROJECTS_DIR:=/srv/projects}"
 : "${CCBOARD_PORT:=8000}"
 : "${TTYD_PORT:=7681}"
@@ -249,7 +268,7 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 : "${CCBOARD_NODE_PORTS:=443,8443}"     # HTTPS ports a probe tries on the tailnet's other devices when it looks for ccboard (issue #134)
 : "${CCBOARD_NODES_POLL:=20}"             # seconds between two polls of one paired node by the hub read model (issue #138; 5 at least)
 : "${CCBOARD_NODE_TAGS:=tag:ccboard}"      # Tailscale tags that make a device a candidate besides the same user's own (none = same user only)
-: "${CCBOARD_NODE_KEYS:=prefer}"
+: "${CCBOARD_NODE_KEYS:=}"                # empty = the app default, require (v0.5.89); never store a default here, the file is read back on every rerun
 : "${CCBOARD_NODE_AUTH:=token}"          # how a paired node's call is checked (issue #136): token, whois (also the paired device) or whois+cap (also an app capability)
 : "${CCBOARD_NODE_CAP:=}"                # the app capability name for whois+cap, <a domain you control>/cap/ccboard (empty = whois+cap stays off)
 if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(24))'); note "generated CCBOARD_HUB_TOKEN (copy it to the other boxes to form a fleet)"; fi
@@ -971,6 +990,7 @@ if [ ! -f "$ENV_FILE" ] || [ "$(cat "$ENV_FILE")" != "${env_body%$'\n'}" ]; then
   printf '%s' "$env_body" | sudo install -D -m 0640 -o root -g "$(id -gn)" /dev/stdin "$ENV_FILE"; note "wrote $ENV_FILE"
   changed_units+=(ccboard.service ccboard-ttyd.service)
 fi
+if [ "$NODE_KEYS_MARK" = 1 ] && [ ! -e "$NODE_KEYS_MARKER" ]; then sudo install -D -m 0644 /dev/null "$NODE_KEYS_MARKER"; fi
 # The file holds CCBOARD_HUB_TOKEN: readable by root (systemd) and your group (reruns of this script), nobody else.
 sudo chmod 0640 "$ENV_FILE"; sudo chgrp "$(id -gn)" "$ENV_FILE"
 esc() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }

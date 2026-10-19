@@ -1050,7 +1050,7 @@ def test_the_hook_token_and_a_device_token_get_a_403_and_nothing_is_sent(w):
     assert e.value.reason in ("human_only", "mcp_off", "mcp_level", "mcp_scope") and w.count.seen == 0 and w.gh.calls() == []
 
 
-def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(w):
+def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(w, unsigned_node_keys):
     with w.b.enter():
         _, tok_r = nodes.add_incoming({"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}, ["read"], db=w.b.db)
         _, tok_t = nodes.add_incoming({"id": "ts:nCALLER000002", "name": "caller2", "url": "https://100.64.0.8"}, ["tasks"], db=w.b.db)
@@ -1086,7 +1086,7 @@ def test_a_pair_without_the_tasks_scope_is_409_on_the_hub_before_any_call(two_no
     {"repo": REPO, "issue": 5, "sandbox": "danger-full-access"}, {"repo": REPO, "issue": 5, "claim_ref": "acme/shop#5:7"}, {"repo": REPO, "issue": 5, "branch": "main"},
     {"repo": REPO, "issue": 5, "extra": {"--dangerously-skip-permissions": 1}}, {"repo": "acme/shop", "issue": 5, "epic": "--yolo"},
 ], ids=lambda b: json.dumps(b)[:60])
-def test_a_hostile_body_is_a_422_on_the_hub_with_nothing_sent_and_again_on_the_node(w, body):
+def test_a_hostile_body_is_a_422_on_the_hub_with_nothing_sent_and_again_on_the_node(w, body, unsigned_node_keys):
     r = run_route(w, body=body)
     assert r.status_code == 422 and r.json()["reason"] == "invalid", r.text
     assert w.count.seen == 0 and w.gh.calls() == []

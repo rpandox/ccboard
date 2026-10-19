@@ -97,7 +97,9 @@ assert not node_keys.available()
     assert r.returncode == 0
 
 
-def test_pairing_pins_both_directions_and_card_and_hello(keyed):
+@pytest.mark.parametrize("mode", ["prefer", "require"])
+def test_pairing_pins_both_directions_and_card_and_hello(keyed, monkeypatch, mode):
+    monkeypatch.setattr(settings, "node_keys", mode)
     two, row = keyed
     for board in (two.a, two.b):
         with board.enter():
@@ -155,6 +157,7 @@ def test_wrong_confirm_signature_revokes_pair(two_nodes, monkeypatch):
 
 
 def test_previous_strict_body_check_retries_once_unkeyed(two_nodes, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "prefer")
     inner, calls = nodes.peer_transport, []
     def previous(target, method, path, hdr, body, timeout):
         if path == "/api/nodes/pair":
@@ -315,33 +318,46 @@ def test_bad_rotation_never_changes_pin(keyed, clock, change):
 
 
 def test_upgrade_and_require(two_nodes, clock, monkeypatch):
+    from app.config import Settings
+    assert Settings({}).node_keys == "require"
+    monkeypatch.setattr(settings, "node_keys", Settings({}).node_keys)
     with two_nodes.a.enter():
         claim = nodes.own_claim()
     with two_nodes.b.enter():
         peer, token = nodes.add_incoming(claim)
         recipient = nodes.node_id()
         h = {"Authorization": "Bearer " + token, "X-CCBoard": "1"}
-        assert two_nodes.b.get("/api/node", owner=False, headers=h).status_code == 200
-        assert "node-a" in keys.doctor(two_nodes.b.db)[1]
-    monkeypatch.setattr(settings, "node_keys", "require")
-    assert two_nodes.b.get("/api/node", owner=False, headers=h).json()["reason"] == "signature_required"
+        refused = two_nodes.b.get("/api/node", owner=False, headers=h)
+        assert refused.status_code == 401 and refused.json()["reason"] == "key_required"
+        assert refused.json()["error"] == keys.KEY_REQUIRED_MESSAGE
+        status, detail = keys.doctor(two_nodes.b.db)
+        assert status == "warn" and keys.KEY_REQUIRED_MESSAGE in detail
     monkeypatch.setattr(settings, "node_keys", "prefer")
+    assert two_nodes.b.get("/api/node", owner=False, headers=h).status_code == 200
+    with two_nodes.b.enter():
+        assert "still work" in keys.doctor(two_nodes.b.db)[1]
     with two_nodes.a.enter():
         h.update(keys.sign_headers("GET", "/api/node", None, recipient_id=recipient, token=token))
         h.update({"X-CCBoard-Pubkey": keys.public(), "X-CCBoard-Node": nodes.node_id()})
+    monkeypatch.setattr(settings, "node_keys", "require")
+    assert two_nodes.b.get("/api/node", owner=False, headers=h).json()["reason"] == "key_required"
+    assert two_nodes.b.db.node_pair_get(peer["peer_id"])["peer_pubkey"] is None
+    monkeypatch.setattr(settings, "node_keys", "prefer")
     assert two_nodes.b.get("/api/node", owner=False, headers=h).status_code == 200
     assert two_nodes.b.db.node_pair_get(peer["peer_id"])["peer_key_source"] == "upgrade"
     h.pop("X-CCBoard-Signature")
     assert two_nodes.b.get("/api/node", owner=False, headers=h).json()["reason"] == "signature_required"
 
 
-def test_card_change_missing_key_and_upgrade(keyed):
+def test_card_change_missing_key_and_upgrade(keyed, monkeypatch):
     two, row = keyed
     with two.a.enter():
         for card in ({}, {"key": {"pub": keys.public()}}):
             assert keys.check_card(row, card, two.a.db) == "key_changed"
             assert nodes.peer(row["peer_id"])["needs_repair"]
         unkeyed = nodes.put_peer({**row, "pubkey": None, "key_source": None})
+        assert keys.check_card(unkeyed, {"key": {"pub": row["pubkey"]}}, two.a.db) == "key_required"
+        monkeypatch.setattr(settings, "node_keys", "prefer")
         assert keys.check_card(unkeyed, {"key": {"pub": row["pubkey"]}}, two.a.db) is None
         assert nodes.peer(row["peer_id"])["key_source"] == "upgrade"
 
@@ -418,6 +434,7 @@ def test_swapped_pair_key_cannot_downgrade_to_unverified(two_nodes, monkeypatch)
 
 
 def test_forbidden_device_cannot_pin_an_upgrade(two_nodes, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "prefer")
     from app import nodes_whois
     with two_nodes.a.enter():
         claim = nodes.own_claim()
@@ -668,9 +685,11 @@ def test_signature_refusal_text_per_reason(keyed, monkeypatch, reason):
         assert message == f"Node signature refused: {reason}; this is transient: the request was refused once, nothing to do."
     elif reason == "clock":
         assert message == "Node signature refused: clock; this is transient: check the two clocks; they must be within 120 seconds."
+    elif reason == "key_required":
+        assert message == keys.KEY_REQUIRED_MESSAGE
     else:
         assert message == f"Node signature refused: {reason}; pair again if the key was lost"
-    assert ("pair again" in message) == (reason not in ("stale", "replay", "clock"))
+    assert ("pair again" in message.lower()) == (reason not in ("stale", "replay", "clock"))
 
 
 @pytest.mark.parametrize("mode", ["prefer", "require"])
@@ -944,3 +963,21 @@ def test_pending_reason_and_owner_can_see_and_remove_pair(two_nodes, monkeypatch
     assert b.db.node_pair_get(pid)['revoked_at'] is None
     assert b.delete('/api/nodes/' + pid).status_code == 200
     assert b.db.node_pair_get(pid)['revoked_at']
+
+
+@pytest.mark.parametrize("raw, expected", [(None, "require"), ("", "require"), ("prefer", "prefer"), (" PREFER ", "prefer"), ("off", "off"), ("require", "require"), ("requrie", "require"), (" ", "require")])
+def test_key_mode_parsing(projects_dir, raw, expected):
+    from app.config import Settings
+    env = {} if raw is None else {"CCBOARD_NODE_KEYS": raw}
+    assert Settings(env).node_keys == expected
+
+
+@pytest.mark.parametrize("source", ["last_error", "error_kind"])
+def test_doctor_key_required_explains_repair(projects_dir, source):
+    from app.doctor_nodes import _health_rows
+    reg = {"peer_id": "pair", "needs_repair": True}
+    rec = {"peer_id": "pair", "status": "unauthorized"}
+    (reg if source == "last_error" else rec)[source] = "key_required"
+    _, _, problem, fix = _health_rows([reg], [rec])[0]
+    assert "no signing key" in problem and "refused" in problem
+    assert "Pair again" in fix and "CCBOARD_NODE_KEYS=prefer" in fix

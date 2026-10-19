@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.109 - 2026-10-19
+
+### Changed
+- Node signing keys are required by default, and the default never cuts a pair that has no key yet (#271). With `CCBOARD_NODE_KEYS` not set, the board reads its pairs (both directions, as it stores them) on every call: when each has a signing key it enforces `require`; when one or more has none it behaves as `prefer` until they do, so the update itself stops no pair. A new pairing still needs keys on both boards while the default is held (only a typed `prefer` allows an unkeyed one), so the number of unkeyed pairs can only go down. Re-pairing the last unkeyed pair (or its first signed call under `prefer`, which pins its key) makes the board enforce `require` on the next call, with no restart. A value set on purpose is never softened: `CCBOARD_NODE_KEYS=require` refuses an unkeyed pair at once (`key_required`, also when a recent card was restored at startup), and `prefer` stays `prefer`.
+- Doctor: the node-keys check warns "1 node pair has no signing key: keys become required once it is re-paired" (or "N node pairs have ... once they are re-paired") and names the pairs. Settings > Nodes shows "Signing keys: required", or "required once every pair has a key (2 pairs without)", and every unkeyed pair row carries a notice and a Pair again button. `GET /api/state` gains `node_keys` ({mode, setting, explicit, unkeyed, unkeyed_count}, always present); `state.node.key_mode` is the mode in force.
+- `./install.sh` no longer stores a default for `CCBOARD_NODE_KEYS` (an empty value is the safe default above), and the first rerun on an install that stored the old `prefer` default turns it into empty and says so. A value you pass on the command line is kept, and a `prefer` set on purpose later is not touched again.
+
+Upgrade: Linux, WSL and Docker: rerun `./install.sh` once (it drops the old stored `prefer`). macOS: nothing. No pair stops working on the update; Doctor and Settings > Nodes name any pair without a signing key, and pairing it again makes keys required.
+
 ## v0.5.108 - 2026-10-19
 
 ### Changed

@@ -123,7 +123,7 @@ def fake_agents(monkeypatch):
 
 
 def sans_clock(card: dict) -> dict:
-    assert card["key_mode"] == "prefer"
+    assert card["key_mode"] == "require"
     assert card["key"]["pub"] == nodes.node_keys.public()
     assert card["key"]["id"] == nodes.node_keys.key_id(card["key"]["pub"])
     return {k: v for k, v in card.items() if k not in ("now", "key", "key_mode")}

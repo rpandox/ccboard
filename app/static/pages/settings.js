@@ -1384,7 +1384,7 @@ function settingsNdPaintThis(host, st) {
   host.append(settingsKv('Name', el('span', { class: 'v', text: String(n.name || st.node_name || 'this node') })));
   if (n.node_id) host.append(settingsKv('Node id', el('span', { class: 'v', title: String(n.node_id), text: NodeView.shortId(String(n.node_id)) }), typeof copyButton === 'function' ? copyButton(String(n.node_id), 'node id') : null,
     /^n_/.test(String(n.node_id)) ? el('span', { class: 'dim', title: 'This board made a random id because Tailscale was not answering when it first started. It still works. The Doctor says how to move to the Tailscale id.', text: 'fallback id' }) : null));
-  host.append(settingsKv('CCBOARD_NODE_KEYS', el('span', { class: 'v', text: String(n.key_mode || 'prefer') })));
+  host.append(settingsKv('Signing keys', el('span', { class: 'v', title: 'CCBOARD_NODE_KEYS', text: settingsNdKeyWords(st) })));
   if (n.key && n.key.id) {
     const id = NodeView.keyId(n.key.id);
     host.append(settingsKv('Ed25519 key', el('span', { class: 'v', text: id }), typeof copyButton === 'function' ? copyButton(id, 'key id') : null));
@@ -1501,10 +1501,26 @@ function settingsNdLegacy(x) {
     safe ? el('a', { class: 'btn small', href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: 'Open' }) : null, pair);
 }
 
+/* The signing-key mode the rows are drawn for (issue #271): the card's key_mode is what the board enforces now; `soon` is the default `require` held at prefer
+   until every pair has a key (state.node_keys: not typed by the owner, set to require, enforced prefer). */
+function settingsNdKeyMode(st) {
+  const k = (st && st.node_keys) || {};
+  const mode = (st && st.node && st.node.key_mode) || k.mode || 'require';
+  return mode === 'prefer' && k.setting === 'require' && k.explicit === false ? 'soon' : mode;
+}
+
+function settingsNdKeyWords(st) {
+  const mode = settingsNdKeyMode(st);
+  const n = Number((st && st.node_keys && st.node_keys.unkeyed_count) || 0);
+  if (mode === 'soon') return `required once every pair has a key (${n} ${n === 1 ? 'pair' : 'pairs'} without)`;
+  return { require: 'required', prefer: 'prefer', off: 'off' }[mode] || String(mode);
+}
+
 function settingsNdPaintPaired(nu, st) {
   const P = settingsNdPeers;
   const now = settingsNdNow();
   const minute = Math.floor(Date.now() / 60000);
+  const keyMode = settingsNdKeyMode(st);
   const kv = settingsNdLegacyRows(st);
   const items = [...settingsNdPairedOut().map((rec) => ({ rec })), ...kv.map((x) => ({ legacy: x })), ...settingsNdRegistryLegacy(st, kv).map((rec) => ({ rec }))];
   nu.pairedStatus.textContent = P.err ? `Could not read the paired list: ${P.err}. ${P.nodes !== null ? 'The list below is the last answer.' : ''}` : '';
@@ -1514,11 +1530,11 @@ function settingsNdPaintPaired(nu, st) {
       if (it.legacy) return JSON.stringify([it.legacy, minute]);
       const id = NodeView.peer(it.rec).id;
       const rot = P.rotated[id] && Date.now() - P.rotated[id] < (NodeView.ROTATE_GRACE_S + 15) * 1000 ? Math.floor(Date.now() / 15000) : 0;
-      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot, Nodes.ready ? Nodes.M.rev : 0, settingsNdMovedFor(id)]);
+      return JSON.stringify([it.rec, keyMode, minute, P.act[id] || '', settingsNdArmed(id), rot, Nodes.ready ? Nodes.M.rev : 0, settingsNdMovedFor(id)]);
     },
     (it) => {
       if (it.legacy) return settingsNdLegacy(it.legacy);
-      const row = NodeView.peerRow(it.rec, { nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 });
+      const row = NodeView.peerRow(it.rec, { keyMode, nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 });
       const mv = settingsNdMovedFor(NodeView.peer(it.rec).id);
       if (mv) {                                                                // found at another address: offered, never applied by itself
         const pr = NodeView.peer(it.rec);
@@ -1533,14 +1549,15 @@ function settingsNdPaintPaired(nu, st) {
   settingsNdEmpty(nu.pairedEmpty, !items.length && !(P.nodes === null && !P.err), 'No node is paired. Press Add node and type the address and code the other board shows, or press Pair on a device found below.');
 }
 
-function settingsNdPaintIncoming(nu) {
+function settingsNdPaintIncoming(nu, st) {
+  const keyMode = settingsNdKeyMode(st);
   const P = settingsNdPeers;
   const now = settingsNdNow();
   const minute = Math.floor(Date.now() / 60000);
   const items = settingsNdIn();
   const deviceCheck = NodeView.authView(settingsNd.auth).deviceOn;                                  // issue #136: a pair that is not bound says so while the device check is on
-  settingsNdPatch(nu.inList, items, (rec) => NodeView.peer(rec).key, (rec) => JSON.stringify([rec, minute, P.act[NodeView.peer(rec).id] || '', settingsNdArmed(NodeView.peer(rec).id), deviceCheck]),
-    (rec) => NodeView.peerRow(rec, { nowMs: now, incoming: true, actions: settingsNdPeerActions(rec, true), deviceCheck }));
+  settingsNdPatch(nu.inList, items, (rec) => NodeView.peer(rec).key, (rec) => JSON.stringify([rec, keyMode, minute, P.act[NodeView.peer(rec).id] || '', settingsNdArmed(NodeView.peer(rec).id), deviceCheck]),
+    (rec) => NodeView.peerRow(rec, { keyMode, nowMs: now, incoming: true, actions: settingsNdPeerActions(rec, true), deviceCheck }));
   settingsNdEmpty(nu.inEmpty, !items.length && !(P.pairs === null && P.nodes === null), 'No node can control this board. Press Create pairing code, then type the code on the other board.');
 }
 
@@ -2006,7 +2023,7 @@ function settingsNodes(p) {
   settingsNdPaintWorker(ui, state);
   settingsNdPaintPaired(ui, state);
   settingsNdPaintFound(ui, state);
-  settingsNdPaintIncoming(ui);
+  settingsNdPaintIncoming(ui, state);
   settingsNdPaintAuth(ui);
   settingsNdPaintAudit(ui);
 }

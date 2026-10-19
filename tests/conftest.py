@@ -1334,3 +1334,18 @@ def _hermetic_binaries(request, monkeypatch):
     monkeypatch.setattr(doctor, "run", counted_run)
     yield SPAWNED
     REAL_TOOLS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _node_keys_typed(monkeypatch):
+    """The suite runs as if CCBOARD_NODE_KEYS were typed (issue #271): `settings.node_keys` is then the mode in force, whatever pairs exist. A test of the
+    default, which looks at the pairs, sets node_keys_explicit to False itself (tests/test_nodes_keys_default.py)."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "node_keys_explicit", True, raising=False)
+
+
+@pytest.fixture
+def unsigned_node_keys(monkeypatch):
+    """Opt token/scope tests with deliberately unkeyed pairs into compatibility mode."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "node_keys", "prefer")

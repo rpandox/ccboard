@@ -725,7 +725,7 @@ def test_the_hook_token_gets_a_403_and_an_audit_row_on_every_new_row_and_nothing
 
 
 @pytest.mark.parametrize("name", NEW_ROWS)
-def test_a_node_token_gets_a_403_and_an_audit_row_on_the_hubs_route_of_every_new_row(world, name):
+def test_a_node_token_gets_a_403_and_an_audit_row_on_the_hubs_route_of_every_new_row(world, name, unsigned_node_keys):
     w = world
     sess(w)
     row = nr.BY_NAME[name]

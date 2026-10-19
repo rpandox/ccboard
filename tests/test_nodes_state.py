@@ -233,7 +233,7 @@ def mint(board, scopes):
     return nodes.add_incoming({"id": "n_" + "c" * 16, "name": "node-c", "url": "https://100.64.0.3"}, list(scopes), db=board.db)[1]
 
 
-def test_a_node_token_with_read_an_identity_and_nothing_else(board, monkeypatch):
+def test_a_node_token_with_read_an_identity_and_nothing_else(board, monkeypatch, unsigned_node_keys):
     monkeypatch.setattr(nodes, "node_read_limiter", nodes._Limiter(10 ** 6, 60.0, 64))
     tok = mint(board, ("read",))
     node = {"Authorization": f"Bearer {tok}", "X-CCBoard": "1"}

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -20,7 +21,9 @@ from .db import iso
 
 STARTED = int(time.time())
 WINDOW = 120
+KEY_REQUIRED_MESSAGE = "This pair has no signing key and is refused. Pair again with signing enabled on both boards, or set CCBOARD_NODE_KEYS=prefer."
 ROTATION_WINDOW = 30 * 86400
+log = logging.getLogger("ccboard.node_keys")
 _lock = threading.RLock()
 _keys = {}
 _reports = {}
@@ -31,8 +34,78 @@ def _ed():
     return ed25519
 
 
-def mode():
-    return getattr(settings, "node_keys", "prefer")
+def decide(configured: str, explicit: bool, unkeyed: list[str]) -> str:
+    """The signing-key mode this board enforces right now (issue #271).
+
+    `configured` is the CCBOARD_NODE_KEYS setting (`require` when unset or invalid), `explicit` is whether the owner set it on purpose, `unkeyed` the
+    display names of the finished pairs that have no signing key. An explicit value is always kept: a typed `require` refuses an unkeyed pair at
+    once, a typed `prefer` or `off` stays. Only the default (nothing typed, so `require`) looks at the pairs: with none unkeyed it is `require`,
+    with one or more it is `prefer`, so that update never cuts a pair that has no key yet; the pair upgrades on its next signed call or when it is
+    paired again, and the next call here then answers `require`."""
+    if explicit or configured != "require" or not unkeyed:
+        return configured
+    return "prefer"
+
+
+def unkeyed_pairs(db) -> list[str]:
+    """Display names of the finished pairs (both directions, as the board stores them) that have no signing key; a CCBOARD_NODES entry is not a
+    pair. Pending incoming pairs are left out. Oldest first, a name once."""
+    from . import nodes
+    rows = [(r.get("name") or r.get("handle"), r.get("created_at")) for r in nodes._out_rows(db) if not r.get("legacy") and not r.get("pubkey")]
+    rows += [(r.get("peer_name"), r.get("created_at")) for r in db.node_pairs() if not r.get("pending_until") and not r.get("peer_pubkey")]
+    names = []
+    for name, _ in sorted(rows, key=lambda x: str(x[1] or "")):
+        name = name if isinstance(name, str) and name else "a node"
+        if name not in names:
+            names.append(name)
+    return names
+
+
+_last_mode = None
+
+
+def configured():
+    """CCBOARD_NODE_KEYS as set (`require` when unset or invalid); no pair is read. `off` can only come from here."""
+    return getattr(settings, "node_keys", "require")
+
+
+def pairing_mode():
+    """The mode a NEW pairing is held to (issue #271): the setting itself. While the default is held at prefer only because old pairs have no key, a new
+    pairing still needs keys on both boards (a board without key support is refused with `key_required`); only a typed `prefer` or `off` allows an
+    unkeyed one. Otherwise each new unkeyed pair would keep the board at prefer for ever."""
+    return configured()
+
+
+def mode(db=None):
+    """The mode in force, read from the pairs on every call, so re-pairing the last unkeyed pair takes effect with no restart. `db` is the
+    caller's database; without one the running board's is used, and when none can be read the configured mode (require by default) stands."""
+    base = configured()
+    if getattr(settings, "node_keys_explicit", True) or base != "require":
+        return base
+    try:
+        if db is None:
+            from . import main
+            db = main.db
+        got = decide(base, False, unkeyed_pairs(db))
+    except Exception:
+        return base
+    global _last_mode
+    if got != _last_mode:
+        _last_mode = got
+        log.info("node signing keys: %s", got if got == base else f"prefer until every pair has a key ({base} once they do)")
+    return got
+
+
+def view(db) -> dict:
+    """What Settings > Nodes and the state show: `mode` (enforced now), `setting` (CCBOARD_NODE_KEYS), `explicit`, `unkeyed` (display names) and
+    `unkeyed_count`. Always a dict; never raises."""
+    base = configured()
+    explicit = bool(getattr(settings, "node_keys_explicit", True))
+    try:
+        names = unkeyed_pairs(db)
+    except Exception:
+        names = []
+    return {"mode": decide(base, explicit, names), "setting": base, "explicit": explicit, "unkeyed": names[:20], "unkeyed_count": len(names)}
 
 
 def _path():
@@ -72,7 +145,7 @@ def reset():
 
 def load_or_create() -> bool:
     """Load once or create atomically, returning availability, never private material."""
-    if mode() == "off":
+    if configured() == "off":
         return False
     p = _path()
     with _lock:
@@ -310,11 +383,11 @@ def verify_request(method, target, body, *, headers, peer, recipient_id, token, 
         current = db.node_pair_get(peer["peer_id"])
         pinned = current.get("peer_pubkey") if current else peer.get("pubkey")
         signature = headers.get("x-ccboard-signature")
-        if not signature:
-            return "signature_required" if pinned or mode() == "require" else None
-        if not pinned and mode() == "require":
+        if not pinned and mode(db) == "require":
             return "key_required"
-        if not pinned and mode() == "off":
+        if not signature:
+            return "signature_required" if pinned else None
+        if not pinned and configured() == "off":
             return None
         try:
             version, kid, timestamp, nonce, sig = signature.split(".")
@@ -392,8 +465,8 @@ def check_card(peer, value, db):
                 nodes._note(db, peer["peer_id"], ok=False, error="key_changed", repair=True)
                 nodes.audit("out", peer["peer_id"], "key_changed", False, "key_changed " + key_id(pinned), db=db)
                 return "key_changed"
-        elif not pinned and mode() != "off":
-            if mode() == "require":
+        elif not pinned and configured() != "off":
+            if mode(db) == "require":
                 nodes._note(db, peer["peer_id"], ok=False, error="key_required", repair=True)
                 return "key_required"
             if valid_public(pub):
@@ -422,11 +495,10 @@ def card():
 
 
 def doctor(db):
-    from . import nodes
-    typed = getattr(settings, "node_keys_input", "prefer")
+    typed = getattr(settings, "node_keys_input", "require")
     if typed.strip().lower() not in ("prefer", "require", "off"):
         return "fail", f"CCBOARD_NODE_KEYS value {typed!r} was invalid; using require. Set prefer, require or off."
-    if mode() == "off":
+    if configured() == "off":
         return "warn", "CCBOARD_NODE_KEYS=off: no key is made or sent; existing pins still require signatures"
     if not available():
         return "fail", "Node key unavailable: check that cryptography is installed; pair again after fixing it"
@@ -440,6 +512,15 @@ def doctor(db):
             return "fail", "The node-key file must have mode 0600; remove affected pairs and pair again if it was exposed"
     except OSError:
         return "fail", "The node-key file cannot be read; pair again after fixing it"
-    unkeyed = [p.get("name") or "a node" for p in nodes.peers(db) if not p.get("legacy") and not p.get("pubkey")]
-    detail = f"CCBOARD_NODE_KEYS={mode()}: Ed25519 key present, 0600, cryptography importable"
-    return ("warn", detail + "; unkeyed: " + ", ".join(unkeyed) + "; pair again") if unkeyed else ("pass", detail)
+    v = view(db)
+    unkeyed = v["unkeyed"]
+    detail = f"CCBOARD_NODE_KEYS={v['setting']}{'' if v['explicit'] else ' (default)'}: Ed25519 key present, 0600, cryptography importable"
+    if not unkeyed:
+        return "pass", detail
+    names = ", ".join(unkeyed)
+    if v["mode"] != v["setting"]:                    # the default, softened for now: nothing is cut, and it says what to do
+        n = v["unkeyed_count"]
+        return "warn", (f"{n} node pair{' has' if n == 1 else 's have'} no signing key: keys become required once {'it is' if n == 1 else 'they are'} re-paired ({names}). "
+                        f"{'It still works' if n == 1 else 'They still work'} and upgrade{'s' if n == 1 else ''} on first signed use; press Pair again in Settings > Nodes to bind a key with a code.")
+    action = KEY_REQUIRED_MESSAGE if v["mode"] == "require" else "These pairs still work and upgrade on first signed use; pair again to bind each key with a code."
+    return "warn", detail + "; unkeyed: " + names + ". " + action

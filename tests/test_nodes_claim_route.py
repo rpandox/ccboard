@@ -149,7 +149,7 @@ def test_the_hook_token_and_a_device_token_get_a_403_and_nothing_is_sent(world):
     assert e.value.reason in ("human_only", "mcp_off", "mcp_level", "mcp_scope") and w.count.seen == 0
 
 
-def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(world):
+def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(world, unsigned_node_keys):
     w = world
     with w.b.enter():
         _, tok = nodes.add_incoming({"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}, ["read"], db=w.b.db)
@@ -177,7 +177,7 @@ def test_the_node_side_route_wants_a_named_person_the_tasks_scope_and_a_pair(wor
     {"repo": REPO, "issue": 5, "comment": "hello"}, {"repo": REPO, "issue": 5, "comment_id": 7}, {"repo": REPO, "issue": 5, "title": "t"}, {"repo": REPO, "issue": 5, "token": "x"},
     {"repo": REPO, "issue": 5, "assignee": "mallory"}, {"repo": REPO, "issue": 5, "state": "closed"}, {"repo": REPO, "issue": 5, "claim_ref": "acme/shop#5:7"},
 ], ids=lambda b: json.dumps(b)[:60])
-def test_a_hostile_body_is_a_422_on_the_hub_with_nothing_sent_and_again_on_the_node(world, body):
+def test_a_hostile_body_is_a_422_on_the_hub_with_nothing_sent_and_again_on_the_node(world, body, unsigned_node_keys):
     w = world
     r = claim(w, body)
     assert r.status_code == 422 and r.json()["reason"] == "invalid", r.text

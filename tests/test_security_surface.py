@@ -445,7 +445,7 @@ def test_the_team_routes_are_in_the_pinned_table_and_not_in_the_node_routes():
 
 
 @pytest.mark.parametrize("method,path", TEAM)
-def test_the_team_routes_refuse_the_hook_token_a_node_token_and_a_device_token(lite_client, method, path):
+def test_the_team_routes_refuse_the_hook_token_a_node_token_and_a_device_token(lite_client, method, path, unsigned_node_keys):
     from app import hooks, nodes
     from tests.test_nodes_auth import CLOSED, bearer, mint
     from app import main
