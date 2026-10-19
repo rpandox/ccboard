@@ -162,7 +162,7 @@ Inbox.sig = function (s, st, kind) {
   const job = Inbox.job(s) || {};
   const lim = Inbox.limit(st) || {};
   return JSON.stringify([kind, s.state, s.state_at, s.needs_attention, s.name, s.agent, s.last_message, s.last_prompt, s.project, s.repo, s.folder,
-    perm && [perm.id, perm.summary, perm.tool_name, perm.choices], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
+    perm && [perm.id, perm.summary, perm.tool_name, perm.choices, permMark(perm)], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
     lim.session === s.tmux ? [lim.message, lim.resets_at] : null, s.task && s.task.title, limitParkedText(s)]);
 };
 
@@ -248,9 +248,7 @@ function inboxCard(s, st, opts) {
     permBtns.textContent = '';
     if (cur.allow) {
       const pr = cur.perm;
-      permBtns.append(
-        el('button', { class: `${v('allow') || 'primary'} small`, type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
-        el('button', { class: 'danger small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'deny'); }, text: 'Deny' }));
+      permBtns.append(...permButtons(pr, `${v('allow') || 'primary'} small`, 'danger small'));
     }
     permBtns.classList.toggle('hidden', !cur.allow);
     replySlot.textContent = '';
@@ -322,7 +320,7 @@ function inboxCard(s, st, opts) {
     cur.allow = !!pr && (pr.kind === 'terminal_prompt' || inboxFullViewers(s2) === 0);           // terminal prompts remain answerable with a full client attached
     cur.ack = !s2.bare_device && !!s2.needs_attention;
     cur.nudge = sessionNudgeable(s2);
-    if (cur.allow) cur.permSig = `${pr.id}:${pr.summary || ''}`;
+    if (cur.allow) cur.permSig = `${pr.id}:${pr.summary || ''}:${permMark(pr)}`;
     paintActions();
     chips.classList.toggle('hidden', !cur.nudge);
     sendRow.classList.toggle('hidden', !cur.nudge);

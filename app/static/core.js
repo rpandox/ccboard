@@ -760,7 +760,8 @@ async function poll(force) {
     state = s;
     if (typeof accountOverlay === 'function') accountOverlay(s);       // an account switch still running, the demo's make-believe login (pages/agents.js)
     ui.offline = false;
-    const survived = typeof sessionClosingPrune === 'function' && sessionClosingPrune(s);
+    let survived = typeof sessionClosingPrune === 'function' && sessionClosingPrune(s);
+    if (typeof pendingApply === 'function' && pendingApply(s)) survived = true;      // #313: Allow / Deny / Ack still in flight
     if (changed || force || survived) render(force || survived);
     else { renderHeader(); renderUsage(); }
     rememberState(j, changed);
