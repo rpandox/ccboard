@@ -72,6 +72,12 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 | [Deploying](maintainers/deploying.md) | For the maintainer of a public deployment: updating the container, the outage per push, and what to do when GitHub Actions is down. Ordinary users do not need it. |
 | [Design notes](maintainers/design-notes.md) | Deviations from the original spec. |
 
+## Spikes
+
+| Page | What it covers |
+|---|---|
+| [Pools P0 spike notes](spikes/pools-p0.md) | What the Claude and Codex CLIs do when a session is resumed under a second login, where usage and the subscription id come from, how to run the two-login spike script, and the open questions its results settle. |
+
 ## Other files
 
 | Page | What it covers |
