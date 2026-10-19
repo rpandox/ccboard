@@ -1359,7 +1359,7 @@ test('the shipped demo fixture lists paired nodes (reached, never reached, needi
   assert.ok(chips.includes('✓ paired') && chips.includes('· waiting for first contact') && chips.includes('! re-pair needed'));
   assert.equal(pairedRows(w).length, demoFile.nodes.length);
   assert.ok(pairedRows(w).some((r) => /no signing key: keys become required once this pair is paired again.*Pair again/.test(text(r))));
-  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(1 without\)/);
+  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(1 pair without\)/);
   assert.ok(incomingRows(w).length >= 2);
   assert.ok(incomingRows(w).some((r) => /callback not verified/.test(text(r))));
   const words = panel(w).querySelectorAll('.nd-audit-word').map(text);
@@ -2074,7 +2074,7 @@ test('the default held at prefer: every unkeyed pair row has a notice and Pair a
   assert.doesNotMatch(text(ok), notice);
   assert.match(text(incomingRows(w)[0]), notice);
   assert.ok(btn(incomingRows(w)[0], 'Pair again'));
-  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(2 without\)/);
+  assert.match(text(panel(w)), /Signing keysrequired once every pair has a key \(2 pairs without\)/);
 });
 
 test('signing keys read required when every pair has a key, and prefer typed on purpose does not claim the default', async () => {

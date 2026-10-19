@@ -69,6 +69,13 @@ def configured():
     return getattr(settings, "node_keys", "require")
 
 
+def pairing_mode():
+    """The mode a NEW pairing is held to (issue #271): the setting itself. While the default is held at prefer only because old pairs have no key, a new
+    pairing still needs keys on both boards (a board without key support is refused with `key_required`); only a typed `prefer` or `off` allows an
+    unkeyed one. Otherwise each new unkeyed pair would keep the board at prefer for ever."""
+    return configured()
+
+
 def mode(db=None):
     """The mode in force, read from the pairs on every call, so re-pairing the last unkeyed pair takes effect with no restart. `db` is the
     caller's database; without one the running board's is used, and when none can be read the configured mode (require by default) stands."""
@@ -512,7 +519,8 @@ def doctor(db):
         return "pass", detail
     names = ", ".join(unkeyed)
     if v["mode"] != v["setting"]:                    # the default, softened for now: nothing is cut, and it says what to do
-        return "warn", (f"{v['unkeyed_count']} node pair(s) have no signing key: keys become required once they are re-paired ({names}). "
-                        "These pairs still work and upgrade on first signed use; press Pair again on each in Settings > Nodes to bind a key with a code.")
+        n = v["unkeyed_count"]
+        return "warn", (f"{n} node pair{' has' if n == 1 else 's have'} no signing key: keys become required once {'it is' if n == 1 else 'they are'} re-paired ({names}). "
+                        f"{'It still works' if n == 1 else 'They still work'} and upgrade{'s' if n == 1 else ''} on first signed use; press Pair again in Settings > Nodes to bind a key with a code.")
     action = KEY_REQUIRED_MESSAGE if v["mode"] == "require" else "These pairs still work and upgrade on first signed use; pair again to bind each key with a code."
     return "warn", detail + "; unkeyed: " + names + ". " + action

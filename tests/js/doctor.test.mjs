@@ -307,7 +307,7 @@ test('the demo Doctor names the pair without a signing key and keeps summary cou
   assert.deepEqual(fixture.summary, tally(fixture.checks));
   const w = await mount(docWorld({ answer: fixture }));
   const row = rowOf(w, 'node-keys');
-  assert.match(text(row), /1 node pair\(s\) have no signing key: keys become required once they are re-paired \(old-laptop\)/);
+  assert.match(text(row), /1 node pair has no signing key: keys become required once it is re-paired \(old-laptop\)/);
   assert.match(text(row), /Pair again/);
   assert.equal(fixture.checks.find((c) => c.id === 'node-keys').status, 'warn', 'a warning, never a failure');
 });

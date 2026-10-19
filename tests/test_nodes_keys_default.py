@@ -70,7 +70,7 @@ def test_one_unkeyed_pair_is_prefer_and_is_not_cut(one_unkeyed):
         assert view["unkeyed"] == [peer["name"] or "a node"] and view["unkeyed_count"] == 1
         status, detail = keys.doctor(two.b.db)
         assert status == "warn", "a warning, not a failure"
-        assert "1 node pair(s) have no signing key: keys become required once they are re-paired" in detail
+        assert "1 node pair has no signing key: keys become required once it is re-paired" in detail
         assert (peer["name"] or "a node") in detail
     assert two.b.get("/api/node", owner=False, headers=h).status_code == 200, "the update does not stop a pair that has no key"
     state = two.b.get("/api/state").json()
@@ -148,3 +148,45 @@ def test_a_unreadable_database_keeps_the_configured_mode(untyped):
 
     assert keys.mode(Broken()) == "require"
     assert keys.view(Broken())["mode"] == "require"
+
+
+def _keyless_pairing(two, monkeypatch):
+    """Board a pairs to board b with a code, while a has no signing key to send (a board without key support). Returns what happened."""
+    with two.b.enter():
+        code = nodes.create_code()["code"]
+    monkeypatch.setattr(keys, "available", lambda: False)
+    monkeypatch.setattr(keys, "public", lambda: None)
+    with two.a.enter():
+        return nodes.add_node(two.b.url, code)
+
+
+def test_held_at_prefer_a_new_pairing_from_a_keyless_board_is_refused(one_unkeyed, monkeypatch):
+    two, *_ = one_unkeyed
+    with two.b.enter():
+        assert keys.mode(two.b.db) == "prefer" and keys.pairing_mode() == "require"
+    with two.a.enter():
+        assert keys.mode(two.a.db) == "require"
+    with pytest.raises(nodes.PairError) as err:
+        _keyless_pairing(two, monkeypatch)
+    assert err.value.reason == "key_required"
+    with two.b.enter():
+        assert keys.view(two.b.db)["unkeyed_count"] == 1, "the refused pairing left no pair behind; the old unkeyed one still works"
+
+
+def test_the_acceptor_in_the_held_state_refuses_a_keyless_new_pairing_before_it_spends_the_code(one_unkeyed):
+    two, *_ = one_unkeyed
+    with two.b.enter():
+        code = nodes.create_code()["code"]
+        body = {"code": code, "node": {"id": "n_0123456789abcdef", "name": "old-board", "url": "https://100.64.0.9"}, "confirm": "x" * 22}
+        with pytest.raises(nodes.PairError) as err:
+            nodes.handle_pair(body, "100.64.0.9", two.b.db)
+        assert err.value.reason == "key_required"
+        assert keys.view(two.b.db)["unkeyed_count"] == 1
+
+
+def test_typed_prefer_allows_a_new_unkeyed_pairing(two_nodes, clock, monkeypatch):
+    monkeypatch.setattr(settings, "node_keys", "prefer")
+    monkeypatch.setattr(settings, "node_keys_explicit", True)
+    assert keys.pairing_mode() == "prefer"
+    row = _keyless_pairing(two_nodes, monkeypatch)
+    assert row["pubkey"] is None

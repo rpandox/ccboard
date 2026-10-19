@@ -1512,7 +1512,7 @@ function settingsNdKeyMode(st) {
 function settingsNdKeyWords(st) {
   const mode = settingsNdKeyMode(st);
   const n = Number((st && st.node_keys && st.node_keys.unkeyed_count) || 0);
-  if (mode === 'soon') return `required once every pair has a key (${n} without)`;
+  if (mode === 'soon') return `required once every pair has a key (${n} ${n === 1 ? 'pair' : 'pairs'} without)`;
   return { require: 'required', prefer: 'prefer', off: 'off' }[mode] || String(mode);
 }
 

@@ -233,7 +233,7 @@
       "group": "box",
       "label": "Node signing key",
       "status": "warn",
-      "detail": "1 node pair(s) have no signing key: keys become required once they are re-paired (old-laptop). These pairs still work and upgrade on first signed use; press Pair again on each in Settings > Nodes to bind a key with a code.",
+      "detail": "1 node pair has no signing key: keys become required once it is re-paired (old-laptop). It still works and upgrades on first signed use; press Pair again in Settings > Nodes to bind a key with a code.",
       "fix": {
         "text": "Press Pair again on old-laptop in Settings > Nodes."
       }
