@@ -164,7 +164,7 @@ Upgrade: nothing to do.
 
 Upgrade: no installer rerun required. To enable worker setup from the page, set `CCBOARD_PAGE_WIDEN=1` in the trusted settings file and restart once; saved worker changes also need a board restart.
 
-## v0.5.107 - 2026-10-19
+## v0.5.89 - 2026-10-17
 
 ### Changed
 - README: one section, "Devices without a board", replaces the scattered notes: what such a device can and cannot do, the tailnet rule, the dedicated non-root user, the ten-second poll, the state log, removal, and a failure table in the board's own words.

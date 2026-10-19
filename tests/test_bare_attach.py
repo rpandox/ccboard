@@ -101,7 +101,7 @@ def test_only_an_open_row_on_the_persons_checked_device(lite_client, device, bar
     assert main.db.node_audit_list()[0]['status'] == 'failed'
 
 
-def test_only_person_with_csrf_not_hook_node_or_mcp(lite_client, device, bare_runner):
+def test_only_person_with_csrf_not_hook_node_or_mcp(lite_client, device, bare_runner, unsigned_node_keys):
     from tests.test_nodes_auth import mint
     name = seed_sessions(1)[0]
     _, node_token = mint(main.db, nodes.SCOPES)
