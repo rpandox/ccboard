@@ -2,6 +2,19 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.108 - 2026-10-19
+
+### Changed
+- The macOS and Windows checks are now required (#123). `test-macos` and `check-windows` lost `continue-on-error`, and the image job waits for them: a push to `main` builds and pushes the image only when the Ubuntu tests passed and each of the two either passed or was skipped (a documentation-only change skips them and still publishes; a failed or cancelled one stops the image). The owner made both required in the repository ruleset after more than ten green runs in a row. `tests/test_ci_workflow.py` pins the promotion and the image condition for every combination of success, skipped, failed and cancelled.
+
+### Added
+- A nightly Intel leg, `.github/workflows/ci-intel.yml` (#123): the macOS steps on an Intel runner (`macos-15-intel`), scheduled once a day and on demand, advisory, read-only token, no secrets, and it never builds or pushes an image.
+- The runner minutes of each CI job (median and longest over the last 20 runs on `main`) are in `docs/development.md`, with the note that macOS minutes bill at a multiplier only on private repositories.
+
+Closes #123.
+
+Upgrade: nothing to do.
+
 ## v0.5.106 - 2026-10-19
 
 ### Changed

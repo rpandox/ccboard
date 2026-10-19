@@ -79,15 +79,15 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
-  # Issue #123: the whole suite on macOS, advisory. It is NOT in the image job's needs and runs with continue-on-error, so a red macOS run can
-  # neither stop nor allow the image the box pulls. Read-only token, no secrets. Promote it (needs + the pin in tests/test_ci_workflow.py)
-  # only after ten green runs in a row, in a commit of its own. HOME, TMUX_TMPDIR and the tmux socket are temp names: no real login or session.
+  # Issue #123: the whole suite on macOS. REQUIRED since 2026-10-19 (the owner's decision on #123: ProtectMain lists it, after more than ten green
+  # runs in a row): no continue-on-error, and the image job waits for it, so a red macOS run stops the image the box pulls. A docs-only change skips
+  # it (the `changes` job) and a skip does not block the image. Read-only token, no secrets. HOME, TMUX_TMPDIR and the tmux socket are temp names:
+  # no real login or session. The nightly Intel leg lives in ci-intel.yml and stays advisory.
   test-macos:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -126,17 +126,17 @@ jobs:
           mkdir -p "$HOME" "$TMUX_TMPDIR"
           python -m pytest -q
 
-  # Issue #123: the PowerShell side of the Windows (WSL2) support, checked on a Windows runner. Advisory like test-macos: NOT in the image job's
-  # needs, continue-on-error, read-only token, no secrets, no third-party action (the modules come from the PowerShell Gallery at a pinned version).
+  # Issue #123: the PowerShell side of the Windows (WSL2) support, checked on a Windows runner.
+  # REQUIRED since 2026-10-19 (the owner's decision on #123, in ProtectMain): no continue-on-error, and the image job waits for it. Read-only
+  # token, no secrets, no third-party action (the modules come from the PowerShell Gallery at a pinned version).
   # No board code runs here (the board does not run on native Windows): the scripts under scripts/windows are parsed, analysed, and the
   # keep-alive script is run by Pester with Register-ScheduledTask, Unregister-ScheduledTask and wsl.exe mocked, so no task is ever registered.
-  # It runs when the `changes` job says more than documents changed. Do NOT promote it to a required job without the owner's decision.
+  # It runs when the `changes` job says more than documents changed; a docs-only change skips it and the skip does not block the image.
   check-windows:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -189,9 +189,15 @@ jobs:
   # Push to main (or a v* tag): build the amd64 image and load it, smoke-test it, and only then build-and-push the
   # multi-arch manifest (amd64 + arm64) with every tag. A failed smoke step or a failed arm64 leg fails the job before any
   # tag moves, so `latest` never moves to an untested image and never silently becomes amd64-only.
+  # The image also waits for test-macos and check-windows (#123). Those two are skipped for a docs-only change, and a skipped needed job would
+  # skip this one under the default `success()`, so the condition names the results itself: test must have succeeded, the other two must have
+  # succeeded or been skipped (never failed or cancelled). `!cancelled()` replaces the implicit success() that these checks make unnecessary.
   image:
-    needs: test
-    if: github.event_name == 'push'
+    needs: [test, test-macos, check-windows]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.test-macos.result)
+      && contains(fromJSON('["success","skipped"]'), needs.check-windows.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
