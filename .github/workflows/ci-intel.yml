@@ -1,0 +1,62 @@
+name: ci-intel
+
+# Issue #123: the macOS suite on an Intel (x86_64) runner, nightly and on demand. ADVISORY: it is a separate workflow, so it can neither stop nor
+# allow the image the box pulls, and the job has continue-on-error. It never builds or pushes an image. Read-only token, no secrets.
+# The runner label is from GitHub's list of standard hosted runners (docs.github.com/en/actions/reference/runners/github-hosted-runners,
+# read 2026-10-19): the Intel labels are macos-15-intel and macos-26-intel (4 CPUs, 14 GB); macos-latest is arm64. If GitHub retires the label
+# this job fails and shows it in the run; change the label here then. Same steps and pinned actions as the test-macos job in ci.yml.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-intel
+  cancel-in-progress: false
+
+jobs:
+  test-macos-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - timeout-minutes: 10
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux shellcheck
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: pip install --require-hashes -r requirements-dev.lock
+      # app/platform.py answers the process questions through psutil off Linux; drop this line when the lock carries it.
+      - run: pip install psutil==7.2.2
+      # The scripts parse under the real macOS sh (bash 3.2 in POSIX mode) and under bash.
+      - name: Shell syntax
+        run: |
+          for f in bin/* scripts/*.sh; do
+            case "$(head -n 1 "$f")" in
+              *bash*) bash -n "$f" ;;
+              *) sh -n "$f" && bash -n "$f" ;;
+            esac
+          done
+      - name: Tests
+        env:
+          CCBOARD_TEST_NO_CLAUDE: "1"
+          HOME: ${{ runner.temp }}/home
+          TMUX_TMPDIR: ${{ runner.temp }}/tmux
+          CCBOARD_TMUX_SOCKET: ccboard-ci-macos
+        run: |
+          mkdir -p "$HOME" "$TMUX_TMPDIR"
+          python -m pytest -q
