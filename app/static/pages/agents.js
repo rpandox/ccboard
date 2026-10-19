@@ -534,9 +534,11 @@ function sessionTailSweep() { for (const n of Array.from(agentsTails)) if (n.isC
 function sessionTailStopAll() { for (const n of Array.from(agentsTails)) if (typeof n.ccDestroy === 'function') n.ccDestroy(); }
 function sessionTailAvailable() { return typeof Live !== 'undefined' && !!Live && typeof Live.subscribe === 'function' && typeof Live.unsubscribe === 'function'; }
 
-function sessionPerm(tmux) {
+/* The permission waiting on a session. `waiting` (the keys, the nudges: whatever would send an answer): a permission whose answer is already out reads as not
+   waiting; the cards pass nothing, so they keep the permission on screen as allowing… / denying… (#318). */
+function sessionPerm(tmux, waiting) {
   if (!state) return null;
-  for (const pr of (state.pending_permissions || [])) if (pr.tmux_name === tmux) return pr;
+  for (const pr of (state.pending_permissions || [])) if (pr.tmux_name === tmux && !(waiting && permMark(pr))) return pr;
   return null;
 }
 

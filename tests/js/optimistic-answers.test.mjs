@@ -251,3 +251,61 @@ test('a refused Install now restores the button and says why', async () => {
   assert.equal(off(installButton(b)), false);
   assert.deepEqual(b.toasts(), [{ text: 'The update was not started: the update is already being installed', kind: 'bad' }]);
 });
+
+// ---------------------------------------------------------------- the keys y / d while an answer is out (#318)
+
+/** The board with the keyboard layer bound and the permission's session selected on Needs you. */
+async function keyWorld() {
+  const b = await boardWorld();
+  b.w.load('keymap.js');
+  b.w.run(`Keymap.bindDefaults(); Pages.selTmux = ${JSON.stringify(CK)}; Pages.sync();`);
+  assert.equal(b.w.run('Pages.target()'), CK, 'the session that waits on the permission is the key target');
+  const press = (key) => { b.w.ctx.__e = { key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target: null, defaultPrevented: false, preventDefault() {} }; b.w.run('Keymap.handle(__e)'); };
+  return { b, press };
+}
+
+test('y then y with the first answer out: one POST, no failure toast, the pending state stays', async () => {
+  const { b, press } = await keyWorld();
+  b.hold('/api/permission/');
+  b.server.apply = answerPermission;
+  press('y');
+  await settle();
+  assert.deepEqual(words(permButtons(b)), ['allowing…', 'Deny']);
+  press('y');
+  await settle();
+  assert.deepEqual(b.server.posts, ['/api/permission/12/allow'], 'the second key posts nothing');
+  assert.deepEqual(words(permButtons(b)), ['allowing…', 'Deny'], 'still pending');
+  assert.equal(b.w.run('actPending.size'), 1);
+  assert.equal(b.w.run('Pages.targetPerm()'), null, 'a permission with an answer out is not waiting');
+  await b.release();
+  assert.deepEqual(b.server.posts, ['/api/permission/12/allow']);
+  assert.deepEqual(b.toasts(), [{ text: 'allowed t-checkout-redesign', kind: 'ok' }], 'the one answer says so; no failure toast');
+});
+
+test('y then d with the first answer out: the opposite answer is never sent either', async () => {
+  const { b, press } = await keyWorld();
+  b.hold('/api/permission/');
+  b.server.apply = answerPermission;
+  press('y');
+  await settle();
+  press('d');
+  await settle();
+  assert.deepEqual(b.server.posts, ['/api/permission/12/allow']);
+  assert.deepEqual(words(permButtons(b)), ['allowing…', 'Deny']);
+  await b.release();
+  assert.deepEqual(b.toasts(), [{ text: 'allowed t-checkout-redesign', kind: 'ok' }], 'the one answer says so; no failure toast');
+});
+
+test('decide() itself returns false at once for a permission with an answer out (a palette nudge, a button)', async () => {
+  const b = await boardWorld();
+  b.hold('/api/permission/');
+  b.server.apply = answerPermission;
+  permButtons(b)[0].click();
+  const second = await Promise.race([b.w.run(`decide(12, 'deny')`), settle().then(() => 'still waiting for the board')]);
+  assert.equal(second, false);
+  assert.deepEqual(b.server.posts, ['/api/permission/12/allow']);
+  assert.deepEqual(words(permButtons(b)), ['allowing…', 'Deny']);
+  assert.equal(b.w.run('actPending.size'), 1);
+  await b.release();
+  assert.deepEqual(b.toasts(), []);
+});

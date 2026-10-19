@@ -924,6 +924,7 @@ test('Pages: a acknowledges, y allows and d denies the pending permission of the
   press(w, 'y');
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/permission/7/allow' });
+  w.run('actPending.clear()');                                    // the poll that confirms an answer drops it (#318: a second key waits for that)
   press(w, 'd');
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/permission/7/deny' });

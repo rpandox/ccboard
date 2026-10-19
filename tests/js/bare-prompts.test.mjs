@@ -28,6 +28,7 @@ test('device dialog uses the ordinary Needs you card and routes Allow and Deny t
   assert.match(text(w.get('card')), /claude on Device/);
   for (const decision of ['Allow', 'Deny']) {
     w.get('card').querySelectorAll('button').find((b) => text(b) === decision).click(); await tick();
+    w.run('actPending.clear()');                                 // the poll that confirms an answer drops it (#318: a second answer waits for that)
   }
   assert.deepEqual(plain(w.get('recorded')), [
     ['POST', `/api/bare/device-1/sessions/${name}/allow`, {pid: pr.id}],

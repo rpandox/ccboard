@@ -704,3 +704,40 @@ test('a terminal permission makes the epic wait for a person with the same Allow
   await tick();
   assert.ok(calls(w).some((c) => c.path === '/api/permission/123/allow'));
 });
+
+// #318: the epic row's signature had no permMark term and the focused button held the repaint back, so Allow never read "allowing…" and a second click posted a duplicate answer.
+async function permissionRow({ focus = true } = {}) {
+  const w = await epicWorld();
+  const gate = defer();
+  w.ctx.__gate = gate.p;
+  w.run(`state.tasks = [{ id: 42, tmux_name: 'shop--api--s1' }];
+    state.pending_permissions = [{ id: 123, tmux_name: 'shop--api--s1', kind: 'terminal_prompt', summary: 'Bash command: git add src', choices: [{ number: '2', label: 'Yes' }, { number: '4', label: 'No' }] }];
+    __answers['/api/permission/'] = () => __gate;
+    repaintPage();`);
+  await settle();
+  const row = () => rows(w).find((r) => r.getAttribute('data-n') === '202');
+  const buttons = () => row().querySelectorAll('.ep-permission button');
+  assert.deepEqual(buttons().map(text), ['Allow', 'Deny'], 'the permission shows on the row of the issue whose task waits');
+  if (focus) buttons()[0].focus();                                    // a real click focuses the button, which makes the row defer its repaint
+  return { w, gate, buttons, posts: () => calls(w).filter((c) => c.path.startsWith('/api/permission/')) };
+}
+
+test('an epic row\'s Allow reads "allowing…" with both buttons off before the board answers, and a second click does nothing', async () => {
+  const { w, gate, buttons, posts } = await permissionRow();
+  buttons()[0].click();
+  assert.deepEqual(buttons().map(text), ['allowing…', 'Deny'], 'painted at the click, focus or not');
+  assert.ok(buttons().every((b) => b.hasAttribute('disabled')), 'both buttons off');
+  for (const b of buttons()) if (!b.hasAttribute('disabled')) b.click();            // a browser does not click a disabled button; minidom's click() reads the property only
+  assert.deepEqual(posts().map((c) => c.path), ['/api/permission/123/allow'], 'one answer only');
+  gate.resolve({ ok: true });
+  await settle();
+  assert.deepEqual(plain(w.get('__toasts')).filter((t) => /was not sent/.test(t.text)), [], 'no failure toast');
+});
+
+test('an epic row\'s Deny reads "denying…" the same way, with no focus on the button', async () => {
+  const { buttons, posts } = await permissionRow({ focus: false });
+  buttons()[1].click();
+  assert.deepEqual(buttons().map(text), ['Allow', 'denying…']);
+  assert.ok(buttons().every((b) => b.hasAttribute('disabled')));
+  assert.deepEqual(posts().map((c) => c.path), ['/api/permission/123/deny']);
+});

@@ -405,13 +405,17 @@ def kill_session(name: str) -> bool:
     return True
 
 
-def capture(name: str, lines: int = 200, join: bool = True, escapes: bool = False) -> str:
+def capture(name: str, lines: int = 200, join: bool = True, escapes: bool = False, strict: bool = False) -> str:
+    """The pane's text; "" when tmux has nothing, which includes a failed capture. strict=True raises TmuxError on a failed capture instead, for
+    a caller that must tell "the pane is empty" from "the capture did not work" (#318)."""
     args = ["capture-pane", "-p", "-t", pane_target(name), "-S", f"-{lines}"]
     if join:
         args.append("-J")
     if escapes:
         args.append("-e")
     cp = run(*args, check=False)
+    if cp.returncode != 0 and strict:
+        raise TmuxError((cp.stderr or "").strip() or "tmux capture-pane failed")
     return cp.stdout if cp.returncode == 0 else ""
 
 

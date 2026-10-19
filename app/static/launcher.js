@@ -2655,7 +2655,8 @@ function launcherForm(o) {
     prompt: prompt.slice(0, 600), prompt_len: prompt.length, claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null });
   /* #311: Add to backlog paints at once. The sheet closes and the card stands in the Backlog (dimmed, "adding…") before the board has answered; the answer swaps it for the real card.
      A refusal takes the pending card away and opens the sheet again with what was typed (the prompt, the title, Later; the launch options were remembered when it was sent), the
-     board's words under the form. When the sheet cannot open again (something else is open now) the words come as a toast naming the task. */
+     board's words under the form. When the sheet cannot open again (something else is open now) the words come as a toast naming the task. A task linked to a GitHub issue is
+     never reopened (#318): the new sheet has no issue picked, so the retry would create the task detached from the issue; the toast comes instead and the issue is picked again from the form. */
   const submitLater = (body, v, prompt, title) => {
     const pid = taskPendingAdd(taskRowBase({}, v, prompt, title));
     setError(null);
@@ -2674,7 +2675,8 @@ function launcherForm(o) {
       taskRepaint();
       const why = typeof errorText === 'function' ? errorText(err) : err.message;
       const dlg = typeof document !== 'undefined' ? document.getElementById('sheet') : null;
-      const ctl = dlg && dlg.open ? null : openLauncher({ ...opt, project: p.name, repo: r.name, mode: 'task', carry: { title: T.title, prompt, when: 'later' } });
+      const linked = body.issue_number !== undefined && body.issue_number !== null;            // #318: the reopened sheet would send an unlinked task, so a linked one is not reopened
+      const ctl = (dlg && dlg.open) || linked ? null : openLauncher({ ...opt, project: p.name, repo: r.name, mode: 'task', carry: { title: T.title, prompt, when: 'later' } });
       if (ctl && ctl.status) { formStatus(ctl.status, why, true); setError(why); }
       else toast(`not added to the backlog: ${title}: ${why}`.slice(0, 200), { kind: 'bad' });
     });
