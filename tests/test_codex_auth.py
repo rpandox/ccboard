@@ -530,3 +530,126 @@ def test_a_prompt_or_a_reply_that_says_login_raises_nothing(db, home, work, noti
     add_codex_row(db, work, flags={"transcript_path": str(p), "hook_seen": True})
     cr.Tailer().tail_rows(db, NOW)
     assert login_problem.get(db) is None and notices == []
+
+
+# ------------------------------------------------------------------ a rejected login ON SCREEN (interactive sessions, #35; from the source, not observed)
+# Codex 0.145 to 0.161 keeps error events out of the rollout (rollout/src/policy.rs), so an interactive session shows a dead login only on the pane:
+# the TUI draws an error as one red line "■ {message}" (tui/src/history_cell/notices.rs:331 new_error_event @ 9790114). The screens below are built
+# from that rule and the source's strings, not captured.
+from app.agents import codex_pane  # noqa: E402
+
+REAL_PANE_CAPTURE = cr._pane_capture                 # before the conftest stub
+
+EXPIRED = ("Your access token could not be refreshed because your refresh token has expired. "
+           "Please log out and sign in again.")                                                      # manager.rs:206
+TOKEN_401 = ('unexpected status 401 Unauthorized: {"detail":"Unauthorized"}, url: <scrubbed>, request id: <scrubbed>, '
+             'auth error code: token_expired')                                                      # error.rs:633
+
+
+def screen(*blocks):
+    return "\n".join(["› go", "", *blocks, "", "  gpt-6.1-sol default · ~/work · Reply wit"]) + "\n"
+
+
+@pytest.fixture
+def pane(monkeypatch):
+    box = {"text": ""}
+    monkeypatch.setattr(cr, "_pane_capture", lambda name: box["text"])
+    return box
+
+
+def pane_row(db, home, work):
+    accounts_kv(db, current=KA)
+    p = make_rollout(home, cwd=work, account=ID_A, created=NOW - 120,
+                     lines=[jl(NOW - 100, "event_msg", {"type": "user_message", "message": "go"}), token_line(NOW - 90, info=usage(100))])
+    add_codex_row(db, work, flags={"transcript_path": str(p), "hook_seen": True})
+    return p
+
+
+def test_the_tui_error_line_is_read_with_its_wrapped_continuation():
+    assert codex_pane.error_messages(screen("■ one", "■ two words", "  more words")) == ["one", "two words more words"]
+    assert codex_pane.error_messages(screen("• ■ not at the start", "  ■no space", "plain ■ in the middle")) == []
+    text = screen("■ Your access token could not be refreshed because your refresh token has", "  expired. Please log out and sign in again.")
+    assert codex_pane.rejected_login(text) == EXPIRED
+    assert codex_pane.rejected_login(screen("■ " + TOKEN_401)) == TOKEN_401
+    assert codex_pane.rejected_login(screen("■ " + ACCOUNT_MISMATCH)) is None
+
+
+def test_a_prefixed_refresh_failure_on_screen_raises_once(db, home, work, notices, pane):
+    pane_row(db, home, work)
+    pane["text"] = screen("■ " + EXPIRED)
+    t = cr.Tailer()
+    t.tail_rows(db, NOW)
+    prob = login_problem.get(db)
+    assert prob["agent"] == "codex" and prob["account"] == KA and prob["session"] == "shop--api--s1" and prob["message"] == EXPIRED
+    assert len(notices) == 1 and notices[0][1] == {"agent": "codex"} and notices[0][0][:3] == (KA, "Work", "shop--api--s1")
+    assert len([e for e in db.recent_events(20) if e.get("event") == "LoginProblem"]) == 1
+    t.tail_rows(db, NOW + 6)                                      # the same screen on the next tick: nothing new
+    cr.Tailer().tail_rows(db, NOW + 12)                           # ... and after a restart of the board
+    assert len(notices) == 1 and len([e for e in db.recent_events(20) if e.get("event") == "LoginProblem"]) == 1
+    login_problem.clear(db)                                       # dismissed while the line is still on screen: it does not come back
+    t.tail_rows(db, NOW + 18)
+    assert login_problem.get(db) is None and len(notices) == 1
+
+
+def test_the_401_with_an_auth_error_code_on_screen_raises(db, home, work, notices, pane):
+    pane_row(db, home, work)
+    pane["text"] = screen("■ " + TOKEN_401)
+    cr.Tailer().tail_rows(db, NOW)
+    assert login_problem.get(db)["agent"] == "codex" and "token_expired" in login_problem.get(db)["message"] and len(notices) == 1
+
+
+def test_a_wrapped_line_raises_and_a_line_that_comes_back_after_it_left_raises_again(db, home, work, notices, pane):
+    pane_row(db, home, work)
+    t = cr.Tailer()
+    pane["text"] = screen("■ Your access token could not be refreshed because your refresh token has", "  expired. Please log out and sign in again.")
+    t.tail_rows(db, NOW)
+    assert login_problem.get(db)["message"] == EXPIRED and len(notices) == 1
+    pane["text"] = screen("• fine now")                          # scrolled away
+    t.tail_rows(db, NOW + 6)
+    login_problem.clear(db)
+    pane["text"] = screen("■ " + EXPIRED)                        # a new failure
+    t.tail_rows(db, NOW + 12)
+    assert login_problem.get(db) is not None and len(notices) == 2
+
+
+def test_the_same_words_without_the_error_prefix_never_raise(db, home, work, notices, pane):
+    pane_row(db, home, work)
+    pane["text"] = screen("• You could see: " + EXPIRED, "", "• " + EXPIRED,
+                          "  " + EXPIRED, "", "› " + EXPIRED, "", "+    msg = \"" + EXPIRED + "\"", "-    msg = \"" + TOKEN_401 + "\"",
+                          "> " + EXPIRED, "# ■ " + EXPIRED, "x ■ " + EXPIRED, "Error: " + EXPIRED)
+    cr.Tailer().tail_rows(db, NOW)
+    assert login_problem.get(db) is None and notices == []
+
+
+PANE_NEGATIVES = NOT_A_LOGIN + [("mcp_enterprise", "enterprise IdP session has no refresh token; sign in again"),
+                                ("plain_401", "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header")]
+
+
+@pytest.mark.parametrize("label,msg", PANE_NEGATIVES, ids=[n for n, _ in PANE_NEGATIVES])
+def test_a_prefixed_line_that_is_not_a_rejected_refresh_never_raises(label, msg, db, home, work, notices, pane):
+    pane_row(db, home, work)
+    pane["text"] = screen("■ " + msg)
+    cr.Tailer().tail_rows(db, NOW)
+    assert login_problem.get(db) is None and notices == []
+
+
+def test_a_later_token_usage_clears_it_and_the_old_line_does_not_raise_again(db, home, work, notices, pane):
+    p = pane_row(db, home, work)
+    pane["text"] = screen("■ " + EXPIRED)
+    t = cr.Tailer()
+    t.tail_rows(db, NOW)
+    assert login_problem.get(db) is not None
+    with open(p, "a") as f:
+        f.write(token_line(NOW + 1, info=usage(500)) + "\n")      # a turn that worked after it: the same rule as the rollout path
+    t.tail_rows(db, NOW + 6)
+    t.tail_rows(db, NOW + 12)
+    assert login_problem.get(db) is None and len(notices) == 1
+
+
+def test_the_pane_is_only_read_through_the_seam_and_a_failed_capture_is_nothing(monkeypatch):
+    from app import tmux
+    monkeypatch.setattr(tmux, "capture", lambda name, lines=0, **k: (_ for _ in ()).throw(tmux.TmuxDown("no server")))
+    assert REAL_PANE_CAPTURE("shop--api--s1") == ""
+    asked = []
+    monkeypatch.setattr(tmux, "capture", lambda name, lines=0, **k: asked.append((name, lines)) or screen("■ " + EXPIRED))
+    assert REAL_PANE_CAPTURE("shop--api--s1") == screen("■ " + EXPIRED) and asked == [("shop--api--s1", codex_pane.PANE_LINES)]

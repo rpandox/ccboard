@@ -1,5 +1,5 @@
 {
- "_note": "The states of the Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09 and 2026-10-10) or false (not seen: written from the adapter's verdict rules and from Codex's source, never captured; a record built from the source says `from_source`). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed for `codex login status`; `codex exec` was run in the same three logged-out states on 2026-10-10 and all three look the same (see `exec_no_login`). Only the server-rejected state (an expired or revoked login) was never seen: its texts are FROM SOURCE (openai/codex at commit 979011409de0a60b52f179721948e65531d26144, tag rust-v0.161.0, files under codex-rs/), recorded in `expired_revoked.from_source` with the file of each string; they are not observed, because producing them needs a real login that the server has revoked. A real dead login has to confirm them.",
+ "_note": "The states of the Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09 and 2026-10-10) or false (not seen: written from the adapter's verdict rules and from Codex's source, never captured; a record built from the source says `from_source`). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed for `codex login status`; `codex exec` was run in the same three logged-out states on 2026-10-10 and all three look the same (see `exec_no_login`). Only the server-rejected state (an expired or revoked login) was never seen: its texts are FROM SOURCE (openai/codex at commit 979011409de0a60b52f179721948e65531d26144, tag rust-v0.161.0, files under codex-rs/), recorded in `expired_revoked.from_source` with the file of each string; they are not observed, because producing them needs a real login that the server has revoked. A real dead login has to confirm them. An interactive session's rejected login is read from the pane (`expired_revoked.pane`, from source as well).",
  "logged_in": {
   "login_status": {
    "observed": true,
@@ -117,6 +117,13 @@
     }
    ],
    "turn_failed_and_error_event": "A failed refresh is CodexErr::RefreshTokenFailed (client.rs handle_unauthorized), displayed as its bare message, not prefixed with `unexpected status 401`. It is not retried."
+  },
+  "pane": {
+   "observed": false,
+   "from_source": true,
+   "source_sha": "979011409de0a60b52f179721948e65531d26144",
+   "basis": "FROM SOURCE, not observed. The Codex TUI draws an error event as one red history line `■ {message}` (codex-rs/tui/src/history_cell/notices.rs:331 new_error_event, called from chatwidget/turn_runtime.rs:372 on_error); an agent reply starts with `•` and the user's prompt with `›`. Because Codex 0.145 to 0.161 does not persist error events to the rollout (rollout/src/policy.rs:142), the pane is the only trace of a rejected login in an interactive session. The board (codex_pane.rejected_login, Tailer._pane_auth) raises login_problem for a `■ ` line, joined with up to three wrapped continuation lines, that matches the strict subset login_problem.CODEX_PANE_RE: 'access token could not be refreshed', 'authentication session could not be refreshed', 'auth error code: token_'. How a long message wraps across pane lines is ASSUMED, not captured.",
+   "expect": "rejected"
   }
  },
  "not_an_auth_failure": [

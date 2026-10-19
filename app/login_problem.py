@@ -7,7 +7,7 @@ parses a token or an expiry out of them). It learns it the way the person would:
 StopFailure hook), and so a flag is raised until a later sign of life from that account clears it:
 
   raise_   the StopFailure hook: kv login_problem = {at, agent, account, session, message[:300]}; for Codex (no such hook) the rollout
-           Tailer, from an error item with no token usage after it that codex_auth_failure reads as a dead login (agents/codex_rollout.py)
+           Tailer, from an error item with no token usage after it that codex_auth_failure reads as a dead login, or a "■ " error line on the pane (agents/codex_rollout.py, codex_pane.rejected_login)
   clear    a statusline reading or a successful Stop of a session on that account, a login for that account finishing (account_store /
            codex_accounts finalize), or DELETE /api/accounts/problem
 
@@ -82,6 +82,19 @@ def codex_auth_failure(*texts) -> bool:
     mismatch message."""
     return any(isinstance(t, str) and t and not CODEX_NOT_A_DEAD_LOGIN_RE.search(t) and (AUTH_RE.search(t) or CODEX_AUTH_RE.search(t))
                for t in texts)
+
+
+# What an interactive Codex pane may raise the problem on (codex_pane.rejected_login): a STRICT subset of the patterns above, because a pane
+# also holds text the board does not trust (an agent's answer, a diff, a pasted log). Only the refresh-failure sentences of manager.rs:206-210,
+# the cloud-config one and a 401's "auth error code: token_..." (error.rs:633), and only on a line the TUI drew as an error ("■ ", tui
+# history_cell/notices.rs:331 new_error_event). The account-switch mismatch is left out here as well.
+CODEX_PANE_RE = re.compile(r"access token could not be refreshed|authentication session could not be refreshed|auth error code: token_",
+                           re.IGNORECASE)
+
+
+def codex_pane_auth_failure(text) -> bool:
+    """Is this error line from a Codex pane (prefix already checked by the caller) a login the server rejected? Strict; pure."""
+    return isinstance(text, str) and not CODEX_NOT_A_DEAD_LOGIN_RE.search(text) and bool(CODEX_PANE_RE.search(text))
 
 
 def _rec(db):
