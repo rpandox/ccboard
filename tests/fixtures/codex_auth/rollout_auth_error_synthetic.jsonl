@@ -2,4 +2,4 @@
 {"timestamp":"2026-10-04T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first prompt","images":[]}}
 {"timestamp":"2026-10-04T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"output_tokens":50,"total_tokens":1050},"last_token_usage":{"input_tokens":1000,"output_tokens":50,"total_tokens":1050},"model_context_window":258400},"rate_limits":null}}
 {"timestamp":"2026-10-04T12:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"second prompt, after the login died","images":[]}}
-{"timestamp":"2026-10-04T12:00:03.000Z","type":"event_msg","payload":{"type":"error","message":"unexpected status 401 Unauthorized: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.","codex_error_info":"unauthorized"}}
+{"timestamp":"2026-10-04T12:00:03.000Z","type":"event_msg","payload":{"type":"error","message":"Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.","codex_error_info":"unauthorized"}}

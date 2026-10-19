@@ -166,6 +166,14 @@ def _quiet_box(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_codex_pane(monkeypatch):
+    """The Codex rollout Tailer reads a row's pane for a rejected login through one seam (codex_rollout._pane_capture): no test captures a real
+    tmux pane through it. tests/test_codex_auth.py replaces the seam with a fake screen."""
+    from app.agents import codex_rollout
+    monkeypatch.setattr(codex_rollout, "_pane_capture", lambda name: "")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_tailscale(monkeypatch):
     """The node id and name read `tailscale status --json` through one seam (app/nodes.py _ts_status): no test runs the real command, and each test
     starts with no id, no Tailscale reading and an empty hello limiter. tests/test_nodes_card.py patches the seam with a fake reading."""
