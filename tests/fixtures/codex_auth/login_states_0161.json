@@ -1,5 +1,5 @@
 {
- "_note": "The states of the Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09 and 2026-10-10) or false (ASSUMED: written from the adapter's verdict rules and from Codex's source and docs, never captured). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed for `codex login status`; `codex exec` was run in the same three logged-out states on 2026-10-10 and all three look the same (see `exec_no_login`). Only the server-rejected state (an expired or revoked login) is assumed, because producing it needs a real login that the server has revoked.",
+ "_note": "The states of the Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09 and 2026-10-10) or false (not seen: written from the adapter's verdict rules and from Codex's source, never captured; a record built from the source says `from_source`). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed for `codex login status`; `codex exec` was run in the same three logged-out states on 2026-10-10 and all three look the same (see `exec_no_login`). Only the server-rejected state (an expired or revoked login) was never seen: its texts are FROM SOURCE (openai/codex at commit 979011409de0a60b52f179721948e65531d26144, tag rust-v0.161.0, files under codex-rs/), recorded in `expired_revoked.from_source` with the file of each string; they are not observed, because producing them needs a real login that the server has revoked. A real dead login has to confirm them. An interactive session's rejected login is read from the pane (`expired_revoked.pane`, from source as well).",
  "logged_in": {
   "login_status": {
    "observed": true,
@@ -30,19 +30,100 @@
   "login_status": {
    "observed": false,
    "rc": 0,
-   "stdout": "Logged in using ChatGPT\n",
-   "stderr": "",
-   "basis": "Assumed: login status reports that a login file exists, not that it works, so a dead login is believed to read exactly like a live one."
+   "stdout": "",
+   "stderr": "Logged in using ChatGPT\n",
+   "basis": "FROM SOURCE, not observed (openai/codex 979011409de0a60b52f179721948e65531d26144): `codex login status` (cli/src/login.rs run_login_status) only calls load_auth, which reads the saved login and never refreshes or asks the server, so a login the server rejects prints `Logged in using ChatGPT` on STDERR and exits 0, the same as a live one (stderr, like the observed logged_in case).",
+   "from_source": true
   },
   "rollout": {
    "observed": false,
+   "from_source": true,
    "file": "rollout_auth_error_synthetic.jsonl",
-   "basis": "ASSUMED error item (event_msg of type error: 401 Unauthorized, refresh token revoked, log out and sign in again), built from Codex's source and docs. No real expired or revoked Codex login has been seen yet."
+   "basis": "SYNTHETIC SHAPE with the source's text. At 979011409de0a60b52f179721948e65531d26144 Codex does NOT write an error event to the rollout: rollout/src/policy.rs should_persist_event_msg lists EventMsg::Error under 'Transient, non-durable events' and returns false (the same arm in rust-v0.145.0 and rust-v0.160.0). So a login the server rejects most likely leaves nothing about the failure in the rollout, only a turn_complete. The board's rollout reader still accepts an event_msg error item (this file: message from manager.rs:208, codex_error_info `unauthorized` as protocol/src/error.rs sets it for RefreshTokenFailed), so it would work if a Codex version persisted it. Do not count on it."
   },
   "expect": "rejected",
   "exec": {
    "observed": false,
-   "basis": "ASSUMED: a login the server rejects (expired or revoked) is believed to end an exec run in the same turn.failed shape with a different 401 text (a refresh token that expired, was revoked or was already used). Never captured; needs a genuinely dead login."
+   "from_source": true,
+   "source_sha": "979011409de0a60b52f179721948e65531d26144",
+   "files": [
+    "../codex_exec/auth_rejected_refresh_expired.jsonl",
+    "../codex_exec/auth_rejected_refresh_reused.jsonl",
+    "../codex_exec/auth_rejected_refresh_revoked.jsonl",
+    "../codex_exec/auth_rejected_refresh_unknown.jsonl",
+    "../codex_exec/auth_rejected_responses_401_token_expired.jsonl"
+   ],
+   "basis": "FROM SOURCE, not observed. The TEXTS are the source's; the SEQUENCE (thread.started, turn.started, one error, turn.failed with the same message, nothing retried) is ASSUMED from the source: RefreshTokenFailed is in CodexErrorDetails::retry_delay's no-retry list (protocol/src/error.rs), exec turns an EventMsg::Error into an `error` event and a failed turn into turn.failed (exec/src/event_processor_with_jsonl_output.rs). Never captured; needs a genuinely dead login."
+  },
+  "from_source": {
+   "source": "https://github.com/openai/codex",
+   "commit": "979011409de0a60b52f179721948e65531d26144",
+   "tag": "rust-v0.161.0",
+   "strings": [
+    {
+     "file": "codex-rs/login/src/auth/manager.rs:206",
+     "name": "REFRESH_TOKEN_EXPIRED_MESSAGE",
+     "text": "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
+     "when": "the refresh endpoint answers error code refresh_token_expired"
+    },
+    {
+     "file": "codex-rs/login/src/auth/manager.rs:207",
+     "name": "REFRESH_TOKEN_REUSED_MESSAGE",
+     "text": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+     "when": "error code refresh_token_reused"
+    },
+    {
+     "file": "codex-rs/login/src/auth/manager.rs:208",
+     "name": "REFRESH_TOKEN_INVALIDATED_MESSAGE",
+     "text": "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+     "when": "error code refresh_token_invalidated"
+    },
+    {
+     "file": "codex-rs/login/src/auth/manager.rs:209-210",
+     "name": "REFRESH_TOKEN_UNKNOWN_MESSAGE",
+     "text": "Your access token could not be refreshed. Please log out and sign in again.",
+     "when": "a 401 from the refresh endpoint, or a 400 invalid_grant, with any other code"
+    },
+    {
+     "file": "codex-rs/login/src/auth/manager.rs:211",
+     "name": "REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE",
+     "text": "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.",
+     "when": "auth.json changed to another account while the process ran (what a board account switch does to an older process)",
+     "verdict": "NOT a dead login: the matcher leaves it out"
+    },
+    {
+     "file": "codex-rs/protocol/src/error.rs:615-635 (UnexpectedResponseError Display)",
+     "name": "a 401 from the Responses API",
+     "text": "unexpected status 401 Unauthorized: <body>, url: <url>, cf-ray: <id>, request id: <id>, auth error: <header>, auth error code: token_expired",
+     "when": "the server answers 401 after the reload and refresh recovery steps (core/src/client.rs handle_unauthorized) were used up; the body is the error.message of a JSON body or the raw body, and `auth error code` is the x-error-json header's code (codex-api/src/api_bridge.rs)"
+    },
+    {
+     "file": "codex-rs/cloud-config/src/service.rs:44-46",
+     "name": "CLOUD_CONFIG_BUNDLE_AUTH_RECOVERY_FAILED_MESSAGE",
+     "text": "Your authentication session could not be refreshed automatically. Please log out and sign in again.",
+     "when": "the workspace-managed policies could not be loaded after a failed refresh"
+    },
+    {
+     "file": "codex-rs/login/src/auth/util.rs (test)",
+     "name": "the server's own wording for a reused refresh token",
+     "text": "Your refresh token has already been used to generate a new access token. Please try signing in again.",
+     "when": "only inside the refresh response body; Codex shows the constants above instead"
+    },
+    {
+     "file": "codex-rs/protocol/src/error.rs (CodexErrorInfo, to_codex_protocol_error)",
+     "name": "error kind",
+     "text": "unauthorized",
+     "when": "codex_error_info of the error event for RefreshTokenFailed (other 401s carry http_connection_failed with status 401)"
+    }
+   ],
+   "turn_failed_and_error_event": "A failed refresh is CodexErr::RefreshTokenFailed (client.rs handle_unauthorized), displayed as its bare message, not prefixed with `unexpected status 401`. It is not retried."
+  },
+  "pane": {
+   "observed": false,
+   "from_source": true,
+   "source_sha": "979011409de0a60b52f179721948e65531d26144",
+   "basis": "FROM SOURCE, not observed. The Codex TUI draws an error event as one red history line `■ {message}` (codex-rs/tui/src/history_cell/notices.rs:331 new_error_event, called from chatwidget/turn_runtime.rs:372 on_error); an agent reply starts with `•` and the user's prompt with `›`. Because Codex 0.145 to 0.161 does not persist error events to the rollout (rollout/src/policy.rs:142), the pane is the only trace of a rejected login in an interactive session. The board (codex_pane.rejected_login, Tailer._pane_auth) raises login_problem for a `■ ` line, joined with up to three wrapped continuation lines, that matches the strict subset login_problem.CODEX_PANE_RE: 'access token could not be refreshed', 'authentication session could not be refreshed', 'auth error code: token_'. How a long message wraps across pane lines is ASSUMED, not captured.",
+   "expect": "rejected"
   }
  },
  "not_an_auth_failure": [
@@ -87,5 +168,19 @@
   "stderr_repeats": "failed to connect to websocket: HTTP error: 401 Unauthorized",
   "basis": "Observed on the box, 2026-10-10: events thread.started, turn.started, four error 'Reconnecting... N/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)', one item.completed of type error 'Falling back from WebSockets to HTTPS transport ...', five more error, a final error, then turn.failed with the 401 message. The fixture keeps that order and wording; request ids, cf-ray values and urls are replaced by <scrubbed>, and the text the recording elided ('...') is not invented. `exec` does not report a bad auth.json as a parse error, so only `codex login status` tells missing from unreadable.",
   "expect": "auth_failure"
- }
+ },
+ "not_an_auth_failure_from_source": [
+  {
+   "observed": false,
+   "from_source": true,
+   "text": "MCP OAuth refresh token was rejected; reauthorization required",
+   "basis": "codex-rs/rmcp-client/src/oauth/refresh_transaction.rs:204 at 979011409de0a60b52f179721948e65531d26144: an MCP server's login, not the Codex login."
+  },
+  {
+   "observed": false,
+   "from_source": true,
+   "text": "enterprise IdP session has no refresh token; sign in again",
+   "basis": "codex-rs/rmcp-client/src/ema_identity.rs:159 at 979011409de0a60b52f179721948e65531d26144: an MCP enterprise login, not the Codex login."
+  }
+ ]
 }
