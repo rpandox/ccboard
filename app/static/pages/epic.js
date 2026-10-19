@@ -572,8 +572,7 @@ function epPermissionNode(p) {
   if (p.node) return nsPermNode(p);
   return el('div', { class: 'ep-permission' }, el('p', { text: p.summary }),
     el('p', { class: 'dim', text: (p.choices || []).map((c) => `${c.number}. ${c.label}`).join(' · ') }),
-    el('button', { class: 'primary small', text: 'Allow', onclick: () => decide(p.id, 'allow') }),
-    el('button', { class: 'small', text: 'Deny', onclick: () => decide(p.id, 'deny') }));
+    ...permButtons(p, 'primary small', 'small'));
 }
 
 /* The phase of the work on one issue, from this board's own work record or, for work on a paired node, the phase that node reports for the task (task.epic_phase, which an older node

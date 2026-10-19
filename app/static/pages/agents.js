@@ -409,46 +409,6 @@ async function cxSwitch(a) {
   return true;
 }
 
-/* THE Codex log out (Settings > Agents and Settings > Accounts call it from a confirmButton, so the first tap has already been confirmed): POST /api/codex-accounts/logout. The box
-   saves the live login into its slot first, then drops it, so the account stays in the list with its saved login and can be switched back to. Success takes the server's
-   accounts and paints the card as logged out at once (the next poll only confirms); a refusal (409: a Codex session of the board is open, or a login is in progress) changes
-   nothing and says why with a hint to close the sessions. One call at a time and never replayed. Resolves true when the box is logged out of Codex. */
-async function cxLogout() {
-  if (cxFlow.loggingOut) return false;
-  cxFlow.loggingOut = true;
-  cxFlow.err = '';
-  cxFlow.note = '';
-  const before = cxAccounts(state).find((x) => x.current);
-  const name = before ? cxName(before) : 'Codex';
-  let r = null;
-  try {
-    r = await api('POST', '/api/codex-accounts/logout');
-  } catch (e) {
-    cxFlow.loggingOut = false;
-    const why = acctReason(e);
-    const hint = e && e.status === 409 ? ' Close the Codex sessions of the board, then try again.' : '';
-    cxFlow.err = `Log out failed: ${why}.${hint}`;
-    cxRepaint();
-    if (typeof pageToast === 'function') pageToast(cxFlow.err, 'bad');
-    return false;
-  }
-  cxFlow.loggingOut = false;
-  if (r && r.accounts && Array.isArray(r.accounts.list)) state.codex_accounts = r.accounts;
-  else {                                                               // an answer without accounts (the demo's {ok: true}): the local rows say it
-    const c = cxState(state);
-    if (c) { for (const x of c.list) if (x) x.current = false; c.current = null; }
-  }
-  const cdx = state && state.agents && state.agents.codex;
-  if (cdx && typeof cdx === 'object') cdx.loggedIn = false;
-  const warns = r && Array.isArray(r.warnings) ? r.warnings.filter((w) => typeof w === 'string' && w) : [];
-  cxRepaint();
-  const was = r && ('was' in r ? r.was : before);                       // the demo answers {ok: true} without `was`: the row that was current says it
-  const text = was ? `Logged out of Codex · the login of ${name} stays saved${warns.length ? ` · ${warns.join(' · ')}` : ''}` : 'Codex was not logged in';
-  if (typeof pageToast === 'function') pageToast(text, warns.length ? 'warn' : 'ok');
-  if (typeof poll === 'function') poll(true);
-  return true;
-}
-
 /* ---------- the account actions outside Settings (v0.5.101): the topbar chip's menu and the command palette ----------
    acctChoices(st) lists every Claude and Codex account of a state payload with what a tap on it can do, so those two surfaces never re-decide it: `switchable` is Settings'
    Switch rule (the box keeps saved logins, the row is not the one in use, and it has a saved login), `run` the same accountSwitch / cxSwitch the Settings rows call, `flagged`
@@ -620,8 +580,10 @@ async function sessionSend(s, ta) {
 }
 
 async function sessionAck(s) {
-  try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); }
+  const ok = await actPost('ack:' + s.tmux, '', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`, undefined,
+    (on) => { ackFlag(state, s.tmux, !on); (typeof render === 'function' ? render : repaintPage)(true); }, `${s.name || s.tmux} was not acknowledged`);        // #313: the card and the counts go at the click, a refusal brings them back
   await poll(true);
+  return ok;
 }
 
 function agentsAgeNode(node, epoch) {
@@ -844,15 +806,13 @@ function sessionCard(s, opts) {
 
   function patchPerm(pr) {
     const lead = o.peek || cur.lead !== false;                // the peek is its own surface: its Allow is always the filled one
-    const sig = pr ? `${pr.id}:${pr.summary || ''}:${lead ? 1 : 0}` : '';
+    const sig = pr ? `${pr.id}:${pr.summary || ''}:${lead ? 1 : 0}:${permMark(pr)}` : '';
     cur.pr = pr || null;
     if (cur.perm === sig) return;
     cur.perm = sig;
     permBtns.textContent = '';
     if (pr) {
-      permBtns.append(
-        el('button', { class: (lead ? 'primary' : 'primary tinted') + ' small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
-        el('button', { class: 'danger small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'deny'); }, text: 'Deny' }));
+      permBtns.append(...permButtons(pr, (lead ? 'primary' : 'primary tinted') + ' small', 'danger small'));
     }
     permNote.textContent = pr ? String(pr.summary || 'permission request').slice(0, o.peek ? 800 : 200) : '';
     for (const n of (permHost ? [permHost] : [permNote, permBtns])) n.classList.toggle('hidden', !pr);
@@ -916,7 +876,7 @@ function sessionCard(s, opts) {
     const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
       s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null, s2.parked, s2.queued_prompts || 0,
-      pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey, sessionClosing.has(tmux),
+      pr ? pr.id + ':' + pr.summary + permMark(pr) : '', ui.confirm === killKey, sessionClosing.has(tmux),
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
       rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null, Nodes.sig(s2)]);
   }

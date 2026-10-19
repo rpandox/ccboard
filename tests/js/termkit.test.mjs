@@ -1581,7 +1581,7 @@ test('termPane permission line: Allow (tinted primary), Deny (danger) and In ter
   assert.ok(allow.classList.contains('bp5-intent-primary') && allow.classList.contains('tinted'), 'Allow: primary, tinted');
   assert.ok(deny.classList.contains('bp5-intent-danger'), 'Deny: danger (red outline)');
   assert.ok(!tui.classList.contains('bp5-intent-primary') && !tui.classList.contains('bp5-intent-danger'), 'In terminal: quiet');
-  for (const b of [allow, deny, tui]) { b.click(); await settle(); }
+  for (const b of [allow, deny, tui]) { b.click(); await settle(); p.update(paneRow({ state: 'waiting' }), { pending_permissions: [] }); p.update(paneRow({ state: 'waiting' }), st); }       // #313: an answered request holds the buttons off until a poll drops it, so each decision gets its own request
   const posts = plain(w.get('__calls')).filter((c) => c.method === 'POST');
   assert.deepEqual(posts.map((c) => c.path), ['/api/permission/12/allow', '/api/permission/12/deny', '/api/permission/12/tui']);
   assert.equal(plain(w.get('__calls')).filter((c) => c.method === 'poll').length, 3, 'the board repolls after a decision');
@@ -1612,6 +1612,37 @@ test('termPane permission line: the buttons are off while a decision is in fligh
   await settle();
   assert.deepEqual(seen, [[9, 'allow']]);
   assert.equal(plain(w.get('__calls')).filter((c) => c.method === 'POST').length, 1, 'decide() replaced the POST');
+});
+
+test('termPane permission line (#313): the pressed button reads allowing… at once, both stay off through the answer until a poll no longer lists the request, a refusal puts them back', async () => {
+  const { w, kit } = paneWorld();
+  w.run(`api = (method, path) => { __calls.push({ method, path }); return new Promise((res, rej) => { globalThis.__settle = { res, rej }; }); };`);
+  const p = kit.termPane(SESS);
+  const st = { pending_permissions: [{ id: 5, tmux_name: SESS, summary: 'Bash: ls' }] };
+  p.update(paneRow(), st);
+  const words = () => p.root.querySelectorAll('.tp-perm button').map((b) => b.textContent);
+  const off = () => p.root.querySelectorAll('.tp-perm button').every((b) => b.disabled);
+  assert.deepEqual(words(), ['Allow', 'Deny', 'In terminal']);
+  p.root.querySelector('.tp-allow').click();
+  assert.deepEqual(words(), ['allowing…', 'Deny', 'In terminal'], 'painted at the click');
+  assert.equal(off(), true);
+  await settle();
+  p.update(paneRow(), st);                                                    // a poll that still lists it, mid-flight
+  assert.deepEqual(words(), ['allowing…', 'Deny', 'In terminal']);
+  w.run('__settle.res({ ok: true })');
+  await settle();
+  assert.deepEqual(words(), ['allowing…', 'Deny', 'In terminal'], 'answered: held until the poll agrees');
+  assert.equal(off(), true);
+  p.update(paneRow(), { pending_permissions: [] });
+  assert.deepEqual(words(), ['Allow', 'Deny', 'In terminal'], 'the poll no longer lists it: the buttons are back to their words');
+  p.update(paneRow(), st);
+  p.root.querySelector('.tp-deny').click();
+  assert.deepEqual(words(), ['Allow', 'denying…', 'In terminal']);
+  await settle();
+  w.run('__settle.rej(new Error("already decided"))');
+  await settle();
+  assert.deepEqual(words(), ['Allow', 'Deny', 'In terminal'], 'a refusal restores them');
+  assert.equal(off(), false);
 });
 
 test('termPane: the size chip of a grid pane reads the pane\'s own cols x rows against the window; full and tail panes show none', () => {

@@ -178,6 +178,7 @@ def _declares(code, name):
 MOVES = [
     ("pages/agents-page.js", "agents", "pages/agents.js",
      ["agentsPage", "agentsGroupNode", "agentsSummaryNode", "agentsPatchSummary", "agentsExt", "agentsExtNode", "agentsExtRow", "agentsExtRows", "agentsExtLoad", "agentsExtOpen", "AGENTS_SEGS"]),
+    ("pages/agents-page.js", "agents", "pages/agents.js", ["cxLogout"]),       # Settings (which needs the agents bundle) is its only caller; moved to pay for #313's first-paint bytes
     ("shell-create.js", "shellcreate", "shell.js", []),
     ("task-sheets.js", "tasksheets", "components.js", ["taskMoveSheet", "taskEditSheet", "taskPortSheet"]),
     ("task-sheets.js", "tasksheets", "pages/home.js", ["openTaskModal", "diffSideControl"]),
