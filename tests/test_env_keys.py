@@ -206,6 +206,12 @@ def test_the_names_added_by_this_issue_keep_the_defaults_the_app_already_used(na
 
 
 # ------------------------------------------------------------------ the installer's config section remembers a new key and a rerun keeps it
+def _node_keys_block():
+    """install.sh's node signing keys block (#271): node_keys_migrate, which the config section calls, is defined above it."""
+    t = INSTALL.read_text()
+    return t[t.index("# >>> node signing keys"):t.index("# <<< node signing keys")]
+
+
 def _config_section():
     t = INSTALL.read_text()
     a = t.index("declare -A CALLER")
@@ -232,7 +238,8 @@ def _run_config(tmp_path, env):
     envfile = tmp_path / "etc-ccboard-env"
     keys = env_keys()
     script = ("set -euo pipefail\nnote() { :; }\ndie() { echo \"die: $*\" >&2; exit 1; }\n"
-              f"ENV_FILE={envfile}\nHOME_DIR={tmp_path}/home\nENV_KEYS=({' '.join(keys)})\n" + _config_section()
+              f"ENV_FILE={envfile}\nHOME_DIR={tmp_path}/home\nENV_KEYS=({' '.join(keys)})\n"
+              + f"NODE_KEYS_MARKER={tmp_path}/node-keys-required\n" + _node_keys_block() + _config_section()
               + 'CCBOARD_PUBLIC_URL=${CCBOARD_PUBLIC_URL:-https://box.example.ts.net}\n'
               + 'env_body=""\nfor k in "${ENV_KEYS[@]}"; do env_body+="$k=${!k}"$\'\\n\'; done\n'
               + 'for line in "${EXTRA_ENV[@]:-}"; do [ -n "$line" ] && env_body+="$line"$\'\\n\'; done\n'
