@@ -6,8 +6,12 @@ Provenance (codex-cli 0.161.0 on the box, 2026-10-09 and 2026-10-10). OBSERVED: 
 (codex_auth/rollout_ok_token_count_0161.jsonl), the TUI bootstrap error "account/read failed ... timed out" and the /tmp PATH-aliases warning (both
 texts are in the table below as NOT auth failures), the `codex login status` answers (login_states_0161.json) and the `codex exec --json` run with no
 usable login (codex_exec/auth_failed_0161.jsonl: ten 401 retries, then turn.failed, exit 1; the three logged-out states look the same).
-ASSUMED, never captured: the error item of a login the SERVER rejects (expired or revoked refresh token) in codex_auth/rollout_auth_error_synthetic.jsonl
-and the login_status_synthetic.json strings: they follow Codex's source and docs. codex_auth/login_states_0161.json marks each record observed or not. Temp CODEX_HOME, a bare DB, no real codex; no test opens or parses an auth.json.
+FROM SOURCE, never captured (v0.5.105): the texts of a login the SERVER rejects (expired, reused or revoked refresh token, a 401 with an auth error code)
+are the strings of openai/codex at commit 979011409de0a60b52f179721948e65531d26144 (tag rust-v0.161.0), listed with their files in
+codex_auth/login_states_0161.json (expired_revoked.from_source) and built into codex_exec/auth_rejected_*.jsonl. Only the texts are the source's: the event
+sequence around them is assumed. The error item in codex_auth/rollout_auth_error_synthetic.jsonl has the source's text in a SYNTHETIC shape (Codex 0.161.0
+does not persist error events to a rollout at all) and the login_status_synthetic.json strings are assumed. codex_auth/login_states_0161.json marks each
+record observed or not. Temp CODEX_HOME, a bare DB, no real codex; no test opens or parses an auth.json.
 """
 import json
 from pathlib import Path
@@ -25,8 +29,12 @@ from tests.test_usage_codex import (ID_A, ID_B, KA, KB, NOW, _fresh_rollout_stat
 FIX = Path(__file__).parent / "fixtures"
 AUTH_ROLLOUT = FIX / "codex_auth" / "rollout_auth_error_synthetic.jsonl"
 LOGIN = json.loads((FIX / "codex_auth" / "login_status_synthetic.json").read_text())
-REVOKED = ("unexpected status 401 Unauthorized: Your access token could not be refreshed because your refresh token was revoked. "
+REVOKED = ("Your access token could not be refreshed because your refresh token was revoked. "         # manager.rs:208 @ 9790114, shown bare
            "Please log out and sign in again.")
+ACCOUNT_MISMATCH = ("Your access token could not be refreshed because you have since logged out or signed in to another account. "
+                    "Please sign in again.")                                                              # manager.rs:211: not a dead login
+REJECTED_FIXTURES = ["auth_rejected_refresh_expired.jsonl", "auth_rejected_refresh_reused.jsonl", "auth_rejected_refresh_revoked.jsonl",
+                     "auth_rejected_refresh_unknown.jsonl", "auth_rejected_responses_401_token_expired.jsonl"]
 
 
 # ------------------------------------------------------------------ the regex table (#35)
@@ -50,6 +58,24 @@ REVOKED = ("unexpected status 401 Unauthorized: Your access token could not be r
     # shapes a pane or a Stop payload could carry (ASSUMED): the TUI prefixes an error line with a bullet
     ("■ unexpected status 401 Unauthorized: Your access token could not be refreshed. Please log out and sign in again.", True),
     ("Your session has expired. Please log in again.", True),
+    # FROM SOURCE (openai/codex 9790114): the texts of a login the server rejects, see login_states_0161.json expired_revoked.from_source
+    ("Your access token could not be refreshed. Please log out and sign in again.", True),                  # manager.rs:209
+    ("Your authentication session could not be refreshed automatically. Please log out and sign in again.", True),   # cloud-config service.rs:44
+    ('unexpected status 401 Unauthorized: {"detail":"Unauthorized"}, url: <scrubbed>, auth error code: token_expired', True),   # error.rs:633
+    ("unexpected status 403 Forbidden: nope, url: <scrubbed>, auth error code: token_revoked", True),
+    ("Your refresh token has already been used to generate a new access token. Please try signing in again.", True),   # util.rs, server wording
+    ("refresh_token_invalidated", True),                                                                    # the server's code
+    ("Not signed in. Please run 'codex login' to sign in with ChatGPT, then re-run 'codex cloud'.", True),  # cloud-tasks lib.rs
+    # not a dead login: the account-switch mismatch, other agents' logins, ordinary failures
+    (ACCOUNT_MISMATCH, False),
+    ("MCP OAuth refresh token was rejected; reauthorization required", False),                              # rmcp-client: an MCP server's login
+    ("enterprise IdP session has no refresh token; sign in again", False),
+    ("exceeded retry limit, last status: 429 Too Many Requests, request id: <scrubbed>", False),
+    ("Quota exceeded. Check your plan and billing details.", False),
+    ("We’re currently experiencing high demand, which may cause temporary errors.", False),
+    ("unexpected status 500 Internal Server Error: upstream failure, url: <scrubbed>, request id: <scrubbed>", False),
+    ("stream disconnected before completion: connection reset by peer", False),
+    ("I can't log in to the shop page, can you look at the form?", False),                                  # a prompt, not an error
     ("", False), (None, False),
 ])
 def test_codex_auth_failure_table(text, auth):
@@ -120,7 +146,7 @@ def _states():
 
 def test_the_states_fixture_says_which_text_is_observed_and_which_is_assumed():
     st = _states()
-    assert "ASSUMED" in st["_note"] and "observed" in st["_note"]
+    assert "FROM SOURCE" in st["_note"] and "observed" in st["_note"] and "979011409de0a60b52f179721948e65531d26144" in st["_note"]
     # captured on the box (codex-cli 0.161.0, 2026-10-09): logged in (on stderr), logged out and unreadable via a scratch CODEX_HOME;
     # a revoked login needs a real account the server has revoked, so it stays assumed
     for name, seen in (("logged_in", True), ("logged_out", True), ("unreadable", True), ("expired_revoked", False)):
@@ -159,7 +185,7 @@ def test_auth_probe_rule_over_the_three_states(state):
     assert got["state"] == rec["expect"]
     assert got["source"] == ("login_status" if rec["expect"] == "missing" else "rollout")
     if rec["expect"] == "rejected":
-        assert "401" in got["message"]
+        assert "refresh token was revoked" in got["message"]
     # the login file alone (no rollout evidence) is never ok, in any of the three
     assert codex.auth_verdict(login, None)["state"] in ("missing", "unknown")
 
@@ -272,13 +298,13 @@ def notices(monkeypatch):
     return sent
 
 
-def auth_rollout(home, work, account=ID_A, err_at=None):
+def auth_rollout(home, work, account=ID_A, err_at=None, message=REVOKED):
     err_at = NOW - 10 if err_at is None else err_at
     return make_rollout(home, cwd=work, account=account, created=NOW - 120,
                         lines=[jl(NOW - 100, "event_msg", {"type": "user_message", "message": "go"}),
                                token_line(NOW - 90, info=usage(100)),
                                jl(err_at - 2, "event_msg", {"type": "user_message", "message": "again"}),
-                               jl(err_at, "event_msg", {"type": "error", "message": REVOKED})])
+                               jl(err_at, "event_msg", {"type": "error", "message": message})])
 
 
 def test_an_auth_error_item_raises_login_problem_for_the_owner_within_one_tick(db, home, work, notices):
@@ -289,7 +315,7 @@ def test_an_auth_error_item_raises_login_problem_for_the_owner_within_one_tick(d
     t.tail_rows(db, NOW)
     prob = login_problem.get(db)
     assert prob["agent"] == "codex" and prob["account"] == KA and prob["session"] == "shop--api--s1"
-    assert "401" in prob["message"] and len(prob["message"]) <= login_problem.MESSAGE_MAX
+    assert "refresh token was revoked" in prob["message"] and len(prob["message"]) <= login_problem.MESSAGE_MAX
     assert len(notices) == 1 and notices[0][1] == {"agent": "codex"} and notices[0][0][:3] == (KA, "Work", "shop--api--s1")
     events = [e for e in db.recent_events(20) if e.get("event") == "LoginProblem"]
     assert len(events) == 1
@@ -389,3 +415,118 @@ def test_the_states_fixture_records_the_exec_capture_as_observed_and_the_rejecte
     un = st["unreadable"]["login_status"]
     v = verdict_of(un["rc"], un["stdout"], un["stderr_garbage_text_file"])
     assert v["loggedIn"] is False and v["error"] == "codex login status exited 1"
+
+
+# ------------------------------------------------------------------ a login the server rejects, FROM SOURCE (v0.5.105, #35, #68)
+# The fixtures are built from openai/codex at SOURCE_SHA (tag rust-v0.161.0), not observed on a dead login.
+SOURCE_SHA = "979011409de0a60b52f179721948e65531d26144"
+
+
+def _fixture_text(name):
+    return (FIX / "codex_exec" / name).read_text()
+
+
+def _fixture_message(name):
+    return [e for e in _exec_events(name) if e["type"] == "turn.failed"][0]["error"]["message"]
+
+
+@pytest.mark.parametrize("name", REJECTED_FIXTURES)
+def test_a_rejected_login_fixture_is_an_auth_failure_through_parse_headless(name):
+    from app import agents
+    r = agents.get("codex").parse_headless(_fixture_text(name), "", 1)
+    assert r["is_error"] and r["subtype"] == "turn_failed" and r["auth_failure"] is True and r["rate_limited"] is False
+    assert r["text"] == _fixture_message(name) and r["turns"] is None
+
+
+@pytest.mark.parametrize("name", REJECTED_FIXTURES)
+def test_a_rejected_login_fixture_text_in_a_rollout_error_item_is_rejected_evidence(name):
+    msg = _fixture_message(name)
+    item = jl(NOW - 5, "event_msg", {"type": "error", "message": msg, "codex_error_info": "unauthorized"})
+    ev = cr.tail_auth_evidence(cr.parse_tail(item + "\n"))
+    assert ev is not None and ev["kind"] == "rejected" and ev["message"] == msg
+
+
+@pytest.mark.parametrize("name", REJECTED_FIXTURES)
+def test_a_rejected_login_fixture_text_raises_login_problem_through_the_tailer(name, db, home, work, notices):
+    accounts_kv(db, current=KA)
+    p = auth_rollout(home, work, message=_fixture_message(name))
+    add_codex_row(db, work, flags={"transcript_path": str(p), "hook_seen": True})
+    cr.Tailer().tail_rows(db, NOW)
+    prob = login_problem.get(db)
+    assert prob["agent"] == "codex" and prob["account"] == KA and prob["message"] == _fixture_message(name)[:login_problem.MESSAGE_MAX]
+    assert len(notices) == 1
+
+
+def test_the_rejected_login_fixtures_have_the_assumed_sequence_and_no_ids():
+    import re
+    for name in REJECTED_FIXTURES:
+        ev = _exec_events(name)
+        assert [e["type"] for e in ev] == ["thread.started", "turn.started", "error", "turn.failed"]
+        assert ev[2]["message"] == ev[3]["error"]["message"] and ev[0]["thread_id"] == "00000000-0000-0000-0000-000000000000"
+        assert not re.search(r"[0-9a-f]{16}-[A-Z]{3}|eyJ|Bearer|@", _fixture_text(name))
+
+
+def test_the_states_file_pins_the_source_commit_and_marks_every_string_as_not_observed():
+    st = _states()["expired_revoked"]
+    assert st["from_source"]["commit"] == SOURCE_SHA and st["exec"]["source_sha"] == SOURCE_SHA and st["exec"]["observed"] is False
+    assert st["rollout"]["observed"] is False and st["login_status"]["observed"] is False
+    assert "STDERR" in st["login_status"]["basis"] and st["login_status"]["stdout"] == "" and st["login_status"]["stderr"] == "Logged in using ChatGPT\n"
+    assert {Path(r).name for r in st["exec"]["files"]} == set(REJECTED_FIXTURES)
+    for rel in st["exec"]["files"]:
+        assert (FIX / "codex_auth" / rel).resolve().exists()
+    # every source string with a verdict agrees with the matcher
+    texts = {s["name"]: s for s in st["from_source"]["strings"]}
+    for key in ("REFRESH_TOKEN_EXPIRED_MESSAGE", "REFRESH_TOKEN_REUSED_MESSAGE", "REFRESH_TOKEN_INVALIDATED_MESSAGE", "REFRESH_TOKEN_UNKNOWN_MESSAGE"):
+        assert login_problem.codex_auth_failure(texts[key]["text"]) is True, key
+    assert login_problem.codex_auth_failure(texts["REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE"]["text"]) is False
+    assert texts["REFRESH_TOKEN_INVALIDATED_MESSAGE"]["text"] == REVOKED
+    assert not any(login_problem.codex_auth_failure(t["text"]) for t in _states()["not_an_auth_failure_from_source"])
+
+
+# the negative list, through the real parsers: none of these raises a login problem
+NOT_A_LOGIN = [
+    ("rate_limit", "You've hit your usage limit. Upgrade to Pro or try again at 3:14 PM."),
+    ("network", "stream disconnected before completion: error sending request for url (<scrubbed>)"),
+    ("retry_limit", "exceeded retry limit, last status: 429 Too Many Requests, request id: <scrubbed>"),
+    ("server_error", "unexpected status 500 Internal Server Error: upstream failure, url: <scrubbed>"),
+    ("context", "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."),
+    ("generic", "turn failed"),
+    ("account_switch", ACCOUNT_MISMATCH),
+    ("mcp_login", "MCP OAuth refresh token was rejected; reauthorization required"),
+]
+
+
+@pytest.mark.parametrize("label,msg", NOT_A_LOGIN, ids=[n for n, _ in NOT_A_LOGIN])
+def test_an_ordinary_failure_is_not_a_dead_login_through_parse_headless(label, msg):
+    from app import agents
+    ev = [{"type": "thread.started", "thread_id": "00000000-0000-0000-0000-000000000000"}, {"type": "turn.started"},
+          {"type": "error", "message": msg}, {"type": "turn.failed", "error": {"message": msg}}]
+    r = agents.get("codex").parse_headless("\n".join(json.dumps(e) for e in ev) + "\n", "", 1)
+    assert r["is_error"] and r["auth_failure"] is False
+
+
+@pytest.mark.parametrize("label,msg", NOT_A_LOGIN, ids=[n for n, _ in NOT_A_LOGIN])
+def test_an_ordinary_failure_in_a_rollout_is_no_login_evidence(label, msg):
+    item = jl(NOW - 5, "event_msg", {"type": "error", "message": msg})
+    assert cr.tail_auth_evidence(cr.parse_tail(item + "\n")) is None
+
+
+def test_a_prompt_or_a_reply_that_says_login_raises_nothing(db, home, work, notices):
+    from app import agents
+    said = "my login is broken: sign in again, log out and sign in again, unauthorized 401, codex login, refresh token revoked"
+    # headless: the words are in the agent's reply of a run that succeeded
+    ev = [{"type": "thread.started", "thread_id": "00000000-0000-0000-0000-000000000000"}, {"type": "turn.started"},
+          {"type": "item.completed", "item": {"type": "agent_message", "text": said}},
+          {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}]
+    r = agents.get("codex").parse_headless("\n".join(json.dumps(e) for e in ev) + "\n", "", 0)
+    assert r["is_error"] is False and r["auth_failure"] is False and r["text"] == said
+    # rollout: the words are in a user message and an assistant message, no error item
+    accounts_kv(db, current=KA)
+    p = make_rollout(home, cwd=work, account=ID_A, created=NOW - 120,
+                     lines=[jl(NOW - 100, "event_msg", {"type": "user_message", "message": said}),
+                            jl(NOW - 90, "event_msg", {"type": "agent_message", "message": said}),
+                            jl(NOW - 80, "response_item", {"type": "message", "role": "assistant", "content": [{"text": said}]})])
+    assert cr.parse_tail(p.read_text())["error"] is None
+    add_codex_row(db, work, flags={"transcript_path": str(p), "hook_seen": True})
+    cr.Tailer().tail_rows(db, NOW)
+    assert login_problem.get(db) is None and notices == []

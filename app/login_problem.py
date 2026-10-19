@@ -36,22 +36,52 @@ def is_auth_failure(*texts) -> bool:
     return any(isinstance(t, str) and t and AUTH_RE.search(t) for t in texts)
 
 
-# Codex has no StopFailure hook: its failures are error items in a rollout's tail (codex_rollout.parse_tail) or the `turn.failed` / `error`
-# events of `codex exec --json`. Besides AUTH_RE's words, a Codex login that is no good says "401 Unauthorized" (an HTTP status line), that
-# its refresh token expired, was revoked or was already used and to "log out and sign in again", or names `codex login`. OBSERVED (codex-cli
-# 0.161.0, 2026-10-10, tests/fixtures/codex_exec/auth_failed_0161.jsonl): with no usable login `codex exec --json` retries ten times ("Reconnecting...
-# N/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)") and ends in turn.failed with that 401. The text of
-# a login the SERVER rejects (expired or revoked) was NOT captured: those words come from Codex's source and docs.
-# A usage limit ("You've hit your usage limit"), a full context window and a network error ("stream disconnected", "timeout") never match,
-# nor does the 0.161.0 TUI's "account/read failed during TUI bootstrap" (seen on the box, a slow network, not a login).
-CODEX_AUTH_RE = re.compile(r"\bunauthori[sz]ed\b|refresh[_ ]token|sign in again|log ?in again|\bcodex login\b|not signed in|"
-                           r"invalid[_ ](?:grant|token)|token[_ ](?:expired|revoked|invalidated)", re.IGNORECASE)
+# Codex has no StopFailure hook: its failures are the `error` / `turn.failed` events of `codex exec --json` (and error items of a rollout tail,
+# codex_rollout.parse_tail; Codex 0.145 to 0.161 does not write them there, see tests/fixtures/codex_auth/login_states_0161.json).
+# OBSERVED (codex-cli 0.161.0, 2026-10-10, tests/fixtures/codex_exec/auth_failed_0161.jsonl): with no usable login `exec` retries ten times
+# ("Reconnecting... N/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)") and ends in turn.failed
+# with that 401.
+# FROM THE SOURCE, not observed (nobody has had a login the server rejects yet): each pattern below names the Codex file it comes from, read at
+# openai/codex commit 979011409de0a60b52f179721948e65531d26144 (tag rust-v0.161.0), paths under codex-rs/. The texts are listed in
+# tests/fixtures/codex_auth/login_states_0161.json (expired_revoked.from_source).
+CODEX_AUTH_PATTERNS = (
+    # 401 status line (observed); protocol/src/error.rs UnexpectedResponseError "unexpected status 401 Unauthorized: ..."; and the error kind
+    # "unauthorized" (CodexErrorInfo::Unauthorized, which a failed token refresh carries)
+    r"\bunauthori[sz]ed\b",
+    # login/src/auth/manager.rs:206-210, REFRESH_TOKEN_{EXPIRED,REUSED,INVALIDATED,UNKNOWN}_MESSAGE: "Your access token could not be refreshed
+    # because your refresh token has expired|was already used|was revoked. Please log out and sign in again." and, for an invalid_grant or an
+    # unknown code, "Your access token could not be refreshed. Please log out and sign in again."
+    r"access token could not be refreshed",
+    r"refresh token (?:has expired|was (?:already used|revoked))",
+    # manager.rs:1687-1689, the server's refresh error codes
+    r"refresh_token_(?:expired|reused|invalidated)",
+    # cloud-config/src/service.rs:44-46, "Your authentication session could not be refreshed automatically. Please log out and sign in again."
+    r"auth(?:entication)? session could not be refreshed",
+    # the same advice; "Please try signing in again." is the server's wording for a reused refresh token (login/src/auth/util.rs test);
+    # cloud-tasks/src/lib.rs "Not signed in. Please run 'codex login' ..."
+    r"log out and sign in again|signing in again|log ?in again|not signed in|\bcodex login\b",
+    # protocol/src/error.rs:633 appends ", auth error code: token_expired" to a 401; OAuth error codes
+    r"auth error code: token_|invalid[_ ](?:grant|token)|token[_ ](?:expired|revoked|invalidated)",
+)
+CODEX_AUTH_RE = re.compile("|".join(CODEX_AUTH_PATTERNS), re.IGNORECASE)
+
+# NOT a dead login although it reads like one: manager.rs:211 REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE, "Your access token could not be refreshed
+# because you have since logged out or signed in to another account. Please sign in again." A Codex process found auth.json changed under it,
+# which is what the board's own account switch does to a process started before it. The live account is fine, so no banner.
+CODEX_NOT_A_DEAD_LOGIN_RE = re.compile(r"logged out or signed in to another account", re.IGNORECASE)
+# A usage limit ("You've hit your usage limit"), a full context window, a rate limit and a network error ("stream disconnected", "timeout")
+# match nothing above, nor does the 0.161.0 TUI's "account/read failed during TUI bootstrap" (seen on the box, a slow network, not a login).
+# MCP server logins have their own words (rmcp-client/: "MCP OAuth refresh token was rejected; reauthorization required", "enterprise IdP
+# session has no refresh token; sign in again") and are not the Codex login, so the bare words "refresh token" and "sign in again" are not
+# patterns.
 
 
 def codex_auth_failure(*texts) -> bool:
-    """Does a Codex error text (a rollout error item, a `turn.failed` error, an exec `error` event) or its error kind say the login is no good?
-    AUTH_RE plus CODEX_AUTH_RE, case-insensitive; pure. False for a rate limit, a context overflow or a network error."""
-    return any(isinstance(t, str) and t and (AUTH_RE.search(t) or CODEX_AUTH_RE.search(t)) for t in texts)
+    """Does a Codex error text (a `turn.failed` error, an exec `error` event, a rollout error item) or its error kind say the login is no good?
+    AUTH_RE plus CODEX_AUTH_RE, case-insensitive; pure. False for a rate limit, a context overflow, a network error and the account-switch
+    mismatch message."""
+    return any(isinstance(t, str) and t and not CODEX_NOT_A_DEAD_LOGIN_RE.search(t) and (AUTH_RE.search(t) or CODEX_AUTH_RE.search(t))
+               for t in texts)
 
 
 def _rec(db):

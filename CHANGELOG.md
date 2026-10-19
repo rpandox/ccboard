@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.105 - 2026-10-19
+
+### Changed
+- A Codex login that the server rejects now raises the login problem (#35, #68). The wording comes from the Codex source (tag rust-v0.161.0), not from a real dead login, so the issues stay open until one confirms it: "Your access token could not be refreshed because your refresh token has expired / was already used / was revoked. Please log out and sign in again.", the same sentence without a reason, and a 401 that names an auth error code such as `token_expired`. A headless Codex run that ends that way is reported as a dead login, and the same words in a rollout error item raise the Home banner and notification.
+- Ordinary failures never count: a rate limit, a full context, a network error, an MCP server's own login, and the "you have since logged out or signed in to another account" message (an older Codex process after a board account switch). A prompt or reply that merely says "login" raises nothing.
+- Settings > Accounts documents what Codex can and cannot tell the board: `codex login status` never asks the server, and Codex 0.161 writes no error events to a rollout, so an interactive session's dead login may still go unseen.
+
+Upgrade: nothing to do.
+
 ## v0.5.104 - 2026-10-18
 
 ### Changed
