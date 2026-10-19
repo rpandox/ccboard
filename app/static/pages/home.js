@@ -53,9 +53,10 @@ function renderBanner() {
     const d = state.deploy;
     b.classList.add('info');                                                 // an update is news, not an error: the red bar is for ui.error and tmux_down
     if (d.hold) {
+      const asked = d.forced || ui.installNow > Date.now();                   // #313: asked here (a poll in flight keeps it) or confirmed by the board
       const why = (d.reasons || []).length ? ` (${d.reasons.join(', ')})` : '';
       own(el('span', { text: `An update is ready. It installs when the terminals are closed${why}, or in ${d.minutes_left} min at the latest.` }),
-        el('button', { class: 'primary small', onclick: async () => { try { await api('POST', '/api/deploy/now'); } catch (e) { setError(e.message); } await poll(true); }, text: d.forced ? 'installing at the next check' : 'Install now' }));
+        el('button', { class: 'primary small', onclick: deployNow, disabled: asked ? true : null, text: asked ? 'installing at the next check' : 'Install now' }));
     } else {
       own(el('span', { text: 'Update installing: the board restarts and is back in about a minute.' }));
     }
@@ -371,14 +372,14 @@ Pages.act = async function (what) {
   }
   if (what === 'ack') {
     if (s && !s.needs_attention) { pageToast(`${name} has nothing to acknowledge`, 'info'); return false; }
-    await sessionAck(s || { tmux });
+    if (!(await sessionAck(s || { tmux }))) return false;
     pageToast(`acknowledged ${name}`, 'ok');
     return true;
   }
   if (what === 'allow' || what === 'deny') {
     const pr = typeof sessionPerm === 'function' ? sessionPerm(tmux) : null;
     if (!pr) { pageToast(`no permission is waiting on ${name}`, 'warn'); return false; }
-    await decide(pr.id, what);
+    if (!(await decide(pr.id, what))) return false;
     pageToast(`${what === 'allow' ? 'allowed' : 'denied'} ${name}`, what === 'allow' ? 'ok' : 'warn');
     return true;
   }
@@ -403,11 +404,26 @@ Pages.dropSkeleton = function () {
   for (const n of nodes) n.remove();
 };
 
+/* Install now (#313): the button reads "installing at the next check" and is off at the click; a poll in flight cannot flip it back (ui.installNow, 15 s), a refusal restores it. */
+async function deployNow() {
+  ui.installNow = Date.now() + 15000;
+  renderBanner();
+  try { await api('POST', '/api/deploy/now'); } catch (e) {
+    ui.installNow = 0;
+    renderBanner();
+    toast(`The update was not started: ${errorText(e)}`, { kind: 'bad' });
+  }
+  await poll(true);
+}
+
 async function decide(pid, decision) {
   const pr = (state && state.pending_permissions || []).find((p) => p.id === pid);
-  const path = pr && pr.bare_device ? `/api/bare/${encodeURIComponent(pr.bare_device)}/sessions/${encodeURIComponent(pr.tmux_name)}/${decision}` : `/api/permission/${pid}/${decision}`;
-  try { await api('POST', path, pr && pr.bare_device ? { pid } : undefined); setError(null); } catch (e) { setError(e.message); }
+  const bare = pr && pr.bare_device;
+  const ok = await actPost('perm:' + pid, decision, bare ? `/api/bare/${encodeURIComponent(bare)}/sessions/${encodeURIComponent(pr.tmux_name)}/${decision}` : `/api/permission/${pid}/${decision}`, bare ? { pid } : undefined,
+    () => repaintPage(), `${decision === 'allow' ? 'Allow' : 'Deny'} was not sent`);     // #313: both buttons off and "allowing…" before the board answers
+  if (ok) setError(null);
   await poll(true);
+  return ok;
 }
 
 const INBOX_HINT = 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys';

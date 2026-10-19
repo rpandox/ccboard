@@ -630,6 +630,8 @@ const TermKit = (() => {
   /* ---- the pane: one session's terminal with its header (the dock, and the quad tiles that want it) ------------------------------------- */
 
   const PANE_MODES = ['full', 'grid', 'ro', 'tail'];
+  const PERM_LABEL = { allow: 'Allow', deny: 'Deny', tui: 'In terminal' };
+  const PERM_WORD = { allow: 'allowing…', deny: 'denying…', tui: 'opening…' };       // #313: the pressed button while its answer is out
   const PANE_FS_KEY = 'ccboard:term:fs';               // the terminal page's text size: a full-mode pane starts with the same one
   const TAIL_LINES = 14;
   const TAIL_NOTE = 'waiting for output…';
@@ -772,19 +774,20 @@ const TermKit = (() => {
     let permBtns = [];
     let modeBtns = [];
     let reconnectBtn = null;
-    let permBusy = false;
+    let permBusy = '';                       // the decision in flight
+    let held = null;                         // #313: {id, decision, until}: answered, shown until a poll no longer lists the request (or 15 s)
     let pendingNow = null;
 
     const act = (name, icon, title, onClick) => el('button', { class: 'icon minimal tp-btn', type: 'button', 'data-act': name, 'aria-label': title, title, onclick: onClick }, ic(icon));
 
     function decide(pr, decision) {
       if (permBusy || !pr) return Promise.resolve(false);
-      permBusy = true;
+      permBusy = decision;
       syncPerm();
       const run = typeof o.decide === 'function' ? Promise.resolve().then(() => o.decide(pr.id, decision))
         : Promise.resolve().then(() => api('POST', '/api/permission/' + encodeURIComponent(pr.id) + '/' + decision));
       return run.then(() => true, (e) => { if (typeof toast === 'function') toast((e && e.message) || 'Failed', { kind: 'bad' }); return false; })
-        .then((ok) => { permBusy = false; if (!dead) syncPerm(); if (ok && typeof poll === 'function') { try { poll(true); } catch (_) { /* no board poll here */ } } return ok; });
+        .then((ok) => { if (ok) held = { id: pr.id, decision, until: Date.now() + 15000 }; permBusy = ''; if (!dead) syncPerm(); if (ok && typeof poll === 'function') { try { poll(true); } catch (_) { /* no board poll here */ } } return ok; });
     }
 
     if (o.header !== false) {
@@ -837,7 +840,11 @@ const TermKit = (() => {
 
     function syncPerm() {
       if (!permNode) return;
-      for (const b of permBtns) b.disabled = permBusy;
+      const dec = permBusy || (held && held.decision);
+      for (const b of permBtns) {
+        b.disabled = !!dec;
+        b.textContent = dec && b.getAttribute('data-decision') === dec ? PERM_WORD[dec] : PERM_LABEL[b.getAttribute('data-decision')];
+      }
     }
 
     /* ---- body: the iframe, or the tail ---- */
@@ -988,6 +995,8 @@ const TermKit = (() => {
       const pr = r ? panePending(st, tmux, r) : null;
       const ps = pr ? pr.id + '|' + pr.summary : '';
       pendingNow = pr;
+      if (held && (!pr || pr.id !== held.id || Date.now() > held.until)) held = null;
+      syncPerm();
       if (permBtns[2]) permBtns[2].classList.toggle('hidden', !!pr && pr.kind === 'terminal_prompt');
       if (sig.perm !== ps) {
         sig.perm = ps;

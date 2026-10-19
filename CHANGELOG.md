@@ -15,6 +15,13 @@ Closes #123.
 
 Upgrade: nothing to do.
 
+## v0.5.106 - 2026-10-19
+
+### Changed
+- Allow, Deny, Ack and Install now paint at once, and the board only confirms (#313, rule 2 of #30). Allow and Deny turn both buttons off at the click and the pressed one reads "allowing..." or "denying..."; this holds on the Needs you cards, the Agents rows, the session peek, the epic page and the terminal pane, and a poll that still lists the permission does not bring the buttons back. Ack takes the card out of Needs you at the click, and the header chip, the sidebar badge and the page counts drop with it; a poll that still lists the session does not bring it back. Install now becomes the disabled "installing at the next check" at the click, and a poll in flight does not flip it back. A refusal puts the buttons, the card or the Install now button back and says why in the board's words, and an answer the board never confirms comes back after 15 seconds.
+
+Upgrade: nothing to do.
+
 ## v0.5.105 - 2026-10-19
 
 ### Changed
