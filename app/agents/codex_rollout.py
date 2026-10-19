@@ -32,6 +32,7 @@ object the caller passes. Nothing here logs or stores rollout text: the only fie
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -670,6 +671,10 @@ class Tailer:
                 wrote += 1 if self._tail_row(db, name, row, now) else 0
             except Exception as e:
                 log.warning("codex rollout tail of a session failed: %s", e.__class__.__name__)
+            try:
+                self._pane_auth(db, name, row, now)
+            except Exception as e:
+                log.warning("codex pane login check of a session failed: %s", e.__class__.__name__)
         live = {r.get("row_id") for r in rows.values()}
         for k in [k for k in self._rows if k not in live]:
             del self._rows[k]
@@ -758,6 +763,41 @@ class Tailer:
         tok = _epoch(parsed.get("token_at"))
         if prob and prob.get("agent") == "codex" and tok is not None and tok > (_epoch(prob.get("at")) or float("inf")):
             login_problem.clear(db, "codex", key)
+
+    def _pane_auth(self, db, name: str, row: dict, now: float) -> None:
+        """A login the server rejected, seen on the pane of an interactive session (#35). Codex 0.145 to 0.161 writes no error event to the rollout
+        (rollout/src/policy.rs), but its TUI draws one as a "■ {message}" line: codex_pane.rejected_login reads the screen and, for a refresh
+        failure or a 401 with an auth error code on such a line, this raises kv login_problem exactly as `_auth` does (raise_, the LoginProblem
+        event, the notice). The line stays on screen for a long time, so it raises once: flags.login_pane holds a short hash of the message while it
+        is visible (it survives a board restart) and is dropped when the line has gone. Whatever clears the problem for the rollout path clears it
+        here (a token usage of that account after it, a finished login, dismiss), and a dismissed line does not come back while it is on screen.
+        From the source, not observed; a prompt, an answer or a diff that quotes the words has no "■ " in front and never counts."""
+        from .. import login_problem
+        from . import codex_pane
+        msg = codex_pane.rejected_login(_pane_capture(name))
+        flags = row.get("flags") or {}
+        if msg is None:
+            if flags.get("login_pane"):
+                db.update_flags(name, {"login_pane": None})
+            return
+        seen = hashlib.sha1(msg.encode("utf-8", "replace")).hexdigest()[:12]
+        if flags.get("login_pane") == seen:
+            return
+        db.update_flags(name, {"login_pane": seen})
+        prob = login_problem.get(db)
+        if prob and prob.get("agent") == "codex" and prob.get("message") == " ".join(msg.split())[:login_problem.MESSAGE_MAX]:
+            return                                              # the rollout path (a Codex that persists errors) already raised this one
+        accts, current = _accounts(db)
+        st = self._rows.get(row.get("row_id")) or {}
+        key = _owner(accts, current, (st.get("meta") or {}).get("account_id"))
+        rec = login_problem.raise_(db, agent="codex", account=key, session=name, message=msg, now=now)
+        db.add_event(name, "LoginProblem", login_problem.EVENT_KIND, rec["message"], {"account": key, "agent": "codex", "source": "pane"})
+        try:
+            from .. import notify
+            label = (accts.get(key) or {}).get("label") if key else None
+            notify.notify_login_problem(key, label if isinstance(label, str) else None, name, rec["message"], agent="codex")
+        except Exception as e:
+            log.warning("codex login notice not sent: %s", e.__class__.__name__)
 
     @staticmethod
     def _samples(db, name: str, stats: dict) -> None:
@@ -990,6 +1030,17 @@ def _send_notice(notify, w: dict, plan: str | None, label: str | None) -> bool:
                       tags=["rotating_light"], actions=[], web_actions=[], kind="rate_limit", state="errored", tmux="", agent="codex",
                       path="/#/usage")
     return bool(notify.send(n))
+
+
+
+def _pane_capture(name: str) -> str:
+    """The text of a Codex row's pane (scrollback and screen, wrapped lines joined), "" when tmux has nothing. The one seam tests replace."""
+    from .. import tmux
+    from . import codex_pane
+    try:
+        return tmux.capture(name, lines=codex_pane.PANE_LINES)
+    except (tmux.TmuxError, tmux.TmuxDown, OSError):
+        return ""
 
 
 _tailer = Tailer()

@@ -73,6 +73,51 @@ async function sessionKill(tmux) {
   }
 }
 
+/* #313: Allow / Deny ('perm:<id>') and Ack ('ack:<tmux>') in flight -> {word, until}; until is 0 while the POST is out, then the 15 s safety expiry. */
+const actPending = new Map();
+
+function permMark(pr) { const d = pr && actPending.get('perm:' + pr.id); return d ? d.word : ''; }
+
+/* The Allow / Deny pair: both off while the answer is out, the pressed one reading allowing… / denying…. */
+function permButtons(pr, allowCls, denyCls) {
+  const w = permMark(pr);
+  return [['allow', 'Allow', allowCls, 'allowing…'], ['deny', 'Deny', denyCls, 'denying…']].map(([k, t, c, ing]) => el('button', { class: c, type: 'button', disabled: w ? true : null,
+    onclick: (e) => { e.stopPropagation(); decide(pr.id, k); }, text: w === k ? ing : t }));
+}
+
+/* needs_attention on one session of the state: the cards and every count read it, so an Ack paints by flipping it. */
+function ackFlag(st, tmux, on) {
+  for (const p of (st && st.projects) || []) for (const s of [...[p.root, ...(p.repos || [])].flatMap((r) => (r && r.sessions) || []), ...(p.orphan_sessions || [])]) if (s.tmux === tmux) s.needs_attention = on;
+  if (typeof Shell !== 'undefined') Shell.cache = null;
+}
+
+/* POST an answer with its entry in actPending and paint(on) at the click; a refusal drops the entry, paints back and toasts. */
+async function actPost(key, word, path, body, paint, failed) {
+  actPending.set(key, { word, until: 0 });
+  paint(true);
+  try { await api('POST', path, body); } catch (e) {
+    actPending.delete(key);
+    paint(false);
+    toast(`${failed}: ${errorText(e)}`, { kind: 'bad' });
+    return false;
+  }
+  actPending.set(key, { word, until: Date.now() + 15000 });
+  return true;
+}
+
+/* Run by every poll on the fresh state: an answered entry goes once the poll agrees (permission gone, session no longer needs you) or after its 15 s (true: repaint);
+   the Acks still pending are laid over the state. */
+function pendingApply(st) {
+  let expired = false;
+  const live = new Set([...(st.pending_permissions || []).map((p) => 'perm:' + p.id), ...rosterSessions(st).filter((x) => x.needs_attention).map((x) => 'ack:' + x.tmux)]);
+  for (const [k, v] of Array.from(actPending)) {
+    if (v.until && !live.has(k)) actPending.delete(k);
+    else if (v.until && Date.now() > v.until) { actPending.delete(k); expired = true; }
+  }
+  for (const k of actPending.keys()) if (k.startsWith('ack:')) ackFlag(st, k.slice(4), false);
+  return expired;
+}
+
 /* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
    reads "Copied" for a moment. Without a clipboard (an insecure origin) it says to select the text instead. `what` names the thing for the screen reader and the toast. */
 function copyButton(text, what) {
@@ -228,7 +273,7 @@ function sessionRow(s) {
       el('code', { class: 'mono', text: s.command || '' })),
     el('div', { class: 'actions' },
       el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
-      s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
+      s.needs_attention ? el('button', { onclick: () => sessionAck(s), text: 'Ack' }) : null,
       confirmButton('kill:' + s.tmux, 'Kill session', () => sessionKill(s.tmux), true)));
   if (s.last_message || s.last_prompt) {
     row.append(el('div', { class: 'last' },

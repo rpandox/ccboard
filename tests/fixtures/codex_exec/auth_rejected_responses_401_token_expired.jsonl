@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "00000000-0000-0000-0000-000000000000"}
+{"type": "turn.started"}
+{"type": "error", "message": "unexpected status 401 Unauthorized: {\"detail\":\"Unauthorized\"}, url: <scrubbed>, cf-ray: <scrubbed>, request id: <scrubbed>, auth error: <scrubbed>, auth error code: token_expired"}
+{"type": "turn.failed", "error": {"message": "unexpected status 401 Unauthorized: {\"detail\":\"Unauthorized\"}, url: <scrubbed>, cf-ray: <scrubbed>, request id: <scrubbed>, auth error: <scrubbed>, auth error code: token_expired"}}

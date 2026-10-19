@@ -7,6 +7,17 @@ import pytest
 CI = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
 
 
+def _comment_above(text, name):
+    """The whole-line comments directly above a job (they sit at the end of the previous job's text for _job)."""
+    lines = text.splitlines()
+    i = lines.index(f"  {name}:")
+    out = []
+    while i > 0 and lines[i - 1].lstrip().startswith("#"):
+        i -= 1
+        out.append(lines[i])
+    return "\n".join(reversed(out))
+
+
 def _job(text, name):
     m = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text, re.S | re.M)
     assert m, f"job {name} not found"
@@ -139,34 +150,77 @@ def test_dependabot_is_weekly_and_grouped():
     assert text.count("interval: weekly") == 3 and text.count("groups:") == 3 and text.count("labels:") == 3
 
 
-# ---------------------------------------------------------------- issue #123: the advisory macOS job and the deploy gate
+# ---------------------------------------------------------------- issue #123: the required macOS job and the deploy gate
 def _needs(job_text):
     m = re.search(r"^    needs:\s*(.+)$", job_text, re.M)
     return m.group(1).strip() if m else None
 
 
-def test_the_image_jobs_keep_exactly_their_needs():
-    """The macOS job is advisory: the image the box pulls must wait for the Ubuntu tests and for nothing else."""
+GATE = "fromJSON('[\"success\",\"skipped\"]')"
+
+
+def _image_condition():
+    image = _job(CI.read_text(), "image")
+    return re.sub(r"\s+", " ", re.search(r"^    if: >-\n((?:      .*\n)+)", image, re.M).group(1)).strip()
+
+
+def test_the_image_waits_for_the_linux_macos_and_windows_checks():
+    """test-macos and check-windows are required (the owner's decision on #123): the image the box pulls waits for all three."""
     text = CI.read_text()
-    assert _needs(_job(text, "image")) == "test"
+    image = _job(text, "image")
+    assert _needs(image) == "[test, test-macos, check-windows]"
+    assert "changes" not in _code(image) and "ci-intel" not in image
+    # a docs-only change skips the two jobs: a skip must not block the image, a failure or a cancel must
+    cond = _image_condition()
+    assert cond.startswith("${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success'")
+    for job in ("test-macos", "check-windows"):
+        assert f"contains({GATE}, needs.{job}.result)" in cond, job
+    assert "failure()" not in cond and "always()" not in cond and cond.endswith("}}")
+    # image-check (pull requests, never pushes) keeps waiting for the Ubuntu tests alone
     assert _needs(_job(text, "image-check")) == "test"
-    for name in ("image", "image-check"):
-        assert "test-macos" not in _job(text, name) and "changes" not in _job(text, name), name
+    for job in ("test-macos", "check-windows", "changes"):
+        assert job not in _code(_job(text, "image-check")), job
+
+
+def _runs(cond, test, mac, win, event="push"):
+    """Evaluate the image condition for the given results (GitHub semantics: success, failure, cancelled or skipped)."""
+    env = {"test": test, "test-macos": mac, "check-windows": win}
+    expr = cond[len("${{"):-len("}}")].strip()
+    expr = expr.replace("!cancelled()", "True").replace("github.event_name == 'push'", repr(event == "push"))
+    expr = re.sub(r"needs\.([\w-]+)\.result", lambda m: repr(env[m.group(1)]), expr)
+    expr = re.sub(r"contains\(fromJSON\('(\[.*?\])'\), ('\w+')\)", lambda m: f"({m.group(2)} in {m.group(1)})", expr)
+    # eval is safe here: the text is this repository's own workflow condition after substitution, and no builtins are exposed
+    return eval(expr.replace("&&", " and "), {"__builtins__": {}})
+
+
+@pytest.mark.parametrize("mac,win,runs", [
+    ("success", "success", True), ("skipped", "skipped", True),                    # a code change that passed; a docs-only change
+    ("success", "skipped", True), ("skipped", "success", True),
+    ("failure", "success", False), ("success", "failure", False),                  # either check red: no image
+    ("cancelled", "success", False), ("success", "cancelled", False), ("failure", "failure", False),
+])
+def test_the_image_condition_for_skipped_and_failed_checks(mac, win, runs):
+    cond = _image_condition()
+    assert _runs(cond, "success", mac, win) is runs
+    assert _runs(cond, "failure", mac, win) is False and _runs(cond, "skipped", mac, win) is False     # the Ubuntu tests always gate
+    assert _runs(cond, "success", mac, win, event="pull_request") is False                              # pushes only
 
 
 def test_packages_write_stays_on_the_image_job_alone():
     text = CI.read_text()
     jobs = re.findall(r"^  ([\w-]+):\n", text[text.index("\njobs:\n"):], re.M)
-    assert {"test", "test-macos", "changes", "image", "image-check"} <= set(jobs)
+    assert {"test", "test-macos", "check-windows", "changes", "image", "image-check"} <= set(jobs)
     assert [j for j in jobs if "packages: write" in _job(text, j)] == ["image"]
     assert [j for j in jobs if re.search(r"\$\{\{\s*secrets\.", _job(text, j))] == ["image"]
 
 
-def test_macos_job_is_advisory_read_only_and_secret_free():
+def test_macos_job_is_required_read_only_and_secret_free():
     text = CI.read_text()
     mac = _job(text, "test-macos")
     assert re.search(r"^    runs-on: macos-latest$", mac, re.M) and re.search(r"^    timeout-minutes: 45$", mac, re.M)
-    assert re.search(r"^    continue-on-error: true$", mac, re.M)           # until the promotion commit edits this and the pin
+    assert "continue-on-error" not in _code(mac)                               # promoted: a red run fails the workflow and the image waits
+    said = _comment_above(CI.read_text(), "test-macos")
+    assert "REQUIRED since 2026-10-19" in said and "owner's decision on #123" in said      # the comment says so and when
     assert re.search(r"^    permissions:\n      contents: read\n(?!      )", mac, re.M)      # contents: read and nothing else
     assert "packages:" not in mac and not re.search(r"\$\{\{\s*secrets\.", mac) and "GITHUB_TOKEN" not in mac and "login-action" not in mac
     assert _needs(mac) == "changes"
@@ -251,7 +305,7 @@ def test_the_linux_test_job_installs_shellcheck_too():
     assert "apt-get install -y tmux shellcheck" in _job(CI.read_text(), "test")
 
 
-# ---------------------------------------------------------------- issue #123: the advisory Windows (PowerShell) job
+# ---------------------------------------------------------------- issue #123: the required Windows (PowerShell) job
 PESTER = CI.parent.parent.parent / "tests" / "windows" / "ccboard-wsl-keepalive.Tests.ps1"
 KEEPALIVE = CI.parent.parent.parent / "scripts" / "windows" / "ccboard-wsl-keepalive.ps1"
 
@@ -261,19 +315,21 @@ def _code(job_text):
     return "\n".join(l for l in job_text.splitlines() if not l.lstrip().startswith("#"))
 
 
-def test_the_windows_job_is_advisory_read_only_secret_free_and_outside_the_deploy_gate():
+def test_the_windows_job_is_required_read_only_and_secret_free():
     text = CI.read_text()
     win = _job(text, "check-windows")
     assert re.search(r"^    runs-on: windows-latest$", win, re.M) and re.search(r"^    timeout-minutes: \d+$", win, re.M)
-    assert re.search(r"^    continue-on-error: true$", win, re.M), "advisory, as test-macos is; promoting it is the owner's decision"
+    assert "continue-on-error" not in _code(win), "promoted with test-macos: a red run fails the workflow and the image waits"
+    said = _comment_above(text, "check-windows")
+    assert "REQUIRED since 2026-10-19" in said and "owner's decision on #123" in said
     assert re.search(r"^    permissions:\n      contents: read\n(?!      )", win, re.M), "contents: read and nothing else"
     assert "packages:" not in win and not re.search(r"\$\{\{\s*secrets\.", win) and "GITHUB_TOKEN" not in win and "login-action" not in win
     assert _needs(win) == "changes"
     assert re.search(r"^    if: needs\.changes\.outputs\.code == 'true'$", win, re.M), "skipped for documentation-only changes"
-    # the deploy gate does not know the job exists
-    for name in ("image", "image-check", "test"):
+    # only the push image job waits for it; the Ubuntu job, the macOS job and the changes job do not know it exists
+    for name in ("image-check", "test"):
         assert "check-windows" not in _code(_job(text, name)), name
-    assert _needs(_job(text, "image")) == "test" and _needs(_job(text, "image-check")) == "test"
+    assert "check-windows" in _code(_job(text, "image"))
     assert "check-windows" not in _code(_job(text, "test-macos")) and "check-windows" not in _code(_job(text, "changes"))
     assert [j for j in re.findall(r"^  ([\w-]+):\n", text[text.index("\njobs:\n"):], re.M) if "packages: write" in _job(text, j)] == ["image"]
 
@@ -326,3 +382,36 @@ def test_the_windows_files_hold_no_host_name_email_or_personal_path():
     for path in (PESTER, KEEPALIVE):
         text = path.read_text()
         assert "/Us" + "ers/" not in text and "C:\\Us" + "ers\\" not in text and not re.search(r"\b[\w.+-]+@[\w-]+\.[\w.]+", text), path.name
+
+
+# ---------------------------------------------------------------- issue #123: the nightly Intel leg (advisory, separate workflow)
+INTEL = CI.parent / "ci-intel.yml"
+
+
+def _steps(job_text):
+    """A job's steps without comments and blank lines."""
+    return _code(job_text[job_text.index("    steps:\n"):]).strip()
+
+
+def test_the_intel_leg_is_a_nightly_advisory_read_only_workflow_that_never_builds_an_image():
+    assert INTEL.exists()
+    text = INTEL.read_text()
+    assert re.search(r"^on:\n  schedule:\n    - cron: \"[^\"]+\"\n  workflow_dispatch:\n", text, re.M)
+    assert not re.search(r"^  (push|pull_request):", text, re.M), "nightly and on demand only"
+    assert re.search(r"^permissions:\n  contents: read\n", text, re.M)
+    job = _job(text, "test-macos-intel")
+    assert re.search(r"^    runs-on: macos-\d+-intel$", job, re.M), "an Intel (x86_64) label from GitHub's runner list"
+    assert "docs.github.com" in text and "macos-latest" not in _code(text)
+    assert re.search(r"^    continue-on-error: true$", job, re.M), "advisory"
+    assert re.search(r"^    permissions:\n      contents: read\n(?!      )", job, re.M)
+    assert re.findall(r"^  ([\w-]+):\n", text[text.index("\njobs:\n"):], re.M) == ["test-macos-intel"]
+    for bad in ("packages:", "secrets.", "GITHUB_TOKEN", "login-action", "docker/", "push: true", "ghcr.io", "needs:"):
+        assert bad not in _code(text), bad
+
+
+def test_the_intel_leg_runs_the_same_steps_as_the_macos_job_with_the_same_pinned_actions():
+    assert _steps(_job(INTEL.read_text(), "test-macos-intel")) == _steps(_job(CI.read_text(), "test-macos"))
+    ci_pins = {ref for ref, _ in _uses(CI.read_text())}
+    intel_uses = _uses(INTEL.read_text())
+    assert intel_uses and all(ref in ci_pins and re.fullmatch(r"\s+# v\d+\.\d+\.\d+", rest) for ref, rest in intel_uses)
+    assert "${{" not in "\n".join(_run_blocks(INTEL.read_text()))

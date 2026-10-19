@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.107 - 2026-10-19
+## v0.5.109 - 2026-10-19
 
 ### Changed
 - Node signing keys are required by default, and the default never cuts a pair that has no key yet (#271). With `CCBOARD_NODE_KEYS` not set, the board reads its pairs (both directions, as it stores them) on every call: when each has a signing key it enforces `require`; when one or more has none it behaves as `prefer` until they do, so the update itself stops no pair. A new pairing still needs keys on both boards while the default is held (only a typed `prefer` allows an unkeyed one), so the number of unkeyed pairs can only go down. Re-pairing the last unkeyed pair (or its first signed call under `prefer`, which pins its key) makes the board enforce `require` on the next call, with no restart. A value set on purpose is never softened: `CCBOARD_NODE_KEYS=require` refuses an unkeyed pair at once (`key_required`, also when a recent card was restored at startup), and `prefer` stays `prefer`.
@@ -10,6 +10,35 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - `./install.sh` no longer stores a default for `CCBOARD_NODE_KEYS` (an empty value is the safe default above), and the first rerun on an install that stored the old `prefer` default turns it into empty and says so. A value you pass on the command line is kept, and a `prefer` set on purpose later is not touched again.
 
 Upgrade: Linux, WSL and Docker: rerun `./install.sh` once (it drops the old stored `prefer`). macOS: nothing. No pair stops working on the update; Doctor and Settings > Nodes name any pair without a signing key, and pairing it again makes keys required.
+
+## v0.5.108 - 2026-10-19
+
+### Changed
+- The macOS and Windows checks are now required (#123). `test-macos` and `check-windows` lost `continue-on-error`, and the image job waits for them: a push to `main` builds and pushes the image only when the Ubuntu tests passed and each of the two either passed or was skipped (a documentation-only change skips them and still publishes; a failed or cancelled one stops the image). The owner made both required in the repository ruleset after more than ten green runs in a row. `tests/test_ci_workflow.py` pins the promotion and the image condition for every combination of success, skipped, failed and cancelled.
+
+### Added
+- A nightly Intel leg, `.github/workflows/ci-intel.yml` (#123): the macOS steps on an Intel runner (`macos-15-intel`), scheduled once a day and on demand, advisory, read-only token, no secrets, and it never builds or pushes an image.
+- The runner minutes of each CI job (median and longest over the last 20 runs on `main`) are in `docs/development.md`, with the note that macOS minutes bill at a multiplier only on private repositories.
+
+Closes #123.
+
+Upgrade: nothing to do.
+
+## v0.5.106 - 2026-10-19
+
+### Changed
+- Allow, Deny, Ack and Install now paint at once, and the board only confirms (#313, rule 2 of #30). Allow and Deny turn both buttons off at the click and the pressed one reads "allowing..." or "denying..."; this holds on the Needs you cards, the Agents rows, the session peek, the epic page and the terminal pane, and a poll that still lists the permission does not bring the buttons back. Ack takes the card out of Needs you at the click, and the header chip, the sidebar badge and the page counts drop with it; a poll that still lists the session does not bring it back. Install now becomes the disabled "installing at the next check" at the click, and a poll in flight does not flip it back. A refusal puts the buttons, the card or the Install now button back and says why in the board's words, and an answer the board never confirms comes back after 15 seconds.
+
+Upgrade: nothing to do.
+
+## v0.5.105 - 2026-10-19
+
+### Changed
+- A Codex login that the server rejects now raises the login problem (#35, #68). The wording comes from the Codex source (tag rust-v0.161.0), not from a real dead login, so the issues stay open until one confirms it: "Your access token could not be refreshed because your refresh token has expired / was already used / was revoked. Please log out and sign in again.", the same sentence without a reason, and a 401 that names an auth error code such as `token_expired`. A headless Codex run that ends that way is reported as a dead login, and the same words in a rollout error item raise the Home banner and notification.
+- Ordinary failures never count: a rate limit, a full context, a network error, an MCP server's own login, and the "you have since logged out or signed in to another account" message (an older Codex process after a board account switch). A prompt or reply that merely says "login" raises nothing.
+- An interactive Codex session's dead login is read from its pane (#35). Codex 0.161 writes no error events to a rollout, so the board looks for the red `■ ` error line the Codex terminal draws and, when it says the access token could not be refreshed or carries an auth error code, raises the same banner and notification once. An answer, a prompt or a diff that quotes those words never counts. Settings > Accounts says what Codex can and cannot tell the board (`codex login status` never asks the server).
+
+Upgrade: nothing to do.
 
 ## v0.5.104 - 2026-10-18
 

@@ -108,3 +108,42 @@ def screen_state(text: str) -> str:
     if any(re.match(r"^\s*›(?:\s|$)", s) or COMPOSER_RE.search(s) or FOOTER_RE.match(s) for s in lines[-5:]):
         return "waiting"
     return "unknown"
+
+
+# ---- a login the server rejected, on screen (#35; from the Codex source at rust-v0.161.0, not observed)
+# The TUI draws every error event as ONE history line "■ {message}" in red (tui/src/history_cell/notices.rs:331 new_error_event, used by
+# chatwidget/turn_runtime.rs:372 on_error for a failed turn); an agent's reply starts with "•", the user's prompt with "›". The message can be
+# wrapped over several pane lines. Codex 0.145 to 0.161 keeps error events out of the rollout, so for an interactive session this line is the
+# only trace of a refresh token that expired, was used or revoked.
+ERROR_GLYPH = "■"
+PANE_LINES = 60                    # scrollback + screen looked at
+CONTINUATION_LINES = 3             # a wrapped message continues on at most this many following lines
+_STOP_START = tuple("■•›>─│╭╰└┌┐╮╯▌")
+
+
+def error_messages(text: str) -> list[str]:
+    """The messages of the lines the TUI drew as an error, oldest first: the text after "■ " plus up to CONTINUATION_LINES following lines (a wrapped
+    message), joined with single spaces. A continuation stops at a blank line or at a line Codex draws itself (a bullet, the prompt, a box)."""
+    lines = [ln.rstrip() for ln in (text or "").splitlines()]
+    out = []
+    for i, ln in enumerate(lines):
+        body = ln.lstrip()
+        if not body.startswith(ERROR_GLYPH + " "):
+            continue
+        parts = [body[2:].strip()]
+        for nxt in lines[i + 1:i + 1 + CONTINUATION_LINES]:
+            if not nxt.strip() or nxt.lstrip().startswith(_STOP_START):
+                break
+            parts.append(nxt.strip())
+        out.append(" ".join(parts))
+    return out
+
+
+def rejected_login(text: str) -> str | None:
+    """The newest error line on the screen that says the login was rejected (login_problem.codex_pane_auth_failure), else None. Text with no
+    "■ " prefix never counts, wherever it stands: an agent's quote, a prompt, a diff."""
+    from .. import login_problem
+    for msg in reversed(error_messages(text)):
+        if login_problem.codex_pane_auth_failure(msg):
+            return re.sub(r"[\x00-\x1f\x7f]", " ", msg)[:300]
+    return None
