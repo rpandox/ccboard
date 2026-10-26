@@ -77,6 +77,7 @@ EXPECTED = {
     ("GET", "/api/memory/prefs"): "identity",
     ("PUT", "/api/memory/prefs"): "identity+csrf",
     ("POST", "/api/preflight/clone"): "identity+csrf",
+    ("POST", "/api/preflight/folder"): "identity+csrf",  # folder preflight requires identity and CSRF, like clone preflight
     ("GET", "/api/sessions/{name}"): "identity",
     ("GET", "/api/external"): "identity",
     ("POST", "/api/external/{agent}/{sid}/open"): "identity+csrf",
