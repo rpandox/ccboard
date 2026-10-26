@@ -78,11 +78,12 @@ const actPending = new Map();
 
 function permMark(pr) { const d = pr && actPending.get('perm:' + pr.id); return d ? d.word : ''; }
 
-/* The Allow / Deny pair: both off while the answer is out, the pressed one reading allowing… / denying…. */
+/* The Allow / Deny pair: both off while the answer is out, the pressed one reading allowing… / denying…. The pressed button is blurred first: a focused
+   button makes the Epic page hold its row's repaint back, and the pair would keep reading Allow / Deny (#318). */
 function permButtons(pr, allowCls, denyCls) {
   const w = permMark(pr);
   return [['allow', 'Allow', allowCls, 'allowing…'], ['deny', 'Deny', denyCls, 'denying…']].map(([k, t, c, ing]) => el('button', { class: c, type: 'button', disabled: w ? true : null,
-    onclick: (e) => { e.stopPropagation(); decide(pr.id, k); }, text: w === k ? ing : t }));
+    onclick: (e) => { e.stopPropagation(); if (e.currentTarget && e.currentTarget.blur) e.currentTarget.blur(); decide(pr.id, k); }, text: w === k ? ing : t }));
 }
 
 /* needs_attention on one session of the state: the cards and every count read it, so an Ack paints by flipping it. */

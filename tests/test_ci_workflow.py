@@ -168,11 +168,13 @@ def test_the_image_waits_for_the_linux_macos_and_windows_checks():
     """test-macos and check-windows are required (the owner's decision on #123): the image the box pulls waits for all three."""
     text = CI.read_text()
     image = _job(text, "image")
-    assert _needs(image) == "[test, test-macos, check-windows]"
-    assert "changes" not in _code(image) and "ci-intel" not in image
-    # a docs-only change skips the two jobs: a skip must not block the image, a failure or a cancel must
+    assert _needs(image) == "[test, changes, test-macos, check-windows]"
+    assert "ci-intel" not in image
+    # a docs-only change skips the two jobs: a skip must not block the image, a failure or a cancel must. A failed `changes` job skips
+    # them too, so the image names `changes` itself and requires it to have succeeded (#318).
     cond = _image_condition()
     assert cond.startswith("${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success'")
+    assert "needs.changes.result == 'success'" in cond
     for job in ("test-macos", "check-windows"):
         assert f"contains({GATE}, needs.{job}.result)" in cond, job
     assert "failure()" not in cond and "always()" not in cond and cond.endswith("}}")
@@ -182,9 +184,9 @@ def test_the_image_waits_for_the_linux_macos_and_windows_checks():
         assert job not in _code(_job(text, "image-check")), job
 
 
-def _runs(cond, test, mac, win, event="push"):
+def _runs(cond, test, mac, win, event="push", changes="success"):
     """Evaluate the image condition for the given results (GitHub semantics: success, failure, cancelled or skipped)."""
-    env = {"test": test, "test-macos": mac, "check-windows": win}
+    env = {"test": test, "changes": changes, "test-macos": mac, "check-windows": win}
     expr = cond[len("${{"):-len("}}")].strip()
     expr = expr.replace("!cancelled()", "True").replace("github.event_name == 'push'", repr(event == "push"))
     expr = re.sub(r"needs\.([\w-]+)\.result", lambda m: repr(env[m.group(1)]), expr)
@@ -204,6 +206,14 @@ def test_the_image_condition_for_skipped_and_failed_checks(mac, win, runs):
     assert _runs(cond, "success", mac, win) is runs
     assert _runs(cond, "failure", mac, win) is False and _runs(cond, "skipped", mac, win) is False     # the Ubuntu tests always gate
     assert _runs(cond, "success", mac, win, event="pull_request") is False                              # pushes only
+
+
+@pytest.mark.parametrize("changes,runs", [("success", True), ("skipped", False), ("failure", False), ("cancelled", False)])
+def test_the_image_does_not_publish_unless_the_changes_job_succeeded(changes, runs):
+    """#318: a failed `changes` job skips test-macos and check-windows, and a skip is accepted for them; the image must not publish then."""
+    cond = _image_condition()
+    assert _runs(cond, "success", "skipped", "skipped", changes=changes) is runs
+    assert _runs(cond, "success", "success", "success", changes=changes) is runs
 
 
 def test_packages_write_stays_on_the_image_job_alone():

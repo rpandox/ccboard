@@ -496,6 +496,19 @@ NOT_A_LOGIN = [
 ]
 
 
+def test_the_account_switch_message_is_no_dead_login_whatever_the_error_kind():
+    """#318: the exclusion is checked first, for every text and kind: a rollout error item carries the message and a kind ('unauthorized')
+    that matches on its own, and the pair must still read as the board's own account switch."""
+    for kind in ("unauthorized", "Unauthorized", "other", None, ""):
+        assert login_problem.codex_auth_failure(ACCOUNT_MISMATCH, kind) is False, kind
+        assert login_problem.codex_auth_failure(kind, ACCOUNT_MISMATCH) is False, kind
+    assert login_problem.codex_auth_failure("unauthorized") is True and login_problem.codex_auth_failure(REVOKED, "unauthorized") is True
+    # through the rollout reader: the error item with that kind raises nothing
+    item = jl(NOW - 5, "event_msg", {"type": "error", "message": ACCOUNT_MISMATCH, "codex_error_info": "unauthorized"})
+    err = cr.parse_tail(item + "\n")["error"]
+    assert err and err["kind"] == "unauthorized" and cr.tail_auth_evidence(cr.parse_tail(item + "\n")) is None
+
+
 @pytest.mark.parametrize("label,msg", NOT_A_LOGIN, ids=[n for n, _ in NOT_A_LOGIN])
 def test_an_ordinary_failure_is_not_a_dead_login_through_parse_headless(label, msg):
     from app import agents
@@ -646,10 +659,45 @@ def test_a_later_token_usage_clears_it_and_the_old_line_does_not_raise_again(db,
     assert login_problem.get(db) is None and len(notices) == 1
 
 
-def test_the_pane_is_only_read_through_the_seam_and_a_failed_capture_is_nothing(monkeypatch):
+def test_the_pane_is_only_read_through_the_seam_and_a_failed_capture_is_unknown_not_empty(monkeypatch):
+    """#318: a failed capture is None (we do not know), never "" (the pane is empty and the line has left the screen)."""
     from app import tmux
-    monkeypatch.setattr(tmux, "capture", lambda name, lines=0, **k: (_ for _ in ()).throw(tmux.TmuxDown("no server")))
-    assert REAL_PANE_CAPTURE("shop--api--s1") == ""
+    for exc in (tmux.TmuxDown("no server"), tmux.TmuxError("boom"), OSError("gone")):
+        monkeypatch.setattr(tmux, "capture", lambda name, lines=0, _e=exc, **k: (_ for _ in ()).throw(_e))
+        assert REAL_PANE_CAPTURE("shop--api--s1") is None
     asked = []
     monkeypatch.setattr(tmux, "capture", lambda name, lines=0, **k: asked.append((name, lines)) or screen("■ " + EXPIRED))
     assert REAL_PANE_CAPTURE("shop--api--s1") == screen("■ " + EXPIRED) and asked == [("shop--api--s1", codex_pane.PANE_LINES)]
+    monkeypatch.setattr(tmux, "capture", lambda name, lines=0, **k: "")
+    assert REAL_PANE_CAPTURE("shop--api--s1") == ""                  # a genuinely empty pane stays ""
+
+
+def test_tmux_capture_strict_raises_on_a_failed_capture_and_the_default_still_returns_empty(monkeypatch):
+    import subprocess
+    from app import tmux
+    monkeypatch.setattr(tmux, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "can't find pane"))
+    assert tmux.capture("shop--api--s1") == ""
+    with pytest.raises(tmux.TmuxError):
+        tmux.capture("shop--api--s1", strict=True)
+    monkeypatch.setattr(tmux, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "hello\n", ""))
+    assert tmux.capture("shop--api--s1", strict=True) == "hello\n"
+
+
+def test_a_failed_capture_keeps_the_dedupe_flag_so_a_dismissed_line_does_not_come_back(db, home, work, notices, pane):
+    pane_row(db, home, work)
+    t = cr.Tailer()
+    pane["text"] = screen("■ " + EXPIRED)
+    t.tail_rows(db, NOW)
+    assert login_problem.get(db) is not None and len(notices) == 1
+    login_problem.clear(db)                                       # dismissed while the line is on screen
+    pane["text"] = None                                           # a capture that failed (tmux down, a timeout)
+    t.tail_rows(db, NOW + 6)
+    pane["text"] = screen("■ " + EXPIRED)                         # the same line, still on screen
+    t.tail_rows(db, NOW + 12)
+    assert login_problem.get(db) is None and len(notices) == 1
+    assert len([e for e in db.recent_events(20) if e.get("event") == "LoginProblem"]) == 1
+    pane["text"] = ""                                             # an empty pane really is "the line has gone": the flag drops
+    t.tail_rows(db, NOW + 18)
+    pane["text"] = screen("■ " + EXPIRED)
+    t.tail_rows(db, NOW + 24)
+    assert login_problem.get(db) is not None and len(notices) == 2
