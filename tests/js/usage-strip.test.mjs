@@ -65,36 +65,6 @@ test('poll updates keyed buttons in place, preserves focus, and opens current da
   assert.equal(w.document.querySelector('.pool-group'), null);
 });
 
-test('pool lazy load remembers failures, backs off 1/5/15 minutes and toasts once', async () => {
-  const w = makeWorld({ companions: false }); installDom(w);
-  w.run(`
-    globalThis.clock = 1000; Date.now = () => clock;
-    globalThis.loads = 0; globalThis.toasts = 0;
-    globalThis.Lazy = { load: () => { loads++; return Promise.reject(new Error('offline')); }, fail: () => { toasts++; }, watchLinks() {} };
-    globalThis.registerServiceWorker = () => {};
-    globalThis.installLifecycleListeners = () => {};
-    globalThis.rewriteLegacyHash = () => {};
-    globalThis.route = () => {};
-    globalThis.startStatePolling = () => Promise.resolve();
-    globalThis.state = { pools: { groups: [] } };
-  `);
-  w.load('main.js');
-  const render = w.get('renderPoolStrip'), state = w.get('state');
-  render(state); render(state);
-  await Promise.resolve();
-  assert.equal(w.get('loads'), 1); assert.equal(w.get('toasts'), 1);
-  for (const [wait, expected] of [[60000, 2], [300000, 3], [900000, 4]]) {
-    w.run(`clock += ${wait - 1}`); render(state);
-    assert.equal(w.get('loads'), expected - 1);
-    w.run('clock++'); render(state); await Promise.resolve();
-    assert.equal(w.get('loads'), expected);
-    assert.equal(w.get('toasts'), 1);
-  }
-  w.run('clock += 900000; Lazy.load = () => { loads++; globalThis.paintPoolStrip = (st) => { globalThis.paintedPools = st; }; return Promise.resolve(); };');
-  render(state); await Promise.resolve();
-  assert.equal(w.get('paintedPools'), state);
-});
-
 test('value changes and reordered input never move focused group nodes', () => {
   const w = world(), paint = w.get('paintPoolStrip');
   w.document.body.append(w.get('el')('div', { id: 'banner' }));

@@ -1623,7 +1623,7 @@ function installShell() {
 
 /* The rate-limit callout (pages/widgets.js) lives in #banner, which renderBanner() empties on every render: it is put back right after. */
 Shell.limit = function (st) {
-  if (typeof renderPoolStrip === 'function') renderPoolStrip(st);
+  if (typeof Lazy !== 'undefined' && (st?.pools != null || Lazy.done('pools'))) Lazy.run('pools', () => paintPoolStrip(state));
   try { if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function') Widgets.limitBanner(st); }
   catch (e) { console.error('ccboard limit banner', e); }
 };

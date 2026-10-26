@@ -59,22 +59,6 @@ function watchLaunches() {
   });
 }
 
-const poolLoad = { pending: false, failures: 0, nextAt: 0, toasted: false };
-function renderPoolStrip(st) {
-  if (typeof paintPoolStrip === 'function') { paintPoolStrip(st); return; }
-  if (!st?.pools || poolLoad.pending || Date.now() < poolLoad.nextAt) return;
-  poolLoad.pending = true;
-  Lazy.load('pools').then(() => {
-    poolLoad.pending = false;
-    poolLoad.failures = 0;
-    paintPoolStrip(state);
-  }, (err) => {
-    poolLoad.pending = false;
-    poolLoad.nextAt = Date.now() + [60000, 300000, 900000][Math.min(poolLoad.failures++, 2)];
-    if (!poolLoad.toasted) { poolLoad.toasted = true; Lazy.fail('pool usage', err); }
-  });
-}
-
 registerServiceWorker();
 installLifecycleListeners();
 markStandalone();
