@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.117 - 2026-10-26
+
+### Fixed
+- Linked folders added or removed by another process are seen on the next registry read, without restarting the board (#326). Cheap database change checks keep the parsed registry cached between changes.
+
+Upgrade: nothing to do.
+
 ## v0.5.116 - 2026-10-26
 
 ### Added
