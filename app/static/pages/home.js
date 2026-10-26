@@ -309,7 +309,7 @@ Pages.session = function (tmux) { return tmux ? (Pages.order().find((x) => x.tmu
 
 Pages.targetPerm = function () {
   const t = Pages.target();
-  return t && typeof sessionPerm === 'function' ? sessionPerm(t) : null;
+  return t && typeof sessionPerm === 'function' ? sessionPerm(t, true) : null;
 };
 
 /* mod+1..9: open the nth session of Pages.order() as the peek. False (key left alone) when there is no nth session. */
@@ -377,7 +377,7 @@ Pages.act = async function (what) {
     return true;
   }
   if (what === 'allow' || what === 'deny') {
-    const pr = typeof sessionPerm === 'function' ? sessionPerm(tmux) : null;
+    const pr = typeof sessionPerm === 'function' ? sessionPerm(tmux, true) : null;
     if (!pr) { pageToast(`no permission is waiting on ${name}`, 'warn'); return false; }
     if (!(await decide(pr.id, what))) return false;
     pageToast(`${what === 'allow' ? 'allowed' : 'denied'} ${name}`, what === 'allow' ? 'ok' : 'warn');
@@ -417,6 +417,7 @@ async function deployNow() {
 }
 
 async function decide(pid, decision) {
+  if (actPending.has('perm:' + pid)) return false;               // #318: an answer is already out (the keys y / d are not guarded by a disabled button): never post a second one
   const pr = (state && state.pending_permissions || []).find((p) => p.id === pid);
   const bare = pr && pr.bare_device;
   const ok = await actPost('perm:' + pid, decision, bare ? `/api/bare/${encodeURIComponent(bare)}/sessions/${encodeURIComponent(pr.tmux_name)}/${decision}` : `/api/permission/${pid}/${decision}`, bare ? { pid } : undefined,

@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -996,13 +997,18 @@ def test_state_accounts_and_the_api(env, lite_client):
     assert lite_client.get("/api/accounts").status_code == 403
 
 
-def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_client):
+def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_client, monkeypatch):
     from app import main
+    now = datetime.fromtimestamp(T0 + 1, tz=timezone.utc)
+    # Even an ISO since is clamped to 400 days before _utcnow; keep reads and writes on the fixture clock.
+    monkeypatch.setattr(main, "_utcnow", lambda: now)
+    monkeypatch.setattr(dbmod, "now", lambda: now.isoformat(timespec="seconds"))
     state_file(settings.claude_config_dir)
     accounts.observe(main.db, T0)
     statusline(main.db, "shop--api--s9", T0 + 3000, T0 + 200000, 33, 44)
     r = lite_client.get("/api/series", params={"series": "rl_5h", "key": f"acct:{UUID_A}", "since": "1h"}, headers=H)
     assert r.status_code == 200 and f"rl_5h:acct:{UUID_A}" in r.json()["series"]
+    assert [v for v in r.json()["series"][f"rl_5h:acct:{UUID_A}"] if v is not None] == [33.0]
     ev = lite_client.get("/api/series/events", params={"series": "acct", "since": "30d"}, headers=H).json()["events"]
     assert [(e["key"], e["m"]) for e in ev] == [(UUID_A, {"to": UUID_A})]
 

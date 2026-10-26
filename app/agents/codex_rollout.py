@@ -769,12 +769,15 @@ class Tailer:
         (rollout/src/policy.rs), but its TUI draws one as a "■ {message}" line: codex_pane.rejected_login reads the screen and, for a refresh
         failure or a 401 with an auth error code on such a line, this raises kv login_problem exactly as `_auth` does (raise_, the LoginProblem
         event, the notice). The line stays on screen for a long time, so it raises once: flags.login_pane holds a short hash of the message while it
-        is visible (it survives a board restart) and is dropped when the line has gone. Whatever clears the problem for the rollout path clears it
+        is visible (it survives a board restart) and is dropped when the line has gone (an empty pane; a failed capture leaves it alone). Whatever clears the problem for the rollout path clears it
         here (a token usage of that account after it, a finished login, dismiss), and a dismissed line does not come back while it is on screen.
         From the source, not observed; a prompt, an answer or a diff that quotes the words has no "■ " in front and never counts."""
         from .. import login_problem
         from . import codex_pane
-        msg = codex_pane.rejected_login(_pane_capture(name))
+        text = _pane_capture(name)
+        if text is None:
+            return                                              # the capture failed: we do not know, so the dedupe flag stays as it was (#318)
+        msg = codex_pane.rejected_login(text)
         flags = row.get("flags") or {}
         if msg is None:
             if flags.get("login_pane"):
@@ -1033,14 +1036,16 @@ def _send_notice(notify, w: dict, plan: str | None, label: str | None) -> bool:
 
 
 
-def _pane_capture(name: str) -> str:
-    """The text of a Codex row's pane (scrollback and screen, wrapped lines joined), "" when tmux has nothing. The one seam tests replace."""
+def _pane_capture(name: str) -> str | None:
+    """The text of a Codex row's pane (scrollback and screen, wrapped lines joined): "" for a pane that is empty, None when the capture failed
+    (tmux down, a timeout, a pane that could not be read), so a caller can tell "the line left the screen" from "we could not look" (#318).
+    The one seam tests replace."""
     from .. import tmux
     from . import codex_pane
     try:
-        return tmux.capture(name, lines=codex_pane.PANE_LINES)
+        return tmux.capture(name, lines=codex_pane.PANE_LINES, strict=True)
     except (tmux.TmuxError, tmux.TmuxDown, OSError):
-        return ""
+        return None
 
 
 _tailer = Tailer()

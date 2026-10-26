@@ -273,6 +273,7 @@ test('Allow and Deny show only for a pending permission and only while no full t
   fresh.querySelectorAll('.perm-btns button')[0].click();
   await tick();
   assert.deepEqual(calls(w).filter((c) => c.path.includes('/permission/')).pop(), { method: 'POST', path: '/api/permission/12/allow' });
+  w.run('actPending.clear()');                                    // the poll that confirms an answer drops it (#318: a second answer waits for that)
   fresh.querySelectorAll('.perm-btns button')[1].click();
   await tick();
   assert.deepEqual(calls(w).filter((c) => c.path.includes('/permission/')).pop(), { method: 'POST', path: '/api/permission/12/deny' });
