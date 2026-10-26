@@ -316,6 +316,8 @@ def _record_limit(db, name: str, limit: dict) -> None:
 def _attribute_reading(db, name: str, row: dict | None, rate_limits: dict) -> tuple[str | None, bool]:
     """(account key, is it the current account) for a statusline's rate_limits; also keeps the session row's `account` current. The
     attribution is best effort: any failure answers (None, True), which is exactly the behaviour without account tracking."""
+    if row and db.kv_get(f"runtime_session:{row['id']}"):
+        return row.get("account"), False
     try:
         acct = accounts.for_reading(db, rate_limits)
         is_current = acct == (accounts.current(db) or accounts.UNKNOWN)

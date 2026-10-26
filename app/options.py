@@ -105,6 +105,7 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_MEM_SERVICE", "memory", "Memory service", "Run the memory worker as a managed service.", "bool", "0", "installer", applies="installer"),
         Option("CCBOARD_CODEX_HOOK_TRUST", "safety", "Codex hook trust", "Review trusts hooks once in Codex and bypass also trusts repository hooks.", "choice", "review", "file", attr="codex_hook_trust", choices=("review", "bypass")),
         Option("CCBOARD_CLONE_ALLOWED_HOSTS", "safety", "Private clone hosts", "Comma-separated private hosts or wildcard domains that clones may reach.", "list", "", "file", attr="clone_allowed_hosts"),
+        Option("CCBOARD_POOLS", "agents", "Runtime profiles", "Isolate bound accounts in private runtime profiles. Restart required.", "bool", "0", "file", attr="pools"),
         Option("CCBOARD_MCP_REMOTE", "safety", "Remote MCP default", "Start remote MCP enabled only with 1 unless its page switch overrides it.", "bool", "", "file", attr="mcp_remote"),
         Option("CODEX_HOME", "advanced", "Codex folder", "Empty uses Codex's own default configuration folder.", "path", "", "file", attr="codex_home"),
         Option("CCBOARD_AUTOCLOSE_GRACE", "agents", "Auto-close grace", "Seconds to wait after Stop before closing a task session.", "float", "45", "page", attr="autoclose_grace", bad="autoclose_grace_bad", bounds=(0, 86400)),

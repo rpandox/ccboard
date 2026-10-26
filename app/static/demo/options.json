@@ -796,6 +796,27 @@
       "edit_value": "[]"
     },
     {
+      "key": "CCBOARD_POOLS",
+      "group": "agents",
+      "label": "Runtime profiles",
+      "help": "Isolate bound accounts in private runtime profiles. Restart required.",
+      "kind": "bool",
+      "default": "0",
+      "cls": "file",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": false,
+      "set": false,
+      "line": "CCBOARD_POOLS=0",
+      "source": "default",
+      "problem": null,
+      "running": false,
+      "pending": false,
+      "edit_value": "False"
+    },
+    {
       "key": "CCBOARD_MCP_REMOTE",
       "group": "safety",
       "label": "Remote MCP default",

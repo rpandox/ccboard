@@ -1307,3 +1307,41 @@ test('codex log out with nobody logged in ({ok: true, was: null}) is a harmless 
   assert.deepEqual(toasts(w).pop(), { text: 'Codex was not logged in', kind: 'ok' });
   assert.equal(hidden(cxSec(w).querySelector('.set-err')), true);
 });
+
+test('pool accounts use their own endpoint, styled rows and confirmed release; migration reports each slot', async () => {
+  const off = acctWorld();
+  await tick(); await tick();
+  assert.equal(panel(off).querySelector('.set-pool-list'), null);
+  assert.ok(!text(panel(off)).includes('Legacy'));
+  let poolRows = [{ id: 'claude-account-a', provider: 'claude', label: 'Account A', state: 'ready' }];
+  const w = acctWorld({ answers: {
+    '/api/pools/accounts': ({ method }) => { if (method === 'POST') { poolRows = []; return { released: 'claude-account-a' }; } return poolRows; },
+    '/api/pools/migrate': { results: [{ slot: 'saved-a', moved: 'claude-account-a' }, { slot: 'live-b', skipped: 'live login: switch the legacy login to another account first' }] }
+  } });
+  for (let i = 0; i < 8; i++) await tick();
+  let list = panel(w).querySelector('.set-pool-list');
+  assert.ok(text(panel(w)).includes('Legacy: subscription accounts'));
+  assert.ok(text(panel(w)).includes('Each account runs in its own profile. Nothing switches machine-wide.'));
+  assert.equal(list.querySelectorAll('.set-pool-row').length, 1);
+  assert.equal(text(list.querySelector('.set-pool-row .k')), 'Account A');
+  assert.equal(list.querySelectorAll('.badge').length, 2);
+  assert.equal(text(list.querySelector('.mono')), 'claude-account-a');
+  btn(list, 'Release').click();
+  assert.equal(calls(w).filter((c) => c.method === 'POST' && c.path.includes('/release')).length, 0);
+  btn(panel(w), 'Confirm Release').click();
+  for (let i = 0; i < 8; i++) await tick();
+  assert.ok(calls(w).some((c) => c.method === 'POST' && c.path === '/api/pools/accounts/claude-account-a/release'));
+  assert.equal(panel(w).querySelectorAll('.set-pool-row').length, 0);
+  btn(panel(w), 'Migrate saved logins').click();
+  for (let i = 0; i < 8; i++) await tick();
+  assert.match(text(panel(w)), /saved-a: moved to claude-account-a/);
+  assert.match(text(panel(w)), /live-b: skipped: live login/);
+});
+
+test('handed-over legacy rows name their owner and have no Switch even with pools off', () => {
+  const w = acctWorld({ state: stateOf({ accounts: accountsOf([acct(A1, { pool_account: 'claude-account-a' })]) }) });
+  const row = rowOf(w, A1);
+  assert.match(text(row), /belongs to pool account claude-account-a/);
+  assert.equal(btn(row, 'Switch'), undefined);
+  assert.equal(btn(row, 'Log in again'), undefined);
+});

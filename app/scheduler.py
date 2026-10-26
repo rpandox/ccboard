@@ -334,6 +334,13 @@ def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, s
         stamp = db_now()
         db.task_update(task_id, phase="done" if summary.get("status") == "ok" else "failed", result=(summary.get("result") or None),
                        result_at=stamp, done_at=stamp)
+    bound = job.get("account_id") or job_opts(job).get("account_id")
+    if bound is not None and task_id is not None:
+        db.task_update(task_id, spec={"account_id": bound})
+        binding = db.kv_get(f"runtime_run:{run_id}")
+        if binding:
+            with db.lock:
+                db.conn.execute("UPDATE runtime_attempt SET task_id=? WHERE id=?", (str(task_id), binding["value"]["attempt"]))
     have = wt is not None and wt.is_dir()
     db.run_finish(run_id, **summary, worktree=str(wt) if have else None, branch=f"worktree-{slug}" if have or agent == "claude" else None,
                   task_id=task_id)
@@ -357,6 +364,30 @@ def headless_mode(job: dict) -> str:
 
 
 def run_job(db, job: dict, run_id: int) -> dict:
+    from . import profiles
+    bound = job.get("account_id") or job_opts(job).get("account_id")
+    if bound is None:
+        return _run_job(db, job, run_id)
+    profiles.require_account(db, job.get("agent") or "claude", bound)
+    context = {"account_id": bound, "attempt": None, "db": db, "run_id": run_id}
+    summary = {}
+    try:
+        summary = _run_job(db, job, run_id, binding=context)
+        return summary
+    finally:
+        profiles.finish_attempt(db, context["attempt"], summary.get("status", "error"), summary.get("session_id"))
+
+
+def _bound_run(cmd, *, binding, provider, **kwargs):
+    from . import profiles
+    kwargs["env"] = profiles.child_env(provider, binding["account_id"], kwargs.get("env"))
+    binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}")
+    binding["db"].kv_set(f"runtime_run:{binding['run_id']}", {"attempt": binding["attempt"]})
+    profiles.discover_attempt(binding["db"], binding["attempt"], kwargs["cwd"], provider, time.time())
+    return _run_agent(cmd, **kwargs)
+
+
+def _run_job(db, job: dict, run_id: int, binding=None) -> dict:
     """Execute one run synchronously (called in a worker thread). Returns the run summary. Claude: `claude -p --worktree <slug>` (Claude makes
     the worktree); Codex: a managed worktree, then `codex exec --json` in it."""
     job = {**job, "permission_mode": headless_mode(job)}
@@ -390,7 +421,8 @@ def run_job(db, job: dict, run_id: int) -> dict:
             if exe:
                 cmd[0] = exe
             env = {**codex_agent._child_env(), "CCBOARD_SESSION": "none"}      # the hook resolver ignores this run: it is not a board session
-            cp = _run_agent(cmd, cwd=str(wt), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+            run = _run_agent if binding is None else lambda cmd, **kw: _bound_run(cmd, binding=binding, provider=agent, **kw)
+            cp = run(cmd, cwd=str(wt), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
             ran = True
             res = ag.parse_headless(cp.stdout, cp.stderr, cp.returncode)
             last = _last_message(out_file)
@@ -422,7 +454,8 @@ def run_job(db, job: dict, run_id: int) -> dict:
     env = run_env(job)
     try:
         tasks.ensure_excluded(rpath)
-        cp = _run_agent(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
+        run = _run_agent if binding is None else lambda cmd, **kw: _bound_run(cmd, binding=binding, provider=agent, **kw)
+        cp = run(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
         res = agents.get("claude").parse_headless(cp.stdout, cp.stderr, cp.returncode)
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":

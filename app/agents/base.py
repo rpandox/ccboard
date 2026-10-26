@@ -69,6 +69,7 @@ class LaunchReq:
     bypass: bool = False
     session_id: str | None = None
     task: bool = False
+    account_id: str | None = None
 
 
 @dataclass

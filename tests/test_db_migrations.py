@@ -672,3 +672,23 @@ def test_bare_table_is_additive_idempotent_and_invisible_to_previous_image(tmp_p
         assert db.bare_open_rows('device-1') == {}
     finally:
         db.close()
+
+
+def test_runtime_profiles_add_empty_tables_to_old_db(tmp_path):
+    path = tmp_path / "profiles-old.db"
+    make_old_db(path)
+    db = DB(path)
+    try:
+        assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at"}
+        assert set(columns(db.conn, "runtime_attempt")) == {"id", "task_id", "n", "account_id", "provider", "node_id", "provider_session_id",
+                                                            "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id"}
+        for table in ("pool_account", "runtime_attempt"):
+            assert db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        before = dump(db)
+    finally:
+        db.close()
+    reopened = DB(path)
+    try:
+        assert dump(reopened) == before
+    finally:
+        reopened.close()

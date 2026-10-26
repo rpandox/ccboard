@@ -18,6 +18,7 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 
 | Page | What it covers |
 |---|---|
+| [Runtime profiles (P1)](pools.md) | Opt-in account isolation, migration and the legacy switcher. |
 | [Configuration reference](configuration.md) | The few settings most people set, then one table per group, the options page, the advanced and test-only variables, and Restart board. |
 | [Upgrade](upgrade.md) | How to update each kind of install (Linux, Mac, WSL2, Docker), what the changelog's `Upgrade:` line means, backing up first, going back, and updating Claude Code. |
 | [Uninstall ccboard](uninstall.md) | Every command in order, with what it removes and what it keeps, for Linux, the container, a Mac and WSL2. |

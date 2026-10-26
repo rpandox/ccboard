@@ -324,3 +324,8 @@ html.force-coarse dialog.set-widen input, html.force-coarse dialog.set-widen but
 }
 html.force-coarse #page .settings-page .set-worker input, html.force-coarse #page .settings-page .set-worker textarea, html.force-coarse #page .settings-page .set-worker button { min-height:44px; font-size:16px; }
 html.force-coarse #page .settings-page .set-worker input[type=checkbox] { width:44px; height:44px; }
+
+.set-pool-list { margin-bottom: 16px; }
+#page .settings-page .kv-main .set-pool-id { font: 12px/1.5 var(--font-mono); overflow-wrap: anywhere; }
+#page .settings-page .set-pool-row > .kv-act { grid-template-columns: 1fr; }
+html.force-coarse .set-pool-list button { min-height: 44px; }

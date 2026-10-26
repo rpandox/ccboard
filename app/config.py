@@ -541,6 +541,7 @@ class Settings:
         data_dir = env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())
         self.data_dir = Path(data_dir)
         self.db_path = self.data_dir / "ccboard.db"
+        self.pools = str(env.get("CCBOARD_POOLS", "0")).strip().lower() in ("1", "true", "on")
         # Where this process runs: 'docker' (compose sets CCBOARD_RUNTIME=docker), 'systemd' (INVOCATION_ID is always
         # set by a unit), 'launchd' (a macOS LaunchAgent: CCBOARD_RUNTIME=launchd, or an XPC_SERVICE_NAME naming a ccboard label)
         # or 'host' (a dev shell). An unknown CCBOARD_RUNTIME is ignored, never trusted (app/platform.py resolve_runtime).

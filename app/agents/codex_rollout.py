@@ -481,6 +481,8 @@ def _bind(db, row: dict, sid: str, path: Path) -> bool:
                               (sid, row["row_id"]))
     if not cur.rowcount:
         return False
+    from .. import profiles
+    profiles.sync_session(db, row["tmux_name"])
     if not (row.get("flags") or {}).get("transcript_path"):
         db.update_flags(row["tmux_name"], {"transcript_path": str(path)})
     return True
