@@ -4431,7 +4431,9 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
         if not kind:
             approval = codex_pane.approval_dialog(screen, width)
             if approval:
-                command = " ".join(approval["command"].splitlines())[:300]
+                command = " ".join(approval["command"].splitlines())
+                # Joining can reconstruct a secret; redact it whole before the card's display cap.
+                command = nodes_relay.redact(command, nodes_relay.known_secrets())[:300]
                 return "dialog", codex_pane.COMMAND_NOTE + ("\n" + command if command else "")
     except (tmux.TmuxError, tmux.TmuxDown, OSError):
         return None

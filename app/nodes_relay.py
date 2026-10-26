@@ -2401,6 +2401,22 @@ def _is_ref(v) -> bool:
     return r is not None and r.handle is not None and redact(r.rest, known_secrets()) == r.rest
 
 
+def screen_line_layout(line: str, width: int | None = None) -> tuple[str, int, bool] | None:
+    """Content, its column offset and whether it wraps; frame edges are real boundaries.
+
+    Both secret matching and logical-line reconstruction must use the original, unredacted widths.
+    """
+    framed = line.startswith(("│ ", "┃ ")) and line.endswith((" │", " ┃"))
+    if framed:
+        content, offset = line[2:-2], 2
+    elif line.strip().startswith(("╭", "╰", "┌", "└")):
+        return None
+    else:
+        content, offset = line, 0
+    available = width - 4 if framed and width else width
+    return content, offset, bool(available and len(content.rstrip()) == available)
+
+
 def _hide_wrapped(lines: list[str], known, width: int | None = None) -> list[str]:
     """Hide every fragment of a secret crossing a full-width line. Preserve screen coordinates until after matching.
 
@@ -2410,16 +2426,17 @@ def _hide_wrapped(lines: list[str], known, width: int | None = None) -> list[str
     if len(lines) < 2:
         return lines
     width = width or max(len(x) for x in lines)
+    layouts = [screen_line_layout(x, width) or ("", 0, False) for x in lines]
     masks = [bytearray(len(x)) for x in lines]
     for trim_indent in (False, True):
         parts, starts, bounds, pos = [], [], [], 0
-        for i, x in enumerate(lines):
-            skip = len(x) - len(x.lstrip()) if trim_indent and i and len(lines[i - 1]) == width else 0
-            starts.append((pos, skip))
+        for i, (x, offset, wrapped) in enumerate(layouts):
+            skip = len(x) - len(x.lstrip()) if trim_indent and i and layouts[i - 1][2] else 0
+            starts.append((pos, offset + skip, len(x) - skip))
             parts.append(x[skip:])
             pos += len(x) - skip
             if i < len(lines) - 1:
-                if len(x) == width:
+                if wrapped:
                     bounds.append(pos)
                 else:
                     parts.append("\x00")
@@ -2441,8 +2458,8 @@ def _hide_wrapped(lines: list[str], known, width: int | None = None) -> list[str
         for a, b in spans:
             if any(a < x < b for x in bounds):
                 hidden[a:b] = b"\x01" * (b - a)
-        for x, (off, skip), mask in zip(lines, starts, masks):
-            for col, h in enumerate(hidden[off:off + len(x) - skip], skip):
+        for (off, skip, length), mask in zip(starts, masks):
+            for col, h in enumerate(hidden[off:off + length], skip):
                 mask[col] |= h
     out = []
     for x, mask in zip(lines, masks):

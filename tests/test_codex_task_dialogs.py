@@ -227,17 +227,21 @@ def test_trust_needs_consecutive_monitor_polls(lane, fake_tmux, monkeypatch, int
 
 
 @pytest.mark.parametrize("wrap_menu", [False, True])
-def test_wrapped_hook_token_never_reaches_card_api_or_logs(lane, fake_tmux, lite_client, monkeypatch, caplog, wrap_menu):
+@pytest.mark.parametrize("border", [False, True])
+def test_wrapped_hook_token_never_reaches_card_api_or_logs(lane, fake_tmux, lite_client, monkeypatch, caplog, wrap_menu, border):
     name, _ = lane
     token = "a1b2c3d4" * 4 + "e5f60789" * 4
     monkeypatch.setattr(hooks, "_token", token)
-    fake_tmux["sessions"][name].update(window_width=41, window_height=24)
-    fake_tmux["pane"][name] = {"cols": 41}
+    width = 45 if border else 41
+    fake_tmux["sessions"][name].update(window_width=width, window_height=24)
+    fake_tmux["pane"][name] = {"cols": width}
     fake_tmux["screen"] = pane("command_approval.txt").replace(
         "git add -- report.txt && git commit -m 'Update report'", "echo " + token[:32] + "\n  " + token[32:] + " && xxx")
     if wrap_menu:
         fake_tmux["screen"] = "\n".join(
             line[i:i + 41] for line in fake_tmux["screen"].splitlines() for i in range(0, max(1, len(line)), 41))
+    if border:
+        fake_tmux["screen"] = "\n".join("│ " + line.ljust(41) + " │" for line in fake_tmux["screen"].splitlines())
     card = main._tasks_view()[0]
     responses = [lite_client.get("/api/tasks", headers=H),
                  lite_client.post(f"/api/sessions/{name}/prompt", headers=H, json={"text": "continue"})]
@@ -245,4 +249,25 @@ def test_wrapped_hook_token_never_reaches_card_api_or_logs(lane, fake_tmux, lite
     for output in [json.dumps(card), *(r.text for r in responses), caplog.text, json.dumps(main.db.recent_events())]:
         assert token[:32] not in output and token[32:] not in output
     assert "[redacted]" in card["session"]["pane_dialog"]
+    assert_no_typing(fake_tmux)
+
+
+@pytest.mark.parametrize("prefix_length", [5, 285, 295])
+def test_joined_command_is_redacted_before_card_cap(lane, fake_tmux, lite_client, monkeypatch, caplog, prefix_length):
+    name, _ = lane
+    secret = "private value for redaction"
+    monkeypatch.setattr(main.nodes_relay, "known_secrets", lambda: [secret])
+    prefix = "echo " + "x" * (prefix_length - 5)
+    fake_tmux["screen"] = pane("command_approval.txt").replace(
+        "git add -- report.txt && git commit -m 'Update report'", prefix + "private value\n  for redaction && done")
+    # Only joining logical command lines with a space reconstructs this known value.
+    assert secret not in codex_pane.approval_dialog(fake_tmux["screen"])["command"]
+    card = main._tasks_view()[0]
+    note = card["session"]["pane_dialog"]
+    assert note == codex_pane.COMMAND_NOTE + "\n" + (prefix + "[redacted] && done")[:300]
+    responses = [lite_client.get("/api/tasks", headers=H),
+                 lite_client.post(f"/api/sessions/{name}/prompt", headers=H, json={"text": "continue"})]
+    assert [r.status_code for r in responses] == [200, 409]
+    for output in [json.dumps(card), *(r.text for r in responses), caplog.text, json.dumps(main.db.recent_events())]:
+        assert "private" not in output and "for redaction" not in output
     assert_no_typing(fake_tmux)

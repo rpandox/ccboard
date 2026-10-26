@@ -59,19 +59,19 @@ def _screen_lines(text: str, width: int | None = None, *, redact: bool = False) 
     safe = nodes_relay.screen_lines(text, TAIL_LINES, width=width) if redact else raw
     out, continuing = [], False
     for original, line in zip(raw, safe):
-        framed = original.startswith(("│ ", "┃ ")) and original.endswith((" │", " ┃"))
-        if framed:
-            original, line = original[2:-2], line[2:-2]
-        elif original.strip().startswith(("╭", "╰", "┌", "└")):
+        layout = nodes_relay.screen_line_layout(original, width)
+        if layout is None:
             # A frame edge is a real line boundary, not a full-width text continuation.
             continuing = False
             continue
+        _, offset, wrapped = layout
+        if offset:
+            line = line[offset:-offset]
         if continuing:
             out[-1] += line
         else:
             out.append(line)
-        available = width - 4 if framed and width else width
-        continuing = bool(available and len(original.rstrip()) == available)
+        continuing = wrapped
     return [ln.strip() for ln in out if ln.strip()]
 
 
