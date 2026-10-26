@@ -34,7 +34,9 @@ The two read endpoints behind it sit behind the same identity check as the rest 
 
 ## Linked folders
 
-The backend can link an existing local folder outside `PROJECTS_DIR` without moving or copying it. Phase A provides the API; the UI follows in Phase B. Set `CCBOARD_LINK_ROOTS` to colon-separated absolute parent directories. Native boards default to `$HOME`; Docker defaults to disabled. An empty setting disables all link routes.
+Choose **+ project** to answer **What do you want to add?**: **Clone a git repo** (paste a URL), **Link a folder on this computer** (keep an existing folder where it is), **Import from GitHub**, or **Start a blank repo**. Add repo offers the same four choices.
+
+For Link, type a folder path such as `~/Work/tools/mailgate`. The board checks the folder and shows its branch and remote, or the repos inside it. Edit the suggested name and press **Link folder**. A new project links the whole folder; Add repo links it inside the selected project. A **Linked** badge shows the original path in its title. **Unlink** removes the board entry and leaves the folder on disk. Deleting an ordinary project also leaves any linked repos on disk. When linking is disabled, the choice stays visible with the reason. Set `CCBOARD_LINK_ROOTS` to colon-separated absolute parent directories. Native boards default to `$HOME`; Docker defaults to disabled. An empty setting disables all link routes.
 
 Use `POST /api/preflight/folder {"path":"/absolute/folder"}` to check a folder and see its branch, credential-free origin, child repos (up to 50), and suggested name. Then use `POST /api/projects {"name":"tools","link":"/absolute/folder"}` for a whole project, or `POST /api/projects/tools/repos {"name":"api","link":"/absolute/repo"}` for a repo in an ordinary project. `link` and `url` are mutually exclusive; `~` is expanded. Repo names can be inferred from the folder name.
 

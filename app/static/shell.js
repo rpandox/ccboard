@@ -98,9 +98,9 @@ Shell.model = function (st) {
     attn += needs;
     live += sess.filter((x) => x.state !== 'ended').length;
     const activity = sess.reduce((m, x) => Math.max(m, x.at), 0);
-    const kids = [...sess, ...(p.repos || []).map((r) => ({ key: 'r:' + p.name + '/' + r.name, kind: 'repo', project: p.name, name: r.name, state: r.state }))];
+    const kids = [...sess, ...(p.repos || []).map((r) => ({ key: 'r:' + p.name + '/' + r.name, kind: 'repo', project: p.name, name: r.name, state: r.state, linked: r.linked, target: r.target }))];
     const folder = !((p.repos || []).length === 1 && p.repos[0].name === p.name);     // the project folder is its own node unless it is the one repo
-    projects.push({ key: 'p:' + p.name, kind: 'proj', name: p.name, attn: needs, count: sess.length, activity, kids, folder,
+    projects.push({ key: 'p:' + p.name, kind: 'proj', linked: p.linked, target: p.target, name: p.name, attn: needs, count: sess.length, activity, kids, folder,
       older: !needs && activity > 0 && now - activity >= Shell.OLDER_DAYS * 86400 });   // no activity at all (a new project) stays in the main list
   }
   projects.sort((a, b) => (b.attn - a.attn) || (b.activity - a.activity) || a.name.localeCompare(b.name));
@@ -451,7 +451,7 @@ Shell.patchProj = function (node, p, level) {
   node.classList.toggle('attn', p.attn > 0);
   r.row.setAttribute('aria-expanded', open ? 'true' : 'false');
   r.row.setAttribute('aria-level', String(level));
-  setText(r.name, p.name);
+  patchLinkedName(r.name, p.name, p);
   setText(r.cnt, p.count ? String(p.count) : '');
   r.cnt.setAttribute('title', `${p.count} session${p.count === 1 ? '' : 's'}`);
   r.dot.classList.toggle('hidden', !p.attn);
@@ -519,7 +519,7 @@ Shell.projKids = function (p, level) {
   for (const k of p.kids) {
     if (k.kind !== 'repo') { out.push(k); continue; }
     if (k.state === 'cloning' || k.state === 'clone-failed') { out.push(k); continue; }       // nothing to browse yet: the plain link
-    out.push({ key: Shell.dirKey(p.name, k.name, ''), kind: 'dir', project: p.name, repo: k.name, path: '', name: k.name, glyph: 'repo', level: level + 1, hasKids: true, dirty: false });
+    out.push({ key: Shell.dirKey(p.name, k.name, ''), kind: 'dir', project: p.name, repo: k.name, path: '', name: k.name, linked: k.linked, target: k.target, glyph: 'repo', level: level + 1, hasKids: true, dirty: false });
   }
   if (p.folder) out.push({ key: Shell.dirKey(p.name, 'root', ''), kind: 'dir', project: p.name, repo: 'root', path: '', name: 'project folder', glyph: 'folder', level: level + 1, hasKids: true, dirty: false });
   return out;
@@ -601,7 +601,7 @@ Shell.patchDir = function (node, k) {
   d.row.classList.toggle('cur', Shell.dirCurrent(k));
   if (Shell.dirCurrent(k)) d.row.setAttribute('aria-selected', 'true'); else d.row.removeAttribute('aria-selected');
   if (d.g !== k.glyph) { d.g = k.glyph; d.glyph.textContent = ''; d.glyph.append(ic(k.glyph === 'repo' ? 'git-repo' : 'folder-close')); }
-  setText(d.name, k.name);
+  patchLinkedName(d.name, k.name, k);
   d.row.setAttribute('title', k.path || (k.repo === 'root' ? 'the project folder' : k.repo));
   d.dot.classList.toggle('hidden', !k.dirty);
   const showKids = open && k.hasKids;
@@ -659,7 +659,7 @@ Shell.patchKid = function (node, k) {
   if (k.kind === 'note') { node.setAttribute('data-key', k.key); setText(node, k.text); return; }
   const r = node._k;
   node.setAttribute('data-key', k.key);
-  setText(r.name, k.name);
+  patchLinkedName(r.name, k.name, k);
   if (k.kind === 'repo') { node.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.name })); return; }
   node.setAttribute('href', k.node ? (Ref.hash(k) || '#/') : Shell.hash('session', { tmux: k.tmux }));      // a session of another node: #/n/<handle>/s/<tmux> (nodes.js); this board's keep #/s/<tmux>
   node.setAttribute('data-tmux', k.tmux);                                          // the drop target's session (dnd.js)

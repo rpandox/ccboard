@@ -82,7 +82,7 @@ test('#/onboarding/project is one page with four steps in a vertical stepper; th
   const w = wizWorld();
   assert.equal(w.document.title, 'New project · ccboard');
   assert.deepEqual(states(w), ['name:active', 'repo:todo', 'defaults:todo', 'prompt:todo']);
-  assert.deepEqual(steps(w).map((s) => text(s.querySelector('.wiz-title'))), ['Name', 'Repo', 'Defaults', 'First prompt']);
+  assert.deepEqual(steps(w).map((s) => text(s.querySelector('.wiz-title'))), ['What do you want to add?', 'Repo', 'Defaults', 'First prompt']);
   assert.equal(wiz(w).querySelector('ol.wiz-steps').children.length, 4);
   assert.equal(active(w).querySelector('.wiz-title').getAttribute('aria-current'), 'step');
   assert.deepEqual(filled(page(w)), ['Create project']);
@@ -135,12 +135,12 @@ test('an existing project with no repo is carried on with instead of refused: st
 
 // ---------------------------------------------------------------- step 2: repo
 
-test('step 2: Blank | Clone | Import as a segmented control (one pressed), the repo name defaults to the project name, Create repo POSTs it', async () => {
+test('step 2: four add choices (one pressed), the repo name defaults to the project name, Create repo POSTs it', async () => {
   const w = wizWorld();
   await createProject(w, 'shop');
   const seg = active(w).querySelector('.seg-ctl');
-  assert.deepEqual(seg.querySelectorAll('.seg-btn').map(text), ['Blank', 'Clone', 'Import']);
-  assert.deepEqual(seg.querySelectorAll('.seg-btn').map((b) => b.getAttribute('aria-pressed')), ['true', 'false', 'false']);
+  assert.deepEqual(seg.querySelectorAll('.seg-btn').map(text), ['Clone a git repo', 'Link a folder on this computer', 'Import from GitHub', 'Start a blank repo']);
+  assert.deepEqual(seg.querySelectorAll('.seg-btn').map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'false', 'true']);
   assert.equal(input(active(w), 'Repo name').value, 'shop');
   input(active(w), 'Repo name').value = 'a--b';
   submit(active(w).querySelector('form'));
@@ -158,7 +158,7 @@ test('step 2: Blank | Clone | Import as a segmented control (one pressed), the r
 test('Clone: the URL is probed on leaving the field (POST /api/preflight/clone) and the chips say reachable, default branch and the derived name, which fills the name field', async () => {
   const w = wizWorld({ answers: { '/api/preflight/clone': { reachable: true, default_branch: 'trunk', needs_auth: false, heads: ['trunk', 'dev'], name: 'shop-api', error: null } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   url.value = 'https://github.com/octo/shop-api.git';
   url.dispatchEvent({ type: 'blur' });
@@ -175,7 +175,7 @@ test('Clone: the URL is probed on leaving the field (POST /api/preflight/clone) 
 test('Clone: a private repo says "needs credentials" and what to do (an ssh URL, or gh auth login with a Copy button); an unreachable one says why; neither blocks the button', async () => {
   const w = wizWorld({ answers: { '/api/preflight/clone': { reachable: false, default_branch: null, needs_auth: true, heads: [], name: 'private', error: 'could not read Username' } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   url.value = 'https://github.com/octo/private.git';
   url.dispatchEvent({ type: 'blur' });
@@ -197,7 +197,7 @@ test('Clone: a URL the clone would refuse is said at once and never sent to the 
   mock.timers.enable({ apis: ['setTimeout'] });
   const w = wizWorld({ answers: { '/api/preflight/clone': { reachable: true, default_branch: 'main', needs_auth: false, heads: ['main'], name: 'r', error: null } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   url.value = 'file:///etc';
   url.dispatchEvent({ type: 'blur' });
@@ -219,7 +219,7 @@ test('Clone: a host the box refuses (an address, localhost, a private or tailnet
   const refuse = () => { throw new Error(why); };
   const w = wizWorld({ answers: { '/api/preflight/clone': refuse, '/api/projects/shop/repos': refuse } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   url.value = 'https://10.0.0.5/team/repo.git';
   url.dispatchEvent({ type: 'blur' });
@@ -236,7 +236,7 @@ test('Clone: a host the box refuses (an address, localhost, a private or tailnet
 test('Clone: an http:// or git:// URL is refused at once by the wizard (https, ssh and git@host: only) and never sent to the probe', async () => {
   const w = wizWorld();
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   for (const u of ['http://github.com/o/r', 'git://github.com/o/r']) {
     url.value = u;
@@ -250,7 +250,7 @@ test('Clone: an http:// or git:// URL is refused at once by the wizard (https, s
 test('Clone: Clone repo POSTs {url, name} to the project\'s repos, advances, and the repo step\'s line follows the state: cloning, cloned, failed (with the clone terminal)', async () => {
   const w = wizWorld({ answers: { '/api/preflight/clone': { reachable: true, default_branch: 'main', needs_auth: false, heads: ['main'], name: 'api', error: null } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Clone').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Clone a git repo').click();
   const url = input(active(w), 'Clone URL');
   url.value = 'https://github.com/octo/api.git';
   url.dispatchEvent({ type: 'blur' });
@@ -275,7 +275,7 @@ test('Clone: Clone repo POSTs {url, name} to the project\'s repos, advances, and
 test('Import: Load my repos asks GitHub (GET /api/github/repos), a failed ask says "GitHub not connected" with gh auth login; ticked repos go to .../repos/bulk; progress is the clone queue', async () => {
   const w = wizWorld({ answers: { '/api/github/repos': { repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git', private: true, fork: false, description: 'the first' }, { name: 'beta', url: 'https://github.com/o/beta.git', private: false, fork: true, description: '' }], protocol: 'https' } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Import').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Import from GitHub').click();
   assert.deepEqual(filled(page(w)), ['Import selected']);
   btn(active(w), 'Load my repos').click();
   await tick(); await tick();
@@ -300,7 +300,7 @@ test('Import: Load my repos asks GitHub (GET /api/github/repos), a failed ask sa
 test('Import: when the box has no GitHub login the chip says so and gives the command with Copy; nothing is posted', async () => {
   const w = wizWorld({ answers: { '/api/github/repos': () => { throw new Error('gh is not logged in'); } } });
   await createProject(w);
-  btn(active(w).querySelector('.seg-ctl'), 'Import').click();
+  btn(active(w).querySelector('.seg-ctl'), 'Import from GitHub').click();
   btn(active(w), 'Load my repos').click();
   await tick(); await tick();
   const chips = modeBox(w, 'import').querySelector('.wiz-chips');
@@ -481,12 +481,12 @@ test('a saved state whose project is gone starts over; junk in storage is ignore
   assert.deepEqual(states(w2)[0], 'name:active');
 });
 
-test('?name=<project> carries on for a project with no repo (step 2, name done); a project that has repos is not resumed; an unknown name pre-fills step 1', () => {
+test('?name=<project> carries on for a project with no repo (step 2, name done); a project that has repos can add another; an unknown name pre-fills step 1', () => {
   const w = wizWorld({ route: '#/onboarding/project?name=shop', state: stateOf({ projects: SHOP({}) }) });
   assert.deepEqual(states(w), ['name:done', 'repo:active', 'defaults:todo', 'prompt:todo']);
   assert.match(text(stepOf(w, 'name').querySelector('.wiz-sum')), /shop/);
   const w2 = wizWorld({ route: '#/onboarding/project?name=shop', state: stateOf({ projects: SHOP({ api: [] }) }) });
-  assert.deepEqual(states(w2)[0], 'name:active');
+  assert.deepEqual(states(w2)[0], 'name:done');
   const w3 = wizWorld({ route: '#/onboarding/project?name=fresh', state: stateOf({ projects: SHOP({ api: [] }) }) });
   assert.equal(input(active(w3), 'Project name').value, 'fresh');
   const w4 = wizWorld({ route: '#/onboarding/project?name=bad--name', state: stateOf() });
@@ -554,4 +554,92 @@ test('every control of the wizard has a label, a name or an aria-label; the step
   const css = fs.readFileSync(path.join(STATIC, 'pages', 'onboarding.css'), 'utf8');
   assert.match(css, /#page \.wiz \.wiz-prompt \{[^}]*min-height:120px/);
   assert.match(css, /@media \(max-width:599px\) \{\s*#page \.wiz \.wiz-seg \.seg-btn/);
+});
+
+test('Link project checks the folder, shows chips, suggests an editable name and creates no empty project', async () => {
+  const w = wizWorld({ state: stateOf({ links_enabled: true }), answers: { '/api/preflight/folder': { ok: true, path: '/Work/tools', git: false, repos: ['mailgate', 'scripts'], suggested_name: 'tools' } } });
+  assert.deepEqual(active(w).querySelectorAll('.seg-btn').map(text), ['Clone a git repo', 'Link a folder on this computer', 'Import from GitHub', 'Start a blank repo']);
+  btn(active(w), 'Link a folder on this computer').click();
+  const path = input(active(w), 'Folder path');
+  assert.equal(path.getAttribute('placeholder'), '~/Work/tools/mailgate');
+  assert.equal(path.getAttribute('inputmode'), 'text');
+  path.value = '~/Work/tools'; path.dispatchEvent({ type: 'blur' });
+  await tick();
+  assert.deepEqual(active(w).querySelectorAll('.badge').map(text), ['folder with 2 repos', 'mailgate', 'scripts']);
+  assert.equal(input(active(w), 'Project name').value, 'tools');
+  input(active(w), 'Project name').value = 'my-tools';
+  submit(active(w).querySelector('form')); await tick(); await tick();
+  assert.deepEqual(post(w, '/api/projects').map((c) => c.body), [{ name: 'my-tools', link: '/Work/tools' }]);
+  assert.equal(saved(w).step, 2);
+});
+
+test('Link inside an existing project posts the repo endpoint; git and error chips are plain text', async () => {
+  const w = wizWorld({ route: '#/onboarding/project?name=shop', state: stateOf({ links_enabled: true, projects: SHOP({ api: [] }) }), answers: { '/api/preflight/folder': { ok: true, path: '/Work/mailgate', git: true, branch: 'main', remote: 'https://github.com/me/mailgate', repos: [], suggested_name: 'mailgate' } } });
+  btn(active(w), 'Link a folder on this computer').click();
+  const box = modeBox(w, 'link');
+  input(box, 'Folder path').value = '/Work/mailgate'; input(box, 'Folder path').dispatchEvent({ type: 'blur' }); await tick();
+  assert.deepEqual(box.querySelectorAll('.badge').map(text), ['git repo', 'main', 'github.com/me/mailgate']);
+  submit(box.querySelector('form')); await tick(); await tick();
+  assert.deepEqual(post(w, '/api/projects/shop/repos').map((c) => c.body), [{ name: 'mailgate', link: '/Work/mailgate' }]);
+  assert.equal(post(w, '/api/projects').length, 0);
+  const host = w.document.createElement('div');
+  w.get('folderChips')(host, { ok: false, error: 'The folder is outside CCBOARD_LINK_ROOTS' });
+  assert.match(text(host), /outside CCBOARD_LINK_ROOTS/);
+});
+
+test('Link remains visible and disabled when the board turns linking off', () => {
+  const w = wizWorld({ state: stateOf({ links_enabled: false }) });
+  const link = btn(active(w), 'Link a folder on this computer');
+  assert.ok(link.disabled || link.hasAttribute('disabled'));
+  assert.match(text(active(w)), /Linking local folders is off on this board \(CCBOARD_LINK_ROOTS\)/);
+});
+
+test('folder typing is debounced and an older response cannot replace a newer path', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  let old;
+  const w = wizWorld({ state: stateOf({ links_enabled: true }), answers: { '/api/preflight/folder': ({ body }) => body.path === '/old' ? new Promise((resolve) => { old = resolve; }) : { ok: true, path: '/new', git: true, branch: 'new', suggested_name: 'new' } } });
+  btn(active(w), 'Link a folder on this computer').click();
+  const path = input(active(w), 'Folder path');
+  path.value = '/old'; path.dispatchEvent({ type: 'input' });
+  assert.equal(post(w, '/api/preflight/folder').length, 0);
+  mock.timers.tick(500); await tick();
+  path.value = '/new'; path.dispatchEvent({ type: 'input' });
+  mock.timers.tick(500); await tick();
+  old({ ok: true, path: '/old', git: true, branch: 'old', suggested_name: 'old' }); await tick();
+  assert.equal(input(active(w), 'Project name').value, 'new');
+  assert.doesNotMatch(text(active(w).querySelector('.wiz-chips')), /old/);
+});
+
+
+test('direct wizard mount before the first poll keeps Link available and lets the server reject it', async () => {
+  let w;
+  assert.doesNotThrow(() => { w = wizWorld({ state: null, answers: { '/api/preflight/folder': () => { throw new Error('403: linking disabled'); } } }); });
+  assert.ok(wiz(w), 'the router mounted the wizard');
+  const link = btn(active(w), 'Link a folder on this computer');
+  assert.ok(!link.disabled && !link.hasAttribute('disabled'));
+  assert.doesNotMatch(text(active(w)), /Linking local folders is off/);
+  link.click();
+  assert.equal(btn(active(w), 'Link folder').disabled, false);
+  input(active(w), 'Folder path').value = '/Work/tools';
+  submit(active(w).querySelector('form')); await tick();
+  assert.equal(post(w, '/api/preflight/folder').length, 1);
+  assert.match(text(active(w)), /403: linking disabled/);
+});
+
+test('add choices expose one selected radio, support arrow keys and explain the fixed link destination', () => {
+  const w = wizWorld();
+  const group = active(w).querySelector('.add-modes');
+  assert.equal(group.getAttribute('role'), 'radiogroup');
+  const buttons = group.querySelectorAll('button');
+  const selected = () => buttons.filter((b) => b.getAttribute('aria-checked') === 'true');
+  assert.equal(buttons.length, 4);
+  assert.equal(selected().length, 1);
+  assert.equal(selected()[0].getAttribute('aria-pressed'), 'true');
+  btn(group, 'Link a folder on this computer').click();
+  assert.equal(text(selected()[0]), 'Link a folder on this computer');
+  assert.match(text(active(w).querySelector('p.field-hint')), /linked as a new project/);
+  selected()[0].dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
+  assert.equal(text(selected()[0]), 'Import from GitHub');
+  const css = fs.readFileSync(path.join(STATIC, 'launcher.css'), 'utf8');
+  assert.match(css, /\.add-modes \.seg-btn\[aria-pressed=true\][^{]*\{[^}]*border-color:var\(--sig\)/);
 });

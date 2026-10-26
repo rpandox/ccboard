@@ -246,8 +246,7 @@ function demoUsageRefresh(st) {
   return { ...st, usage, projects };
 }
 
-/* The demo's make-believe projects (v0.5.19, the new-project wizard): in demo mode a POST never reaches a box, so a project, a blank repo, a clone or a bulk import made in the wizard
-   is remembered here for the life of the page and laid over the fixture's state, so the project page the wizard ends on has what was just made (a cloned repo reads as cloned, on main). */
+// Demo creations persist for this page and merge over the fixture.
 const demoMade = { projects: [] };
 function demoRepoName(url) {
   const tail = String(url || '').trim().replace(/\/+$/, '').split(/[/:]/).pop().replace(/\.git$/, '');
@@ -255,8 +254,8 @@ function demoRepoName(url) {
 }
 function demoMakeRepo(project, name) {
   let p = demoMade.projects.find((x) => x.name === project);
-  if (!p) { p = { name: project, path: `/home/demo/projects/${project}`, root: null, orphan_sessions: [], repos: [] }; demoMade.projects.push(p); }
-  if (name && !p.repos.some((r) => r.name === name)) p.repos.push({ name, path: `${p.path}/${name}`, state: 'ok', branch: 'main', dirty: false, devcontainer: false, sessions: [] });
+  if (!p) { p = { linked: false, target: null, name: project, path: `/home/demo/projects/${project}`, root: null, orphan_sessions: [], repos: [] }; demoMade.projects.push(p); }
+  if (name && !p.repos.some((r) => r.name === name)) p.repos.push({ linked: false, target: null, name, path: `${p.path}/${name}`, state: 'ok', branch: 'main', dirty: false, devcontainer: false, sessions: [] });
 }
 const demoNoAuto = {};                                 // #84: tmux name -> the Auto-continue switch as the visitor left it (the fixture has no board to store it)
 function demoMake(method, path, body) {
@@ -267,11 +266,16 @@ function demoMake(method, path, body) {
   } else if (method === 'POST' && path === '/api/projects' && typeof b.name === 'string' && b.name) {
     demoMakeRepo(b.name, '');
     if (b.url) demoMakeRepo(b.name, demoRepoName(b.url));
+    if (b.link) demoLinkFolder(b.name, null, b.link);
   } else if (method === 'POST' && (m = /^\/api\/projects\/([^/]+)\/repos(\/bulk)?$/.exec(path))) {
     const project = decodeURIComponent(m[1]);
     demoMakeRepo(project, '');
     if (m[2]) for (const r of Array.isArray(b.repos) ? b.repos : []) demoMakeRepo(project, (r && (r.name || demoRepoName(r.url))) || '');
-    else demoMakeRepo(project, b.name || demoRepoName(b.url));
+    else {
+      const name = b.name || demoRepoName(b.link || b.url);
+      demoMakeRepo(project, name);
+      if (b.link) demoLinkFolder(project, name, b.link);
+    }
   }
 }
 /* ?taskepic=<name> (running waiting pr failed cancelled lost) lays a variant of the epic record (issue #149) over the demo's task 23: demo/task-epic.json. */
@@ -298,9 +302,7 @@ function demoMadeState(st) {
   return { ...st, projects: merged };
 }
 
-/* The Memory page's degraded states in demo mode: ?mem=down|not_started|degraded|stale|partial|ambiguous|incompatible|untested picks a variant from
-   demo/memory_states.json for every /api/memory/<project>/* answer. A 503 variant is thrown the way api() throws one (err.status, err.body);
-   the others are laid over the route's own fixture. No flag (or an unknown one) answers the fixture as it is. */
+// Demo memory failure variants.
 function demoMemFlag() { try { const m = /[?&]mem=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
 async function demoMemVariant(data0, bare) {
   const pm = /^\/api\/memory\/([^/]+)\//.exec(bare || '');
@@ -320,6 +322,10 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
+  if (method === 'POST' && (path === '/api/preflight/folder' || body?.link)) {
+    await Lazy.load('launcher');
+    if (path === '/api/preflight/folder') return demoFolderPreflight(body);
+  }
   if (/^\/api\/bare(\/|$)/.test(path.split('?')[0])) {
     if (typeof Lazy !== 'undefined') await Lazy.load('demobare');
     return demoBare(method, path, body); // demo/bare.json, entirely in memory
@@ -777,3 +783,11 @@ async function poll(force) {
 }
 
 function startStatePolling() { return poll(true); }
+
+function linkedBadge(item) {
+  return item && item.linked ? el('span', { class: 'badge hue-slate', title: item.target || '', text: 'Linked' }) : null;
+}
+function patchLinkedName(node, name, item) {
+  node.textContent = name;
+  if (item && item.linked) node.append(' ', linkedBadge(item));
+}

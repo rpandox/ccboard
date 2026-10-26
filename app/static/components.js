@@ -31,13 +31,14 @@ function confirmArm(key) {
   if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true);
 }
 
-function confirmButton(key, label, action, quiet, onChange) {
+function confirmButton(key, label, action, quiet, onChange, message) {
   // Two taps: the first turns the button into "Confirm …" + Cancel. A destructive button rests red-outlined (style.css); only the armed
   // "Confirm …" is filled red. `quiet` renders the resting state as a minimal (borderless-fill) button for rows crowded with everyday actions.
   // Repaint whichever page is mounted (a keyed roster row, the peek, the board): never a home-only renderer, so it is safe off the board.
   const repaint = () => { if (onChange) onChange(); else if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); };
   if (ui.confirm === key) {
     return el('span', { class: 'row' },
+      message ? el('span', { class: 'dim', text: message }) : null,
       el('button', { class: 'danger confirm', onclick: async () => { ui.confirm = null; try { await action(); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: `Confirm ${label}` }),
       el('button', { onclick: () => { ui.confirm = null; repaint(); }, text: 'Cancel' }));
   }

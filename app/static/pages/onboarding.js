@@ -1,16 +1,8 @@
-/* ccboard onboarding (v0.5.19): the new-project wizard at #/onboarding/project[?name=<project>], four short steps shown as a vertical stepper that fits a 390 px phone:
-     1 Name       a project is a folder under the projects directory. The same rule the box enforces (tmux.valid_name: letters, digits, - and _, start and end with a letter or digit,
-                  at most 64, no --) plus 'root' (reserved); POST /api/projects {name}.
-     2 Repo       Blank (an empty git repo), Clone (the URL is probed first: POST /api/preflight/clone gives reachable, default branch, needs credentials and the name a clone would
-                  get; then POST /api/projects/<p>/repos {url, name}) or Import (the GitHub list behind the box's gh login; POST .../repos/bulk). Progress is read from the state:
-                  the repo's own `state` (cloning, ok, clone-failed) and state.clone_queue for a bulk import. Skip leaves the project without a repo (sessions start in its folder).
-     3 Defaults   Claude, Codex or Shell, and the model and effort (Codex: model and reasoning) from the launcher's schema, saved as ccboard:defaults:<project> the way the launcher reads it
-                  ({agent, claude: {model, effort}, codex: {model, reasoning}}).
-     4 First prompt  optional. Start opens the launcher sheet in the new repo with the prompt filled in; Skip goes to the project page.
-   The wizard's own state lives in sessionStorage ccboard:wiz, so a reload keeps the step; #/onboarding/project?name=<p> carries on for a project that has no repo yet (step 2).
-   The first-run redirect (onboardingMaybeRedirect, called by Home): only when state.setup.first_run, no project exists and ccboard:onboarded is not set, once per tab; leaving the wizard
-   any way sets ccboard:onboarded. Nothing else opens it by itself: the entries are the + menu, the sidebar's + project and Home's empty state. The bare #/onboarding is the box checklist
-   of the plan, which lives in Settings > Doctor now. One filled primary at a time: the active step's own button. */
+/* New-project wizard: 1 What do you want to add? Clone, Link, Import or Blank.
+   Clone/import/blank create a named project then add repos in step 2. Link creates the
+   project directly, without making an empty folder first. An existing ?name= project
+   adds the link as a repo. Step 3 saves agent defaults; step 4 offers a first prompt.
+   Session storage preserves progress; the first-run redirect fires once per tab. */
 'use strict';
 
 const WIZ_KEY = 'ccboard:wiz';                       // sessionStorage: the wizard's state
@@ -19,7 +11,7 @@ const WIZ_REDIRECTED = 'ccboard:wiz-redirected';     // sessionStorage '1': the 
 const WIZ_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$/;                          // = app/tmux.py NAME_RE (a test keeps the two equal)
 const WIZ_URL_RE = /^(https:\/\/|ssh:\/\/|git@[A-Za-z0-9._-]+:)[^\s]{1,512}$/;                         // = app/projects.py URL_RE: the shape only; a host the box refuses (an IP address, localhost, a private or tailnet name) is the server's sentence, shown when the probe or the clone answers 400
 const WIZ_URL_MAX = 512;                             // = app/projects.py URL_MAX
-const WIZ_STEPS = [['name', 'Name'], ['repo', 'Repo'], ['defaults', 'Defaults'], ['prompt', 'First prompt']];
+const WIZ_STEPS = [['name', 'What do you want to add?'], ['repo', 'Repo'], ['defaults', 'Defaults'], ['prompt', 'First prompt']];
 const WIZ_PREFLIGHT_MS = 500;                        // the URL is probed this long after the last key
 const wizPage = { refs: null, w: null, seq: 0, timer: null, gh: null };
 
@@ -97,6 +89,7 @@ function wizDefaultsText(w) {
 
 /* The repo step's line, live: {text, tone: '' | 'warn' | 'bad', link?: {text, hash}} from the wizard's choice and the state (the repo's clone state, the bulk queue). */
 function wizRepoSummary(w, st) {
+  if (w.mode === 'link') return { text: 'Linked folder: its files stay where they are.', tone: '' };
   if (w.mode === 'none' || (!w.repo && !w.repos)) return { text: 'No repo yet: sessions start in the project folder.', tone: '' };
   const p = wizProject(w, st);
   const repoOf = (n) => (p && Array.isArray(p.repos) ? p.repos.find((r) => r.name === n) : null);
@@ -178,6 +171,19 @@ function wizLeave(toProject) {
 /* ---------- step 1: name ---------- */
 
 function wizPanelName(w) {
+  const host = el('div', {});
+  const paint = (mode) => {
+    w.mode = mode; wizSave(w); choices.set(mode); host.textContent = '';
+    host.append(mode === 'link' ? linkFolderForm(null, (body, res) => {
+      Object.assign(w, { name: body.name, created: true, repo: res.git ? body.name : '', repos: res.git ? 1 : (res.repos || []).length });
+      wizGo(2);
+    }) : wizPanelProjectName(w));
+  };
+  const choices = addModeChoices(paint, w.mode);
+  paint(w.mode === 'link' && state?.links_enabled === false ? 'blank' : w.mode);
+  return el('div', {}, choices.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
+}
+function wizPanelProjectName(w) {
   const input = el('input', { type: 'text', maxlength: 64, autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', placeholder: 'e.g. shop', 'aria-label': 'Project name' });
   input.value = w.name || '';
   const f = field('Project name', input, 'A folder under the projects directory. Letters, digits, - and _; start and end with a letter or digit.');
@@ -207,8 +213,8 @@ function wizPanelName(w) {
 
 /* ---------- step 2: repo ---------- */
 
-const WIZ_MODES = [['blank', 'Blank'], ['clone', 'Clone'], ['import', 'Import']];
-const WIZ_GO = { blank: 'Create repo', clone: 'Clone repo', import: 'Import selected', };
+const WIZ_MODES = ADD_MODES;
+const WIZ_GO = { blank: 'Create repo', clone: 'Clone repo', import: 'Import selected', link: 'Link folder', };
 
 /* The chips under the clone URL, from POST /api/preflight/clone: reachable, default branch, credentials, the name. A plain sentence for what to do when the box cannot read it. */
 function wizChips(host, res, busy, problem) {
@@ -227,7 +233,7 @@ function wizChips(host, res, busy, problem) {
 }
 
 function wizPanelRepo(w, refs) {
-  let mode = w.mode === 'clone' || w.mode === 'import' ? w.mode : 'blank';
+  let mode = ['clone', 'import', 'link'].includes(w.mode) ? w.mode : 'blank';
   const blankName = el('input', { type: 'text', maxlength: 64, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'e.g. api', 'aria-label': 'Repo name' });
   blankName.value = w.repoName || w.name || '';
   const blankField = field('Repo name', blankName, 'An empty git repo (branch main) inside the project.');
@@ -286,12 +292,17 @@ function wizPanelRepo(w, refs) {
   const importBox = el('div', { class: 'wiz-mode', 'data-mode': 'import' }, el('div', { class: 'wiz-row' }, load, gh), filter, list, importErr);
   const go = el('button', { class: 'primary', type: 'submit', text: WIZ_GO[mode] });
   const skip = el('button', { type: 'button', text: 'Skip, no repo yet', onclick: () => { w.mode = 'none'; w.repo = ''; w.repos = 0; wizGo(2); } });
-  const seg = lxSeg(WIZ_MODES, (v) => paint(v), 'Where the code comes from', 'wiz-seg');
+  const linkBox = el('div', { class: 'wiz-mode', 'data-mode': 'link' }, linkFolderForm(w.name, (body) => {
+    Object.assign(w, { mode: 'link', repo: body.name, repos: 1 }); wizGo(2);
+  }));
+  const seg = addModeChoices((v) => paint(v), mode);
   const paint = (v) => {
     mode = v;
     seg.set(v);
-    for (const b of [blankBox, cloneBox, importBox]) b.classList.toggle('hidden', b.getAttribute('data-mode') !== v);
+    for (const b of [blankBox, cloneBox, importBox, linkBox]) b.classList.toggle('hidden', b.getAttribute('data-mode') !== v);
     go.textContent = WIZ_GO[v];
+    go.classList.toggle('hidden', v === 'link');
+    skip.classList.toggle('hidden', v === 'link');
   };
 
   const submit = async () => {
@@ -330,8 +341,7 @@ function wizPanelRepo(w, refs) {
   };
   paint(mode);
   if (mode === 'clone' && url.value.trim()) wizProbeNow(url, chips, cloneName, () => nameTouched, (n) => { cloneName.value = n; });
-  return el('form', { class: 'form wiz-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } },
-    seg.node, blankBox, cloneBox, importBox, el('div', { class: 'submit' }, go, skip));
+  return el('div', {}, seg.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, el('form', { class: 'form wiz-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, blankBox, cloneBox, importBox, el('div', { class: 'submit' }, go, skip)), linkBox);
 }
 
 /* The clone URL's probe: after a pause, or on leaving the field. A newer URL makes an older answer stale. The derived name fills the name field until the user typed their own. */
@@ -462,7 +472,7 @@ function wizResume(route, st) {
   const q = route && route.query && route.query.name ? String(route.query.name) : '';
   if (q && !wizNameProblem(q, 'project')) {
     const p = st && Array.isArray(st.projects) ? st.projects.find((x) => x.name === q) : null;
-    if (p && !(p.repos || []).length) return { ...wizFresh(), ...(saved && saved.name === q ? saved : {}), name: q, created: true, step: Math.max(1, saved && saved.name === q ? saved.step : 1) };
+    if (p) return { ...wizFresh(), ...(saved && saved.name === q ? saved : {}), name: q, created: true, step: Math.max(1, saved && saved.name === q ? saved.step : 1) };
     if (!p) return { ...wizFresh(), name: q };
   }
   return saved || wizFresh();
