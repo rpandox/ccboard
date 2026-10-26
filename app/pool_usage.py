@@ -83,19 +83,26 @@ def ensure_groups(db, now=None, due=None):
         db._pool_identity_logs = {}
     with db.lock:
         rows = [dict(r) for r in db.conn.execute("SELECT * FROM pool_account WHERE state='ready' ORDER BY id")]
+    busy = set()
     for row in rows:
         if due is not None and row['quota_group_id'] is not None and now < due.get(row['quota_group_id'], 0):
             continue
+        reservation = profiles.account_lock(row['id'])
+        if not reservation.acquire(blocking=False):
+            busy.add(row['id'])
+            continue
         try:
-            with profiles.account_lock(row['id']):
-                with db.lock:
-                    ready = db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (row['id'],)).fetchone()
-                if not ready:
-                    continue
-                path = profiles.profile_dir(row['provider'], row['id'])
-                key, plan = identity(row['provider'], path)
+            with db.lock:
+                ready = db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (row['id'],)).fetchone()
+        finally:
+            reservation.release()
+        if not ready:
+            continue
+        try:
+            path = profiles.profile_dir(row['provider'], row['id'])
+            key, plan = identity(row['provider'], path)
             db._pool_identity_errors.pop(row['id'], None)
-        except (profiles.BadRequest, OSError, ValueError, TypeError, AttributeError):
+        except (profiles.BadRequest, OSError, ValueError, RecursionError, TypeError, AttributeError):
             key, plan = None, None
             db._pool_identity_errors[row['id']] = 'identity file unavailable'
             if now >= db._pool_identity_logs.get(row['id'], 0):
@@ -116,6 +123,8 @@ def ensure_groups(db, now=None, due=None):
                 previous = db.conn.execute('SELECT subscription_key FROM quota_group WHERE id=?', (row['quota_group_id'],)).fetchone()
             key = previous[0] if previous else hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:32]
         with db.lock:
+            if not db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (row['id'],)).fetchone():
+                continue
             db.conn.execute('INSERT OR IGNORE INTO quota_group(provider,subscription_key,plan) VALUES (?,?,?)', (row['provider'], key, plan))
             group = db.conn.execute('SELECT id FROM quota_group WHERE provider=? AND subscription_key=?', (row['provider'], key)).fetchone()[0]
             db.conn.execute('UPDATE pool_account SET quota_group_id=? WHERE id=?', (group, row['id']))
@@ -135,7 +144,7 @@ def ensure_groups(db, now=None, due=None):
         for aid in list(mapping):
             if aid not in present:
                 mapping.pop(aid, None)
-    return rows
+    return [r for r in rows if r['id'] not in busy]
 
 
 def windows(raw, now=None):
@@ -155,7 +164,8 @@ def windows(raw, now=None):
     return out or None
 
 
-def codex_windows(raw):
+def codex_windows(raw, now=None):
+    now = time.time() if now is None else now
     from .agents.codex_rollout import window_kind
     out = {}
     if not isinstance(raw, dict):
@@ -169,8 +179,10 @@ def codex_windows(raw):
         if kind not in ('5h', '7d') or n is None:
             continue
         pct, reset = FIELDS[:2] if kind == '5h' else FIELDS[2:]
-        out[pct] = max(0.0, min(100.0, n))
         at = epoch(w.get('resets_at', w.get('resetsAt')))
+        if at is not None and at <= now:
+            continue
+        out[pct] = max(0.0, min(100.0, n))
         out[reset] = iso(at) if at else None
     return out or None
 
@@ -210,10 +222,13 @@ def groups_view(db, now=None):
             g['age_s'] = max(0, int(now - epoch(row['sampled_at']))) if row else None
             g['state'] = 'ok' if row and g['age_s'] <= 300 and row['confidence'] >= .5 else 'unknown'
             for pct, reset in (FIELDS[:2], FIELDS[2:]):
-                if epoch(g[reset]) is not None and epoch(g[reset]) <= now:
+                expires = epoch(g[reset])
+                if expires is None and row:
+                    expires = epoch(row['sampled_at']) + (18000 if pct == FIELDS[0] else 7 * 86400)
+                if expires is not None and expires <= now:
                     g[pct] = None
             errors = getattr(db, '_pool_identity_errors', {})
-            g['reason'] = next((errors[a] for a in g['accounts'] if a in errors), None)
+            g['reason'] = next((errors[a] for a in g['accounts'] if a in errors), None) or getattr(db, '_pool_group_errors', {}).get(g['id'])
             if g['reason'] or not any(r[2] == 'ready' for r in members) or all(g[k] is None for k in (FIELDS[0], FIELDS[2])):
                 g['state'] = 'unknown'
             g['nodes'] = [r[0] for r in db.conn.execute('SELECT DISTINCT node_id FROM usage_sample WHERE quota_group_id=? AND node_id IS NOT NULL ORDER BY node_id', (g['id'],))]
@@ -261,7 +276,7 @@ def cache_reading(account, now):
     cache = accounts.read_usage_cache(profiles.profile_dir(account['provider'], account['id']), profile_only=True)
     if not cache or not 0 <= now - cache['at'] <= 600:
         return None
-    return windows(cache['windows'], now), cache['at'], 1.0 - .5 * max(0, now - cache['at'] - 120) / 480
+    return windows(cache['windows'], now), cache['at'], 1.0
 
 
 def rollout_paths(root, now):
@@ -324,7 +339,7 @@ def rollout_reading(attempt, now):
     parsed = cr.parse_tail(cr.read_tail(path))
     at = epoch(parsed.get('rate_limits_at'))
     if at is not None and at >= epoch(attempt['started_at']) and (not attempt['ended_at'] or at <= epoch(attempt['ended_at'])) and 0 <= now - at <= 300:
-        reading = codex_windows(parsed['rate_limits'])
+        reading = codex_windows(parsed['rate_limits'], now)
         if reading:
             return reading, at
     return None
@@ -352,8 +367,6 @@ def transcript_tokens(attempt, now, period=18000):
                 data = f.read(1024 * 1024)
                 # Leave a partial JSON line for the next poll.
                 cut = data.rfind(b'\n') + 1
-                if state['offset'] + len(data) == stat.st_size:
-                    cut = len(data)
                 for line in data[:cut].splitlines():
                     try:
                         row = json.loads(line)
@@ -365,9 +378,11 @@ def transcript_tokens(attempt, now, period=18000):
                         values = [number(usage.get(k)) for k in ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')]
                         if any(v is not None for v in values):
                             messages[ident] = (at, sum(max(0, v) for v in values if v is not None))
-                    except (ValueError, TypeError, AttributeError):
+                    except (ValueError, RecursionError, TypeError, AttributeError):
                         continue
-                state['offset'] += cut or len(data)  # discard an oversized malformed line
+                state['offset'] += cut
+                if not cut and len(data) == 1024 * 1024 and state['offset'] + len(data) < stat.st_size:
+                    state['offset'] += len(data)  # discard an oversized malformed line
         state['messages'] = {k: v for k, v in list(messages.items())[-10000:] if v[0] >= now - 7 * 86400}
         _TRANSCRIPTS[key] = state
         _TRANSCRIPTS.move_to_end(key)
@@ -400,8 +415,11 @@ def app_server(account):
         end, buf, total = time.monotonic() + APP_SERVER_TIMEOUT, b'', 0
         initialized = False
         while time.monotonic() < end:
-            if not sel.select(max(0, end - time.monotonic())):
-                break
+            cancelled = account.get('_sampling_cancel')
+            if cancelled is not None and cancelled.is_set():
+                return None
+            if not sel.select(min(.1, max(0, end - time.monotonic()))):
+                continue
             chunk = os.read(proc.stdout.fileno(), 65536)
             total += len(chunk)
             if not chunk or total > 1024 * 1024:
@@ -420,18 +438,29 @@ def app_server(account):
                     result = msg.get('result') or {}
                     return codex_windows(result.get('rateLimits'))
         return None
-    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+    except (OSError, ValueError, RecursionError, TypeError, AttributeError, subprocess.SubprocessError):
         return None
     finally:
         sel.close()
         # The CLI may leave descendants behind even after its leader exits.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
-        proc.stdin.close()
-        proc.stdout.close()
+        except (PermissionError, ProcessLookupError):
+            # macOS can reject killpg even after the leader has exited.
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except (PermissionError, ProcessLookupError):
+                    pass
+        finally:
+            try:
+                proc.wait()
+            finally:
+                for stream in (proc.stdin, proc.stdout):
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
 
 
 class Collector:
@@ -444,6 +473,7 @@ class Collector:
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.thread = None
+        self.db._pool_group_errors = {}
 
     def attempts(self, aid, now=None, period=7 * 86400):
         now = time.time() if now is None else now
@@ -475,49 +505,68 @@ class Collector:
             for a in attempts:
                 hit = (self.db.kv_get('pool_statusline:' + str(a['id'])) or {}).get('value') or {}
                 if hit and 0 <= now - hit['at'] <= 300:
-                    confidence = hit.get('confidence', .8) * max(0, 1 - (now - hit['at']) / 600)
+                    confidence = hit.get('confidence', .8)
                     candidates.append((hit['reading'], hit['at'], 'statusline', confidence))
         else:
             for a in attempts:
                 hit = rollout_reading(a, now)
                 if hit:
-                    candidates.append((*hit, 'rollout', .8 * max(0, 1 - (now - hit[1]) / 600)))
+                    candidates.append((*hit, 'rollout', .8))
         if candidates:
-            return best(candidates)
+            return best(candidates, now)
         return self.active_sample(account, now) if active else None
 
     def active_sample(self, account, now):
         if not settings.pools or self.stop.is_set() or not self.active_due(account['id'], now):
             return None
-        # Release and launch take this same reservation. Recheck state under it.
-        with profiles.account_lock(account['id']):
-            if not settings.pools or self.stop.is_set() or not self.active_due(account['id'], now):
-                return None
+        # Only reserve bookkeeping. No CLI, tmux or file parsing owns P1's lock.
+        aid = account['id']
+        reservation = profiles.account_lock(aid)
+        if not reservation.acquire(blocking=False):
+            return None
+        try:
             with self.db.lock:
-                row = self.db.conn.execute('SELECT state FROM pool_account WHERE id=?', (account['id'],)).fetchone()
-                opened = self.db.conn.execute('SELECT 1 FROM runtime_attempt WHERE account_id=? AND ended_at IS NULL LIMIT 1', (account['id'],)).fetchone()
-                ever = self.db.conn.execute('SELECT 1 FROM runtime_attempt WHERE account_id=? LIMIT 1', (account['id'],)).fetchone()
-            if not row or row[0] != 'ready':
+                row = self.db.conn.execute('SELECT state FROM pool_account WHERE id=?', (aid,)).fetchone()
+                opened = self.db.conn.execute('SELECT 1 FROM runtime_attempt WHERE account_id=? AND ended_at IS NULL LIMIT 1', (aid,)).fetchone()
+                ever = self.db.conn.execute('SELECT 1 FROM runtime_attempt WHERE account_id=? LIMIT 1', (aid,)).fetchone()
+            if not row or row[0] != 'ready' or aid in profiles._sampling:
                 return None
+            # Claude's /usage uses its existing idle bound attempt, never a new CLI.
+            if account['provider'] == 'codex' and (opened or not ever):
+                return None
+            sampling = profiles.Sampling()
+            profiles._sampling[aid] = sampling
+        finally:
+            reservation.release()
+        try:
+            selected = {**account, '_sampling_cancel': sampling.cancelled}
             if account['provider'] == 'claude':
                 from . import usage_refresh
-                usage_refresh.pool_refresh(self, account, now)
+                usage_refresh.pool_refresh(self, selected, now)
                 return None
-            if opened or not ever or not shutil.which('codex'):
+            if not shutil.which('codex') or sampling.cancelled.is_set():
                 return None
-            old = (self.db.kv_get('pool_refresh:' + account['id']) or {}).get('value') or {}
-            self.db.kv_set('pool_refresh:' + account['id'], {**old, 'next_at': now + 300})
+            old = (self.db.kv_get('pool_refresh:' + aid) or {}).get('value') or {}
+            self.db.kv_set('pool_refresh:' + aid, {**old, 'next_at': now + 300})
             try:
-                reading = app_server(account)
-            except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+                reading = app_server(selected)
+            except (OSError, ValueError, RecursionError, TypeError, AttributeError, subprocess.SubprocessError):
                 reading = None
+            if sampling.cancelled.is_set():
+                return None
             if reading:
                 if any((reading.get(k) or 0) >= 100 for k in (FIELDS[0], FIELDS[2])):
                     self.failure(account, now)
                 else:
-                    self.db.kv_set('pool_refresh:' + account['id'], {'next_at': now + 300, 'misses': 0})
+                    self.db.kv_set('pool_refresh:' + aid, {'next_at': now + 300, 'misses': 0})
                 return reading, now, 'app-server', .85
             self.failure(account, now)
+        finally:
+            # Signal I/O completion before taking the lock: release may be waiting.
+            sampling.done.set()
+            with reservation:
+                if profiles._sampling.get(aid) is sampling:
+                    profiles._sampling.pop(aid)
         return None
 
     def estimate(self, account, attempts, now):
@@ -563,10 +612,19 @@ class Collector:
     def _tick(self, now, account_id, active):
         with self.lock:
             schedule = dict(self.due)
-        rows = ensure_groups(self.db, now, schedule)
+        try:
+            rows = ensure_groups(self.db, now, schedule)
+        except Exception:
+            with self.lock:
+                self.due = {g: max(at, now + 300) for g, at in self.due.items()}
+            with self.db.lock:
+                for row in self.db.conn.execute('SELECT id FROM quota_group'):
+                    self.db._pool_group_errors[row[0]] = 'identity collection failed'
+            return
         grouped = {}
         for row in rows:
-            grouped.setdefault(row['quota_group_id'], []).append(row)
+            if row['quota_group_id'] is not None:
+                grouped.setdefault(row['quota_group_id'], []).append(row)
         with self.lock:
             for group in list(self.due):
                 if group not in grouped:
@@ -581,47 +639,49 @@ class Collector:
                     continue
                 # Reserve before I/O so a launch during sampling can mark it due again.
                 self.due[group] = now + 300
-            attempts = {m['id']: self.attempts(m['id'], now) for m in members}
-            opened = any(a['ended_at'] is None for aa in attempts.values() for a in aa)
-            with self.lock:
-                self.due[group] = min(self.due.get(group, now), now + (60 if opened else 300))
-            candidates = []
-            valid = [m for m in members if m['id'] not in self.db._pool_identity_errors]
-            for m in valid:
-                # Nonblocking: never read files during release or another profile operation.
-                reservation = profiles.account_lock(m['id'])
-                if not reservation.acquire(blocking=False):
-                    continue
-                try:
-                    with self.db.lock:
-                        ready = self.db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (m['id'],)).fetchone()
-                    if ready:
-                        hit = self.sample(m, now, active=False, attempts=attempts[m['id']])
-                        if hit:
-                            candidates.append(hit)
-                finally:
-                    reservation.release()
-            if not candidates and active:
-                for m in valid:
-                    hit = self.active_sample(m, now)
-                    if hit:
-                        candidates.append(hit)
-                        break
-            if not candidates:
-                for m in valid:
-                    with profiles.account_lock(m['id']):
-                        with self.db.lock:
-                            ready = self.db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (m['id'],)).fetchone()
-                        hit = self.estimate(m, attempts[m['id']], now) if ready else None
-                    if hit:
-                        candidates.append(hit)
-            if candidates:
-                reading, at, source, confidence = best(candidates)
-                save(self.db, group, reading, source, confidence, at)
+            try:
+                self._collect_group(group, members, now, active)
+                self.db._pool_group_errors.pop(group, None)
+            except Exception:
+                # Do not expose profile contents or subprocess output.
+                self.db._pool_group_errors[group] = 'usage collection failed'
+                with self.lock:
+                    self.due[group] = now + 300
         if now >= self.retention_at:
             with self.db.lock:
                 self.db.conn.execute('DELETE FROM usage_sample WHERE sampled_at < ? OR quota_group_id NOT IN (SELECT id FROM quota_group)', (iso(now - 14 * 86400),))
             self.retention_at = now + 3600
+
+    def _collect_group(self, group, members, now, active):
+        attempts = {m['id']: self.attempts(m['id'], now) for m in members}
+        opened = any(a['ended_at'] is None for aa in attempts.values() for a in aa)
+        with self.lock:
+            self.due[group] = min(self.due.get(group, now), now + (60 if opened else 300))
+        candidates = []
+        valid = [m for m in members if m['id'] not in self.db._pool_identity_errors]
+        for m in valid:
+            with self.db.lock:
+                ready = self.db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (m['id'],)).fetchone()
+            if ready:
+                hit = self.sample(m, now, active=False, attempts=attempts[m['id']])
+                if hit:
+                    candidates.append(hit)
+        if not candidates and active:
+            for m in valid:
+                hit = self.active_sample(m, now)
+                if hit:
+                    candidates.append(hit)
+                    break
+        if not candidates:
+            for m in valid:
+                with self.db.lock:
+                    ready = self.db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (m['id'],)).fetchone()
+                hit = self.estimate(m, attempts[m['id']], now) if ready else None
+                if hit:
+                    candidates.append(hit)
+        if candidates:
+            reading, at, source, confidence = best(candidates, now)
+            save(self.db, group, reading, source, confidence * freshness(at, now), at)
 
     def wait_delay(self, now):
         with self.lock:
@@ -637,9 +697,15 @@ class Collector:
             self.wake.wait(self.wait_delay(time.time()))
 
 
-def best(candidates):
+def freshness(at, now):
+    """Same age multiplier for every source: full for 30s, half at ten minutes."""
+    return max(0, 1 - .5 * max(0, now - at - 30) / 570)
+
+
+def best(candidates, now=None):
+    now = time.time() if now is None else now
     rank = {'cache': 0, 'statusline': 1, 'rollout': 0, 'cli': 2, 'app-server': 1, 'estimate': 3}
-    return min(candidates, key=lambda r: (-r[3], rank[r[2]], -r[1]))
+    return min(candidates, key=lambda r: (-r[3] * freshness(r[1], now), rank[r[2]], -r[1]))
 
 
 def collector(db):

@@ -1,0 +1,13 @@
+❯ /usage
+╭──────────────────────────────────────────────────╮
+│ Settings:  Status   Config   Usage                │
+│                                                  │
+│ Current session                                  │
+│ ████░░░░░░░░░░░░░░░░  20% used                   │
+│ Resets 10pm (Asia/Kathmandu)                      │
+│                                                  │
+│ Current week (all models)                        │
+│ ████████░░░░░░░░░░░░  40% used                   │
+│ Resets Oct 30 at 10pm (Asia/Kathmandu)             │
+╰──────────────────────────────────────────────────╯
+ Esc to cancel

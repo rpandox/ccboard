@@ -834,7 +834,8 @@ class Tailer:
         excluded = set()
         if settings.pools:
             with db.lock:
-                excluded = {r[0] for r in db.conn.execute("SELECT provider_session_id FROM runtime_attempt WHERE provider='codex' AND provider_session_id IS NOT NULL")}
+                excluded = {r[0].lower() for r in db.conn.execute("SELECT provider_session_id FROM runtime_attempt WHERE provider='codex' AND provider_session_id IS NOT NULL AND (ended_at IS NULL OR ended_at>=?)",
+                    (datetime.fromtimestamp(now - 7 * 86400, timezone.utc).isoformat(),))}
         readings = _readings(now, exclude=excluded) if excluded else _readings(now)
         for rl, at, account_id in readings:
             grouped.setdefault(_owner(accts, current, account_id), []).append((rl, at))
@@ -903,7 +904,8 @@ def _readings(now: float, exclude=None) -> list[tuple[dict, float, str | None]]:
     """(rate_limits, reported at, creator_account_id) of the newest MAX_ROLLOUTS rollouts modified within RL_LOOKBACK_DAYS."""
     out = []
     for mtime, size, path in recent_rollouts(now - RL_LOOKBACK_DAYS * 86400)[:MAX_ROLLOUTS]:
-        if exclude and any(path.name.endswith(sid + ".jsonl") for sid in exclude):
+        match = re.search(r'([a-fA-F0-9-]{36})\.jsonl$', path.name)
+        if exclude and match and match[1].lower() in exclude:
             continue
         r = _rollout_reading(path, mtime, size)
         if r:

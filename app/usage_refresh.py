@@ -16,6 +16,7 @@ The guards (state, permission, compaction) are the command route's own: main.py 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 
@@ -119,23 +120,47 @@ def view(db) -> dict:
     return {"running": busy(), "last": last if isinstance(last, dict) else None}
 
 
+def _own_usage_panel(text):
+    """Recognise only Usage's current panel, never a generic cancel footer."""
+    from .agents import claude_pane
+    lines = [line.strip(' │┃') for line in text.splitlines() if line.strip()]
+    if not lines or lines[-1].lower() != 'esc to cancel':
+        return False
+    # Ignore scrollback above the last panel border; reject later prompts/dialogs.
+    start = max((i for i, line in enumerate(lines) if line.startswith(('╭', '┌'))), default=0)
+    panel = lines[start:-1]
+    if claude_pane.approval_dialog(text) or any(re.search(r'do you want to|esc to cancel|esc to interrupt|tab to amend|^[>❯]|^\d+\.', line, re.I) for line in panel):
+        return False
+    return (any(re.fullmatch(r'(?:Settings:\s*)?Status\s+Config\s+Usage', line, re.I) or line == 'Usage' for line in panel)
+            and 'Current session' in panel
+            and any(line.startswith('Current week') for line in panel))
+
+
 def pool_refresh(collector, account, now):
     """Ask only an idle, bound profile pane, using the command route's existing guards."""
-    from . import main, pool_usage, agents, profiles
+    from . import main, pool_usage, agents
     from .agents import claude_pane
     from .config import settings
     if not settings.pools or collector.stop.is_set():
         return False
     db = collector.db
+    cancelled = account.get('_sampling_cancel')
+    with db.lock:
+        initial_attempt = db.conn.execute('SELECT MAX(id) FROM runtime_attempt WHERE account_id=?', (account['id'],)).fetchone()[0]
     try:
         candidates = panes(tmux.list_sessions(), db.open_rows(), tmux.viewers())
-        def eligible(p):
+        def eligible(p, panel=False):
             attempt = pool_usage.bound_attempt(db, p['name'])
             return (attempt and attempt['account_id'] == account['id']
                     and p['row'].get('state') in ('idle', 'done', 'waiting')
-                    and main._typing_refusal(p['name'], p['row']) is None)
-        def safe_now(name):
+                    and (main._state_refusal if panel else main._typing_refusal)(p['name'], p['row']) is None)
+        def safe_now(name, panel=False):
+            if cancelled is not None and cancelled.is_set():
+                return False
             with db.lock:
+                latest = db.conn.execute('SELECT MAX(id) FROM runtime_attempt WHERE account_id=?', (account['id'],)).fetchone()[0]
+                if latest != initial_attempt:
+                    return False
                 if not db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (account['id'],)).fetchone():
                     return False
             live = tmux.list_sessions()
@@ -146,9 +171,11 @@ def pool_refresh(collector, account, now):
             if (watchers.get(name) or {}).get('full', 0):
                 return False
             row = db.open_row(name)
-            if not row or not eligible({'name': name, 'row': row}):
+            if not row or not eligible({'name': name, 'row': row}, panel=panel):
                 return False
             text = tmux.capture(name, lines=claude_pane.TAIL_LINES)
+            if panel:
+                return _own_usage_panel(text)
             if claude_pane.screen_state(text) != 'waiting':
                 return False
             lines = [line.strip() for line in text.splitlines()]
@@ -184,27 +211,42 @@ def pool_refresh(collector, account, now):
         return True
 
     def finish():
+        escaped = False
+        confirmed = False
         try:
-            with profiles.account_lock(account['id']):
-                if not settings.pools or collector.stop.is_set():
-                    return
-                row = db.open_row(name)
-                if not safe_now(name) or not tmux.has_session(name):
-                    return
-                tmux.send_keys(name, ['Escape'])
-                hit = pool_usage.cache_reading(account, time.time())
-                if hit and hit[1] >= int(now):
-                    pool_usage.save(db, account['quota_group_id'], hit[0], 'cli', .9, hit[1])
-                    if any((hit[0].get(k) or 0) >= 100 for k in ('window_5h_pct', 'weekly_pct')):
-                        collector.failure(account, now)
-                    else:
-                        db.kv_set(key, {'next_at': now + 300, 'misses': 0})
-                else:
+            if not settings.pools or collector.stop.is_set():
+                return
+            if not safe_now(name, panel=True) or not tmux.has_session(name):
+                collector.failure(account, now)
+                return
+            escaped = True  # Even a failed send needs the one-hour typing pause.
+            tmux.send_keys(name, ['Escape'])
+            # Give the terminal redraw up to one second, without any profile lock.
+            deadline = time.monotonic() + 1
+            while True:
+                if safe_now(name):
+                    confirmed = True
+                    break
+                if time.monotonic() >= deadline:
                     collector.failure(account, now)
+                    return
+                time.sleep(.05)
+            hit = pool_usage.cache_reading(account, time.time())
+            if hit and hit[1] >= int(now):
+                pool_usage.save(db, account['quota_group_id'], hit[0], 'cli', .9, hit[1])
+                if any((hit[0].get(k) or 0) >= 100 for k in ('window_5h_pct', 'weekly_pct')):
+                    collector.failure(account, now)
+                else:
+                    db.kv_set(key, {'next_at': now + 300, 'misses': 0})
+            else:
+                collector.failure(account, now)
         except Exception:
             if not collector.stop.is_set():
                 collector.failure(account, now)
         finally:
+            if escaped and not confirmed:
+                old = (db.kv_get(key) or {}).get('value') or {}
+                db.kv_set(key, {**old, 'next_at': max(old.get('next_at', 0), time.time() + 3600)})
             release()
     later(ESCAPE_AFTER_S, finish)
     return True

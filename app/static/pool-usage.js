@@ -56,7 +56,7 @@ function poolStrip(pools) {
   const groups = pools.groups || [];
   const strip = el('div', { class: 'pool-strip', 'aria-label': 'Pool usage' });
   for (const provider of ['claude', 'codex']) {
-    const members = groups.filter((g) => g.provider === provider);
+    const members = groups.filter((g) => g.provider === provider).sort((a, b) => a.id - b.id);
     if (!members.length) continue;
     const row = el('div', { class: 'pool-provider', 'data-provider': provider }, el('span', { class: 'pool-provider-name', text: provider === 'codex' ? 'Codex' : 'Claude' }));
     const items = el('div', { class: 'pool-groups' });
@@ -91,23 +91,23 @@ function paintPoolStrip(st) {
   if (!host.firstChild) { host.append(poolStrip(st.pools)); return; }
   const strip = host.firstChild, groups = st.pools.groups || [];
   for (const provider of ['claude', 'codex']) {
-    const members = groups.filter((g) => g.provider === provider);
+    const members = groups.filter((g) => g.provider === provider).sort((a, b) => a.id - b.id);
     let row = strip.querySelector(`[data-provider="${provider}"]`);
     if (!members.length) { if (row) row.remove(); continue; }
     if (!row) {
       row = poolStrip({ groups: members }).firstChild;
-      strip.append(row);
+      strip.insertBefore(row, provider === 'claude' ? strip.firstChild : null);
     }
     const items = row.querySelector('.pool-groups');
     const existing = new Map([...items.children].map((button) => [button.getAttribute('data-pool-key'), button]));
-    const keep = new Set();
+    const keep = new Set(members.map((g) => `${provider}:${g.id}`));
+    // Remove departed groups first so surviving buttons never need reinsertion.
+    for (const [key, button] of existing) if (!keep.has(key)) button.remove();
     members.forEach((g, i) => {
       const key = `${provider}:${g.id}`;
       const button = existing.get(key) || el('button', { type: 'button', class: 'pool-group', 'data-pool-key': key });
       updatePoolButton(button, g, groups);
       if (items.children[i] !== button) items.insertBefore(button, items.children[i] || null);
-      keep.add(key);
     });
-    for (const [key, button] of existing) if (!keep.has(key)) button.remove();
   }
 }

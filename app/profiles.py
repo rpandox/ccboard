@@ -28,6 +28,13 @@ SWITCH_REASON = "a pool session is running on a profile"
 _migration_lock = threading.RLock()
 _account_locks_guard = threading.Lock()
 _account_locks = {}
+_sampling = {}  # guarded by the corresponding account_lock
+
+
+class Sampling:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
 
 
 def account_lock(account_id):
@@ -351,6 +358,10 @@ def release(db, account_id):
         if active:
             from fastapi import HTTPException
             raise HTTPException(409, "this pool account has an open attempt: " + _attempt_names(active))
+        sampling = _sampling.get(account_id)
+        if sampling is not None:
+            sampling.cancelled.set()
+            sampling.done.wait()  # No credential move until the CLI is reaped.
         provider = row["provider"]
         store = account_store if provider == "claude" else codex_accounts
         records = accounts._load(db) if provider == "claude" else codex_accounts._load(db)
@@ -436,7 +447,14 @@ def _serialized(fn):
     @wraps(fn)
     def call(*args, **kwargs):
         account_id = args[2] if len(args) > 2 else kwargs['account_id']
+        with account_lock(account_id):
+            sampling = _sampling.get(account_id)
+        if sampling is not None:
+            sampling.done.wait(1.0)
         with account_lock(account_id), _migration_lock:
+            sampling = _sampling.get(account_id)
+            if sampling is not None:
+                sampling.cancelled.set()
             return fn(*args, **kwargs)
     return call
 

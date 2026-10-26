@@ -1354,3 +1354,13 @@ test('pool Settings figures use shared group windows and keep unknown explicit',
   w.run("state.pools.groups[0].state = 'unknown'");
   assert.equal(w.get('settingsPoolFigures')('first'), ' · usage unknown');
 });
+
+test('two Codex logins in one quota group are marked shared workspace?', () => {
+  const w = acctWorld({ state: stateOf({ pools: { enabled: true, groups: [{ id: 1, provider: 'codex', accounts: ['first', 'copy'], state: 'ok', window_5h_pct: 34 }] } }) });
+  assert.match(w.get('settingsPoolFigures')('first'), /shared workspace\?/);
+  assert.match(w.get('settingsPoolFigures')('copy'), /shared workspace\?/);
+  w.run("state.pools.groups[0].state = 'unknown'");
+  assert.match(w.get('settingsPoolFigures')('first'), /shared workspace\?/);
+  w.run("state.pools.groups[0].accounts = ['first']");
+  assert.doesNotMatch(w.get('settingsPoolFigures')('first'), /shared workspace\?/);
+});

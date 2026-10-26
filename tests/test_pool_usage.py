@@ -91,7 +91,7 @@ def test_cache_decay_and_statusline_preference(box):
     n = attempt(box, at=now - 900)
     cache(path, now - 360)
     hit = pu.cache_reading({'id': 'one', 'provider': 'claude'}, now)
-    assert hit[2] == .75
+    assert hit[2] == 1  # base confidence; best() applies the common freshness curve
     cache(path, now - 601)
     assert pu.observe_statusline(box, 'pane-one', {'five_hour': {'used_percentage': 42}}, now)
     pu.collector(box).tick(now, account_id='one', active=False)
@@ -199,16 +199,18 @@ def test_cli_refresh_only_idle_bound_once(box, monkeypatch):
     monkeypatch.setattr(usage_refresh.tmux, 'list_sessions', lambda: {'pane-one': {'command': 'claude', 'attached': 0}})
     monkeypatch.setattr(usage_refresh.tmux, 'viewers', lambda: {})
     monkeypatch.setattr(usage_refresh.tmux, 'has_session', lambda _: True)
-    monkeypatch.setattr(usage_refresh.tmux, 'capture', lambda *a, **kw: '❯ ') 
+    pane = ['❯ ']
+    monkeypatch.setattr(usage_refresh.tmux, 'capture', lambda *a, **kw: pane[0])
     typed, timers = [], []
     monkeypatch.setattr(usage_refresh.tmux, 'send_text', lambda *args, **kw: typed.append(args))
     monkeypatch.setattr(usage_refresh, 'later', lambda delay, fn: timers.append(fn))
-    monkeypatch.setattr(usage_refresh.tmux, 'send_keys', lambda *args: None)
+    monkeypatch.setattr(usage_refresh.tmux, 'send_keys', lambda *args: pane.__setitem__(0, '❯ '))
     usage_refresh.release()
     c = pu.collector(box)
     c.tick(now, account_id='one')
     assert len(typed) == 1 and len(timers) == 1
     cache(path, now)
+    pane[0] = (Path(__file__).parent / 'fixtures/agents/claude/pane_usage.txt').read_text()
     timers.pop()()
     assert pu.groups_view(box, now)[0]['source'] == 'cli'
     assert pu.groups_view(box, now)[0]['confidence'] == .9
@@ -270,6 +272,8 @@ def test_peer_groups_fail_closed_and_retention_is_hourly(box):
 
 def test_usage_api_and_state(lite_client, monkeypatch):
     from app import main
+    now = time.time()
+    monkeypatch.setattr(pu.time, 'time', lambda: now)
     monkeypatch.setattr(settings, 'allowed_users', {'owner'})
     headers = {'Tailscale-User-Login': 'owner', 'X-CCBoard': '1'}
     monkeypatch.setattr(settings, 'pools', False)
@@ -317,7 +321,7 @@ def test_unchanged_cache_confidence_decays_without_new_timestamp(box):
     c.tick(now, active=False)
     c.tick(now + 360, active=False)
     g = pu.groups_view(box, now + 360)[0]
-    assert g['confidence'] == .75 and g['age_s'] == 360
+    assert g['confidence'] == pytest.approx(pu.freshness(now, now + 360)) and g['age_s'] == 360
     assert box.conn.execute('SELECT count(*) FROM usage_sample').fetchone()[0] == 1
 
 
@@ -796,7 +800,7 @@ def test_usage_rechecks_viewers_idle_draft_and_escape(box, monkeypatch, when, ch
             box.set_state('pane-one', 'working', 'UserPromptSubmit')
         return {'pane-one': {'full': int(changed[0] and change == 'full')}}
     monkeypatch.setattr(usage_refresh.tmux, 'viewers', viewers)
-    monkeypatch.setattr(usage_refresh.tmux, 'capture', lambda *a, **kw: '❯ draft' if changed[0] and change == 'draft' else '❯ ')
+    monkeypatch.setattr(usage_refresh.tmux, 'capture', lambda *a, **kw: '❯ draft' if changed[0] and change == 'draft' else (Path(__file__).parent / 'fixtures/agents/claude/pane_usage.txt').read_text() if changed[0] and not keys else '❯ ')
     monkeypatch.setattr(usage_refresh.tmux, 'has_session', lambda _: True)
     sent, keys, timers = [], [], []
     monkeypatch.setattr(usage_refresh.tmux, 'send_text', lambda *a, **kw: sent.append(a))

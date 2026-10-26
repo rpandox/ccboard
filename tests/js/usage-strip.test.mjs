@@ -94,3 +94,24 @@ test('pool lazy load remembers failures, backs off 1/5/15 minutes and toasts onc
   render(state); await Promise.resolve();
   assert.equal(w.get('paintedPools'), state);
 });
+
+test('value changes and reordered input never move focused group nodes', () => {
+  const w = world(), paint = w.get('paintPoolStrip');
+  w.document.body.append(w.get('el')('div', { id: 'banner' }));
+  paint({ pools: { groups: [group(10), group(80, { id: 2 })] } });
+  const items = w.document.querySelector('.pool-groups'), button = items.children[1];
+  button.focus();
+  const insert = items.insertBefore.bind(items);
+  items.insertBefore = (node, before) => {
+    // Browsers lose focus when a connected node is reinserted; minidom does not.
+    if (node.isConnected && w.document.activeElement === node) node.blur();
+    return insert(node, before);
+  };
+  paint({ pools: { groups: [group(5, { id: 2 }), group(90)] } });
+  assert.equal(w.document.activeElement, button);
+  assert.deepEqual([...items.children].map((b) => b.getAttribute('data-pool-key')), ['claude:1', 'claude:2']);
+  paint({ pools: { groups: [group(5, { id: 2 })] } });
+  assert.equal(w.document.activeElement, button, 'removing a preceding group also preserves focus');
+  paint({ pools: { groups: [group(10), group(5, { id: 2 })] } });
+  assert.equal(w.document.activeElement, button, 'inserting a preceding group preserves focus');
+});

@@ -5,10 +5,12 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 ## v0.5.115 - 2026-10-26
 
 ### Added
-- Pool usage (P2, #221): profile-owned Claude cache, statusline and idle `/usage` readings, plus Codex launch-attributed rollouts and CLI app-server readings. Subscription groups share one quota reading chosen by freshness and confidence, with reset times, bounded collection and history, conservative unknown state, and probes serialized with profile launch/release.
+- Pool usage (P2, #221): profile-owned Claude cache, statusline and idle `/usage` readings, plus Codex launch-attributed rollouts and CLI app-server readings. Subscription groups share one quota reading chosen by freshness and confidence, with reset times, bounded collection and history, conservative unknown state, and cancellable probes that let profile launches proceed within one second.
 - A pool strip showing account names and both quota windows while preserving keyboard focus across polls, a detail sheet, Settings usage figures, `/api/pools/usage`, and local per-account headroom. Peer pool exchange remains disabled until P5 account grants. `state.pools` is always present and is null with pools off.
 
 ### Fixed
+- Automatic pool `/usage` closes only its own unattended panel, confirms the prompt returns, and pauses typing for an hour if dismissal fails. Collection skips busy accounts, isolates group failures, cancels app-server process groups on launch, and reaps children even when macOS rejects group termination.
+- All pool sources use the same freshness weighting; expired windows are dropped, incomplete transcript lines are retried, and Codex rollout exclusions cover only open or recently ended attempts with constant-time ID lookups. Pool pills keep stable ordering and keyboard focus; Settings flags potentially shared Codex workspaces.
 - Profile transcript discovery tolerates Linux filesystem clock lag: pre-launch snapshots identify new files regardless of mtime, and discovery without a snapshot allows two seconds of slack while still rejecting ambiguous matches.
 
 Upgrade: nothing to do. Nothing new runs unless `CCBOARD_POOLS=1`; the additive migration creates two empty tables (`quota_group`, `usage_sample`) and adds one nullable column to `pool_account`.

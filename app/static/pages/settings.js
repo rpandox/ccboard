@@ -3387,9 +3387,10 @@ async function settingsPoolsAction(path) {
 function settingsPoolFigures(id) {
   const pools = typeof state !== 'undefined' && state && state.pools;
   const g = pools && (pools.groups || []).find((g) => (g.accounts || []).includes(id));
-  if (!g || g.state !== 'ok') return ' · usage unknown';
+  const shared = g?.provider === 'codex' && g.accounts.length > 1 ? ' · shared workspace?' : '';
+  if (!g || g.state !== 'ok') return ' · usage unknown' + shared;
   const pct = (n) => typeof n === 'number' ? `${Math.round(n)}%` : 'unknown';
-  return ` · 5 h ${pct(g.window_5h_pct)} · weekly ${pct(g.weekly_pct)}`;
+  return ` · 5 h ${pct(g.window_5h_pct)} · weekly ${pct(g.weekly_pct)}` + shared;
 }
 function settingsPoolRows(list) {
   list.textContent = '';
