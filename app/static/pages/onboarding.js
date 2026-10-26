@@ -180,8 +180,8 @@ function wizPanelName(w) {
     }) : wizPanelProjectName(w));
   };
   const choices = addModeChoices(paint, w.mode);
-  paint(w.mode === 'link' && !state.links_enabled ? 'blank' : w.mode);
-  return el('div', {}, choices.node, !state.links_enabled ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
+  paint(w.mode === 'link' && state?.links_enabled === false ? 'blank' : w.mode);
+  return el('div', {}, choices.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
 }
 function wizPanelProjectName(w) {
   const input = el('input', { type: 'text', maxlength: 64, autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', placeholder: 'e.g. shop', 'aria-label': 'Project name' });
@@ -341,7 +341,7 @@ function wizPanelRepo(w, refs) {
   };
   paint(mode);
   if (mode === 'clone' && url.value.trim()) wizProbeNow(url, chips, cloneName, () => nameTouched, (n) => { cloneName.value = n; });
-  return el('div', {}, seg.node, !state.links_enabled ? el('p', { class: 'dim', text: LINK_OFF }) : null, el('form', { class: 'form wiz-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, blankBox, cloneBox, importBox, el('div', { class: 'submit' }, go, skip)), linkBox);
+  return el('div', {}, seg.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, el('form', { class: 'form wiz-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, blankBox, cloneBox, importBox, el('div', { class: 'submit' }, go, skip)), linkBox);
 }
 
 /* The clone URL's probe: after a pause, or on leaving the field. A newer URL makes an older answer stale. The derived name fills the name field until the user typed their own. */

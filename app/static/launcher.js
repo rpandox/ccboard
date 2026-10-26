@@ -124,8 +124,19 @@ const ADD_MODES = [['clone', 'Clone a git repo'], ['link', 'Link a folder on thi
 const LINK_OFF = 'Linking local folders is off on this board (CCBOARD_LINK_ROOTS)';
 function addModeChoices(change, selected = 'blank') {
   const seg = lxSeg(ADD_MODES, change, 'What do you want to add?', 'add-modes');
+  seg.node.setAttribute('role', 'radiogroup');
+  const set = seg.set;
+  seg.set = (value) => {
+    set(value);
+    for (const [key] of ADD_MODES) {
+      const button = seg.btn(key);
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(key === value));
+      button.setAttribute('tabindex', key === value ? '0' : '-1');
+    }
+  };
   seg.set(selected);
-  if (!state || !state.links_enabled) seg.disable('link', true, LINK_OFF);
+  if (state?.links_enabled === false) seg.disable('link', true, LINK_OFF);
   return seg;
 }
 function folderChips(host, res) {
@@ -160,10 +171,10 @@ function linkFolderForm(project, done) {
   path.addEventListener('input', () => { ++seq; result = null; clearTimeout(timer); timer = setTimeout(probe, 500); if (timer.unref) timer.unref(); });
   path.addEventListener('blur', probe);
   const go = el('button', { class: 'primary', type: 'submit', text: 'Link folder' });
-  go.disabled = !state || !state.links_enabled;
+  go.disabled = state?.links_enabled === false;
   const form = el('form', { class: 'form wiz-form', onsubmit: async (e) => {
     e.preventDefault();
-    if (go.disabled || !state || !state.links_enabled) return;
+    if (go.disabled || state?.links_enabled === false) return;
     go.disabled = true;
     try {
       const res = result || await probe();
@@ -174,8 +185,8 @@ function linkFolderForm(project, done) {
       await poll(true);
       if (done) done(body, res);
     } catch (err) { fieldError(pf, err.message, true); }
-    finally { go.disabled = !state || !state.links_enabled; }
-  } }, el('p', { class: 'dim', text: project ? 'Add to an existing project as a repo' : 'Link as a project' }), pf, chips, nf, el('div', { class: 'submit' }, go));
+    finally { go.disabled = state?.links_enabled === false; }
+  } }, el('p', { class: 'dim field-hint', text: project ? `This folder will be added as a repo to ${project}.` : 'This folder will be linked as a new project.' }), pf, chips, nf, el('div', { class: 'submit' }, go));
   return form;
 }
 
@@ -187,7 +198,7 @@ function addRepoForm(p) {
     host.append(mode === 'link' ? linkFolderForm(p.name, () => { ui.openForm = null; renderProjects(); }) : mode === 'import' ? importForm({ project: p.name, onDone: () => { ui.openForm = null; renderProjects(); } }) : addRepoBasicForm(p, mode));
   });
   host.append(addRepoBasicForm(p));
-  return el('div', {}, el('h3', { text: 'What do you want to add?' }), choices.node, !state.links_enabled ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
+  return el('div', {}, el('h3', { text: 'What do you want to add?' }), choices.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
 }
 
 function addRepoBasicForm(p, mode = 'blank') {
@@ -1971,9 +1982,9 @@ function lxSeg(items, onPick, label, extra) {
     const b = el('button', { class: 'seg-btn' + (o && o.cls ? ' ' + o.cls : ''), type: 'button', 'aria-pressed': 'false', 'data-when': v, text, title: (o && o.title) || null,
       onclick: () => { if (b.hasAttribute('disabled')) return; onPick(v); },
       onkeydown: (e) => {
-        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        if (!['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) return;
         e.preventDefault();
-        const to = step(cur === null ? v : cur, e.key === 'ArrowRight' ? 1 : -1);
+        const to = step(cur === null ? v : cur, e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
         onPick(to);
         const nb = btns.get(to);
         if (nb && typeof nb.focus === 'function') nb.focus();

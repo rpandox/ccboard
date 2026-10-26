@@ -121,7 +121,7 @@ function pjMoreItems(P) {
   const p = pjFind(st, P.project);
   const items = [];
   if (p) items.push({ label: 'Add repo', icon: 'plus', onClick: () => pjAddRepo(p) });
-  if (p && p.path && pjCodePort(st)) items.push({ label: 'Open the folder in code-server', icon: 'code', onClick: () => openPage(codeServerUrl(p.path)) });
+  if (p && p.path && pjCodePort(st)) items.push({ label: 'Open the folder in code-server', icon: 'code', onClick: () => openPage(codeServerUrl(folderTarget(p))) });
   items.push({ label: 'New epic', icon: 'git-branch', onClick: () => { if (typeof Lazy !== 'undefined') Lazy.run('epic', () => epicNewOpen({ project: P.project }), 'the New epic sheet'); } });          // issue #158: a sheet that writes an epic to one of this project's GitHub repositories
   items.push({ label: 'Repos and danger zone', icon: 'git-repo', onClick: () => { P.manage = !P.manage; pjUpdate(); } });
   items.push({ label: p && p.linked ? 'Unlink' : 'Delete project', icon: 'trash', onClick: () => { P.manage = true; ui.confirm = 'del:' + P.project; pjUpdate(); } });
@@ -164,13 +164,13 @@ function pjPatchActions(P, tab) {
 function pjRepoChip(st, p, r) {
   const bad = r.state && r.state !== 'ok' && r.state !== 'project';
   const cost = typeof repoCost === 'function' ? repoCost(p, r) : '';
-  const chip = el('a', { class: 'pj-chip', href: pjHash(p.name, r.name, { tab: 'files' }), title: `${r.name}: browse its files` },
+  const chip = el('a', { class: 'pj-chip', href: pjHash(p.name, r.name, { tab: 'files' }), title: `${r.name}: browse its files · ${r.linked ? "→ " : ""}${folderTarget(r)}` },
     linkedBadge(r), ic('git-repo'), el('span', { class: 'pj-rname mono', text: r.name }),
     r.state === 'ok' && r.branch ? el('span', { class: 'pj-branch mono dim', text: r.branch }) : null,
     r.state === 'ok' ? el('span', { class: 'dot' + (r.dirty ? ' dirty' : ''), role: 'img', 'aria-label': r.dirty ? 'uncommitted changes' : 'clean', title: r.dirty ? 'uncommitted changes' : 'clean' }) : null,
     bad ? el('span', { class: 'badge warn', text: r.state }) : null,
     cost ? el('span', { class: 'pj-rcost mono dim', text: cost }) : null);
-  return el('span', { class: 'pj-repo' }, chip, pjCodeLink(st, r.path, null, 'minimal pj-cs', `open ${r.name} in code-server`));
+  return el('span', { class: 'pj-repo' }, chip, pjCodeLink(st, folderTarget(r), null, 'minimal pj-cs', `open ${folderTarget(r)} in code-server`));
 }
 
 /* The repos and danger panel: Remove per repo and Delete project, two taps each. Open from the overflow menu, or while one of them awaits its confirmation. */
@@ -184,7 +184,7 @@ function pjManage(P, st, p) {
   }
   if (!(p.repos || []).length) box.append(el('div', { class: 'dim', text: 'no repos yet' }));
   box.append(el('div', { class: 'pj-mrow' }, el('span', { class: 'dim', text: 'Project folder' }),
-    pjCodeLink(st, p.path, 'code-server', '', `open ${p.path} in code-server`) || el('span', { class: 'dim', text: 'code-server port unknown (rerun install.sh)' })));
+    pjCodeLink(st, folderTarget(p), 'code-server', '', `open ${folderTarget(p)} in code-server`) || el('span', { class: 'dim', text: 'code-server port unknown (rerun install.sh)' })));
   box.append(el('div', { class: 'pj-mrow pj-danger' }, el('span', { class: 'dim', text: p.linked ? 'Removes the link from this board.' : 'Deletes the project folder and every repo in it.' }),
     confirmButton('del:' + p.name, p.linked ? 'Unlink' : 'Delete project', async () => { await api('DELETE', `/api/projects/${encodeURIComponent(p.name)}`); if (p.linked) toast(`Unlinked. The folder is still at ${p.target}.`); navigate('#/'); }, false, null, p.linked ? `Unlink? The folder stays on disk at ${p.target}.` : (p.repos || []).some((r) => r.linked) ? 'Linked repos are only unlinked; their folders stay on disk.' : null)));
   return box;
@@ -193,7 +193,7 @@ function pjManage(P, st, p) {
 function pjPatchHeader(P, st, p) {
   const h = P.head;
   patchLinkedName(h.name, p.name, p);
-  setText(h.path, p.path || '');
+  setText(h.path, (p.linked ? '→ ' : '') + folderTarget(p));
   h.quad.setAttribute('href', pjQuadHash(p.name));
   const sig = pjSig([p.name, (p.repos || []).map((r) => [r.name, r.linked, r.target, r.path, r.state, r.branch, r.dirty, typeof repoCost === 'function' ? repoCost(p, r) : '']), pjCodePort(st)]);
   if (h.sig.repos !== sig) {

@@ -609,3 +609,37 @@ test('folder typing is debounced and an older response cannot replace a newer pa
   assert.equal(input(active(w), 'Project name').value, 'new');
   assert.doesNotMatch(text(active(w).querySelector('.wiz-chips')), /old/);
 });
+
+
+test('direct wizard mount before the first poll keeps Link available and lets the server reject it', async () => {
+  let w;
+  assert.doesNotThrow(() => { w = wizWorld({ state: null, answers: { '/api/preflight/folder': () => { throw new Error('403: linking disabled'); } } }); });
+  assert.ok(wiz(w), 'the router mounted the wizard');
+  const link = btn(active(w), 'Link a folder on this computer');
+  assert.ok(!link.disabled && !link.hasAttribute('disabled'));
+  assert.doesNotMatch(text(active(w)), /Linking local folders is off/);
+  link.click();
+  assert.equal(btn(active(w), 'Link folder').disabled, false);
+  input(active(w), 'Folder path').value = '/Work/tools';
+  submit(active(w).querySelector('form')); await tick();
+  assert.equal(post(w, '/api/preflight/folder').length, 1);
+  assert.match(text(active(w)), /403: linking disabled/);
+});
+
+test('add choices expose one selected radio, support arrow keys and explain the fixed link destination', () => {
+  const w = wizWorld();
+  const group = active(w).querySelector('.add-modes');
+  assert.equal(group.getAttribute('role'), 'radiogroup');
+  const buttons = group.querySelectorAll('button');
+  const selected = () => buttons.filter((b) => b.getAttribute('aria-checked') === 'true');
+  assert.equal(buttons.length, 4);
+  assert.equal(selected().length, 1);
+  assert.equal(selected()[0].getAttribute('aria-pressed'), 'true');
+  btn(group, 'Link a folder on this computer').click();
+  assert.equal(text(selected()[0]), 'Link a folder on this computer');
+  assert.match(text(active(w).querySelector('p.field-hint')), /linked as a new project/);
+  selected()[0].dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
+  assert.equal(text(selected()[0]), 'Import from GitHub');
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  assert.match(css, /\.add-modes \.seg-btn\[aria-pressed=true\][^{]*\{[^}]*border-color:var\(--sig\)/);
+});

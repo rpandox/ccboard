@@ -1293,6 +1293,14 @@ test('linked project and repo show their paths, Unlink and the disk-preserving c
   const env = projectWorld({ state });
   await go(env, '#/p/phasezero');
   assert.ok(all(env.page(), '.badge').some((n) => n.textContent === 'Linked' && n.getAttribute('title') === p.target));
+  assert.equal(textOf(env.page().querySelector('.pj-path')), '→ ' + p.target);
+  assert.ok(all(env.page(), '.pj-chip').some((n) => n.getAttribute('title').includes('→ ' + p.repos[0].target)));
+  assert.ok(all(env.page(), '.pj-cs').some((n) => n.getAttribute('title').includes(p.repos[0].target)));
+  assert.ok(folderLinks(env.page()).some((href) => decodeURIComponent(href).includes(p.target)));
+  assert.equal(env.w.get("Tree.repoAbs('phasezero', 'root')"), p.target);
+  assert.equal(env.w.get(`Tree.repoAbs('phasezero', '${p.repos[0].name}')`), p.repos[0].target);
+  assert.ok(!folderLinks(env.page()).some((href) => decodeURIComponent(href).includes('folder=' + p.repos[0].path)));
+
   overflow(env).click(); menuItem(env, /^Unlink$/).click();
   assert.match(textOf(env.page()), /Unlink\? The folder stays on disk at \/Work\/phasezero\./);
   assert.ok(button(env.page(), /^Confirm Unlink$/));

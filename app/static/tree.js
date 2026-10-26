@@ -96,14 +96,19 @@ Tree.children = async function (project, repo, path, opt) {
 
 /* ---------- helpers ---------- */
 
+// Resolve linked entries for display and external folder links; API routes still use names.
+function folderTarget(item) {
+  return item ? (item.linked && item.target ? item.target : item.path || '') : '';
+}
+
 /* The absolute path of a repo on the box ('root' is the project folder), from the state; '' while it is unknown. */
 Tree.repoAbs = function (project, repo) {
   const st = typeof state !== 'undefined' ? state : null;
   const p = st && (st.projects || []).find((x) => x.name === project);
   if (!p) return '';
-  if (repo === 'root') return p.path || '';
+  if (repo === 'root') return folderTarget(p);
   const r = (p.repos || []).find((x) => x.name === repo);
-  return r ? r.path : '';
+  return folderTarget(r);
 };
 
 /* The code-server link for a file (rel inside repo) at a line, or '' where the port or the path is unknown. */
