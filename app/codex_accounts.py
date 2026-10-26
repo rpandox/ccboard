@@ -405,7 +405,8 @@ def _put_record(db, key: str, **fields) -> dict:
         accts[key] = rec
         _save(db, accts)
         with contextlib.suppress(OSError, ValueError):
-            _write_meta(key, rec)
+            if not owner(slot_dir(key)):
+                _write_meta(key, rec)
         return rec
 
 
@@ -871,6 +872,8 @@ def start_login(db, label, *, restart: bool = False, replace_key: str | None = N
     if not _agent().device_auth(fetch=True):
         raise Unsupported(REASON_UPDATE)
     with _lock:
+        if replace_key is not None:
+            check_slot(slot_dir(replace_key))
         if not restart and _login_running():
             raise Busy("a login is already running")
         pend = pending_dir()
@@ -921,10 +924,10 @@ def _decide(result: dict) -> dict:
     return result
 
 
-def _fail(pend: Path, t: float) -> dict:
+def _fail(pend: Path, t: float, error: str = ERR_DID_NOT_COMPLETE) -> dict:
     _kill_login_session()
     shutil.rmtree(pend, ignore_errors=True)
-    return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
+    return _decide({"ok": False, "error": error, "at": iso(t)})
 
 
 def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
@@ -933,8 +936,8 @@ def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
     dead one) the fresh login goes live at once, the live bytes it replaces kept in `.prev`, unless one of the board's own Codex sessions is
     open: a running Codex keeps its login and would write the dead one back, so the fresh one stays saved and the result says why
     ({"live": False, "why": ...}). Nobody logged in live: it goes live like a new account's would. None when it could not be saved yet."""
-    _kill_login_session()                                        # nothing writes into .pending any more
     check_slot(slot_dir(key))
+    _kill_login_session()                                        # nothing writes into .pending any more
     try:
         was_current = current(db) == key or (live is not None and _slot_bytes(key) == live[0])
         slot = _slot_ready(key)
@@ -1038,7 +1041,10 @@ def finalize(db, now=None) -> dict | None:
             ast = None
         have = bool(ast and ast.st_size > 0)
         if have and t - ast.st_mtime >= PENDING_MIN_AGE:
-            res = _complete(db, pend, label, t, now, replace_key)
+            try:
+                res = _complete(db, pend, label, t, now, replace_key)
+            except HandoverError as e:
+                return _fail(pend, t, f"this login belongs to pool account {e.account_id}; release it first")
             if res is not None:
                 return res
         if started is None:
@@ -1203,7 +1209,7 @@ def _learn(db, now, *, force: bool = False) -> None:
     global _learn_at
     cur = current(db)
     rec = _load(db).get(cur) if cur else None
-    if not rec or (rec.get("account_id") and rec.get("plan")):
+    if not rec or rec.get("pool_account") or owner(slot_dir(cur)) or (rec.get("account_id") and rec.get("plan")):
         return
     t = _wall()
     if not force and t - _learn_at < (LEARN_EVERY if not rec.get("account_id") else LEARN_EVERY * 10):
@@ -1236,7 +1242,8 @@ def _learn(db, now, *, force: bool = False) -> None:
         fields["plan"] = plan
     if fields:
         _put_record(db, cur, **fields)
-    other = [k for k, r in _load(db).items() if k != cur and r.get("account_id") == aid]
+    other = [k for k, r in _load(db).items() if k != cur and r.get("account_id") == aid
+             and not r.get("pool_account") and not owner(slot_dir(k))]
     if other:
         _merge(db, cur, other[0], now)
 
@@ -1473,7 +1480,7 @@ def _row(db, rec: dict, cur, sup: bool | None = None) -> dict:
     sup = supported() if sup is None else sup
     saved = bool(sup and has_saved(key))
     return {"key": key, "label": rec.get("label"), "account_id": rec.get("account_id"), "plan": rec.get("plan"),
-            **({"pool_account": rec["pool_account"]} if rec.get("pool_account") else {}),
+            "pool_account": rec.get("pool_account"),
             "saved": saved, "saved_at": _saved_at(key, rec) if saved else None, "current": key == cur, "added_at": rec.get("added_at"),
             "last_seen": rec.get("last_seen")}
 

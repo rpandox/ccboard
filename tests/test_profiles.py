@@ -186,7 +186,7 @@ def test_routes_scrubbed_account_response_and_legacy_guard(lite_client, fake_tmu
     for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
         monkeypatch.setattr(store, "_require", lambda: pytest.fail("guard must precede legacy work"))
         r = lite_client.post(f"/api/{provider}/any/switch", headers=HEADERS)
-        assert r.status_code == 409 and r.json() == {"detail": profiles.SWITCH_REASON}
+        assert r.status_code == 409 and r.json() == {"detail": profiles.SWITCH_REASON + f": attempt {aid}"}
     profiles.finish_attempt(main.db, aid, "exited")
     # Existing switch handlers still use their original implementation when no attempt is open.
     for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
@@ -232,6 +232,9 @@ def test_unbound_task_command_and_tmux_env_match_before_profiles(lite_client, fa
     assert shlex.split(line) == expected
     assert fake_tmux["created"][-1][2] == {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(), "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": provider}
     assert not (settings.data_dir / "profiles").exists() and rows(main.db) == []
+    demo = json.loads((Path(__file__).resolve().parents[1] / 'app/static/demo/state.json').read_text())
+    for section in ['accounts', 'codex_accounts']:
+        assert demo[section]['list'] and all(r['pool_account'] is None for r in demo[section]['list'])
 
 
 def test_unbound_scheduler_argv_env_match_before_profiles(box, monkeypatch, tmp_path):
@@ -354,7 +357,9 @@ def test_fallback_finds_only_fresh_matching_project(box, tmp_path, provider):
 
 
 def test_off_state_keys_and_unbound_on_launch(lite_client, fake_tmux, projects_dir, monkeypatch):
-    from app import main
+    from app import main, accounts, codex_accounts
+    for kv, keys in [(accounts.KV_ACCOUNTS, ['first', 'second']), (codex_accounts.KV_ACCOUNTS, ['a' * 24, 'b' * 24])]:
+        main.db.kv_set(kv, {keys[0]: {'key': keys[0], 'pool_account': 'pool-owner'}, keys[1]: {'key': keys[1]}})
     monkeypatch.setattr(settings, "allowed_users", {"owner"})
     monkeypatch.setattr(settings, "pools", False)
     before = lite_client.get("/api/state", headers=HEADERS).json()
@@ -366,7 +371,16 @@ def test_off_state_keys_and_unbound_on_launch(lite_client, fake_tmux, projects_d
     monkeypatch.setattr(settings, "pools", False)
     after = lite_client.get("/api/state", headers=HEADERS).json()
     assert set(after) == set(before)
+    for state in [before, enabled, after]:
+        for section in ['accounts', 'codex_accounts']:
+            listed = state[section]['list']
+            assert len(listed) == 2
+            assert all('pool_account' in r for r in listed)
+            assert {r['pool_account'] for r in listed} == {None, 'pool-owner'}
     assert not (settings.data_dir / "profiles").exists() and rows(main.db) == []
+    demo = json.loads((Path(__file__).resolve().parents[1] / 'app/static/demo/state.json').read_text())
+    for section in ['accounts', 'codex_accounts']:
+        assert demo[section]['list'] and all(r['pool_account'] is None for r in demo[section]['list'])
 
 
 def test_bound_adapter_refuses_codex_names_and_last(box, monkeypatch):
@@ -852,3 +866,321 @@ def test_flag_off_handover_errors_precede_missing_cli(box, lite_client, monkeypa
         body = {'replace_key': keys[0]}
     response = lite_client.post(f'/api/{endpoint}/login', headers=HEADERS, json=body)
     assert response.status_code == 409 and aid in response.json()['detail']
+
+
+@pytest.mark.parametrize('error', ['TmuxDown', 'TmuxError'])
+def test_tmux_unknown_preserves_attempt_and_routes_return_503(box, lite_client, fake_tmux, monkeypatch, error):
+    from app import main, tmux
+    monkeypatch.setattr(main, 'db', box)
+    monkeypatch.setattr(settings, 'allowed_users', {'owner'})
+    account(box)
+    rid = box.add_session(tmux_name='pool-shell', project='p', repo='r', name='n', launcher='claude')
+    profiles.start_attempt(box, 'claude', 'account-a', session_row=rid)
+    def unavailable(*a):
+        raise getattr(tmux, error)('fixture down')
+    monkeypatch.setattr(tmux, 'has_session', unavailable)
+    assert profiles.reconcile_attempts(box) is False
+    for url in ['/api/accounts/any/switch', '/api/codex-accounts/any/switch', '/api/pools/accounts/account-a/release']:
+        response = lite_client.post(url, headers=HEADERS)
+        assert response.status_code == 503
+        assert response.json() == {'detail': 'tmux is not running; cannot check pool sessions'}
+    assert rows(box)[0]['ended_at'] is None
+
+
+@pytest.mark.parametrize('unexpected', [False, True])
+def test_startup_survives_pool_reconciliation_failure(box, monkeypatch, caplog, unexpected):
+    import asyncio
+    from app import main, tmux
+    account(box)
+    rid = box.add_session(tmux_name='open', project='p', repo='r', name='n', launcher='claude')
+    profiles.start_attempt(box, 'claude', 'account-a', session_row=rid)
+    def down(*a):
+        raise tmux.TmuxDown('fixture down')
+    monkeypatch.setattr(tmux, 'has_session', down)
+    monkeypatch.setattr(main, 'DB', lambda *a: box)
+    monkeypatch.setattr(settings, 'validate', lambda: None)
+    if unexpected:
+        monkeypatch.setattr(profiles, 'reconcile_attempts', lambda *a: (_ for _ in ()).throw(RuntimeError('fixture')))
+    class ReachedNextStartupStep(Exception):
+        pass
+    monkeypatch.setattr(main.hooks, 'ensure_token', lambda: (_ for _ in ()).throw(ReachedNextStartupStep()))
+    async def run():
+        async with main.lifespan(main.app):
+            pytest.fail('workers must not start in this test')
+    with pytest.raises(ReachedNextStartupStep):
+        asyncio.run(run())
+    assert rows(box)[0]['ended_at'] is None
+    if unexpected:
+        assert 'pool attempt reconciliation failed at startup' in caplog.text
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_login_handover_finishes_as_failure_and_cleans_pending(box, monkeypatch, provider):
+    from app import accounts
+    store, keys = saved_slots(box, monkeypatch, provider)
+    aid = profiles.migrate(box)[0]['moved']
+    monkeypatch.setattr(store, 'supported', lambda: True)
+    monkeypatch.setattr(store, '_kill_login_session', lambda: None)
+    pend = store.pending_dir()
+    pend.mkdir()
+    leaf = profiles._files(provider)[0]
+    (pend / leaf).write_bytes(b'opaque new login')
+    os.utime(pend / leaf, (1, 1))
+    monkeypatch.setitem(store._login, 'adding', True)
+    if provider == 'claude':
+        monkeypatch.setattr(accounts, 'read_identity', lambda **kw: {'key': keys[0], 'email': 'fixture@example.test'})
+        monkeypatch.setattr(accounts, 'remember', lambda *a, **kw: pytest.fail('must check before remembering identity'))
+    else:
+        monkeypatch.setitem(store._login, 'replace_key', keys[0])
+        monkeypatch.setattr(store, '_read_stable', lambda *a: (b'opaque new login', (1, 2, 3)))
+    result = store.finalize(box)
+    assert result['ok'] is False
+    assert result['error'] == f'this login belongs to pool account {aid}; release it first'
+    assert not pend.exists() and store._login['adding'] is False
+    assert store.finalize(box) is None
+    assert profiles.credential_path(provider, aid).read_bytes() == ('opaque fixture ' + keys[0]).encode()
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_known_handover_refused_before_login_work(box, monkeypatch, provider):
+    from app import accounts
+    store, keys = saved_slots(box, monkeypatch, provider)
+    if provider == 'claude':
+        records = accounts._load(box)
+        records[keys[0]]['email'] = 'fixture@example.test'
+        box.kv_set(accounts.KV_ACCOUNTS, records)
+    aid = profiles.migrate(box)[0]['moved']
+    monkeypatch.setattr(store, '_require', lambda: pytest.fail('login work before handover check'))
+    with pytest.raises(profiles.HandoverError, match=aid):
+        if provider == 'claude':
+            store.start_login(box, 'fixture@example.test')
+        else:
+            store.start_login(box, None, replace_key=keys[0])
+    assert not store.pending_dir().exists()
+
+
+def test_codex_handover_rename_saves_only_kv(box, lite_client, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, 'db', box)
+    monkeypatch.setattr(settings, 'allowed_users', {'owner'})
+    store, keys = saved_slots(box, monkeypatch, 'codex')
+    aid = profiles.migrate(box)[0]['moved']
+    monkeypatch.setattr(store, '_write_meta', lambda *a: pytest.fail('handed-over metadata file write'))
+    response = lite_client.patch(f'/api/codex-accounts/{keys[0]}', json={'label': 'Renamed pool login'}, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert store._load(box)[keys[0]]['label'] == 'Renamed pool login'
+    assert profiles.owner(store.slot_dir(keys[0])) == aid
+    assert list(store.slot_dir(keys[0]).iterdir()) == [store.slot_dir(keys[0]) / profiles.READ_ONLY]
+
+
+@pytest.mark.parametrize('current_is_handed_over', [False, True])
+def test_codex_learn_skips_handed_over_keys(box, monkeypatch, current_is_handed_over):
+    store, keys = saved_slots(box, monkeypatch, 'codex')
+    profiles.migrate(box)
+    records = store._load(box)
+    records[keys[0]]['account_id'] = 'shared-id'
+    box.kv_set(store.KV_ACCOUNTS, records)
+    if current_is_handed_over:
+        box.kv_set(store.KV_CURRENT, {'key': keys[0]})
+        monkeypatch.setattr(store, '_recent_rollouts', lambda: pytest.fail('learning handed-over current account'))
+    else:
+        monkeypatch.setattr(store, '_recent_rollouts', lambda: ['fixture'])
+        monkeypatch.setattr(store, '_rollout_meta', lambda p: {'created': time.time(), 'account_id': 'shared-id', 'user_id': None})
+        monkeypatch.setattr(store, '_rollout_plan', lambda p: None)
+    monkeypatch.setattr(store, '_merge', lambda *a: pytest.fail('merging handed-over key'))
+    store._learn(box, None, force=True)
+    assert set(store._load(box)) == set(keys)
+
+
+@pytest.mark.parametrize('winner', ['release', 'launch'])
+def test_release_launch_race_has_one_winner(box, fake_tmux, monkeypatch, winner):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from fastapi import HTTPException
+    from app import main, tmux
+    monkeypatch.setattr(main, 'db', box)
+    monkeypatch.setattr(main, 'require_real_launch_ok', lambda: None)
+    store, keys = saved_slots(box, monkeypatch, 'claude')
+    aid = profiles.migrate(box)[0]['moved']
+    reached, proceed = threading.Event(), threading.Event()
+    def launch():
+        return main._start_session_row('pool-launch', 'p', 'r', 'n', 'claude', '/tmp', cmd_line='claude',
+                                       claude_session_id=SID, opts={'account_id': aid})
+    if winner == 'release':
+        original = profiles.start_attempt
+        def pause(*a, **kw):
+            reached.set()
+            assert proceed.wait(5)
+            return original(*a, **kw)
+        monkeypatch.setattr(profiles, 'start_attempt', pause)
+    else:
+        original = tmux.new_session
+        def pause(*a, **kw):
+            reached.set()
+            assert proceed.wait(5)
+            return original(*a, **kw)
+        monkeypatch.setattr(tmux, 'new_session', pause)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(launch)
+        try:
+            assert reached.wait(5)
+            if winner == 'release':
+                assert profiles.release(box, aid) == {'released': aid}
+            else:
+                with pytest.raises(HTTPException) as err:
+                    profiles.release(box, aid)
+                assert err.value.status_code == 409
+        finally:
+            proceed.set()
+        if winner == 'release':
+            with pytest.raises(projects.BadRequest, match='no such account'):
+                pending.result(5)
+            assert not fake_tmux['created'] and rows(box) == [] and box.open_rows() == {}
+        else:
+            assert pending.result(5)[0] == 'pool-launch'
+            assert rows(box)[0]['ended_at'] is None
+            with pytest.raises(HTTPException) as err:
+                profiles.release(box, aid)
+            assert err.value.status_code == 409 and 'pool-launch' in err.value.detail
+
+
+@pytest.mark.parametrize('stage', ['new_session', 'add_session', 'binding', 'send_line'])
+def test_bound_launch_failure_leaves_no_live_session_or_attempt(box, fake_tmux, monkeypatch, stage):
+    from app import main, tmux
+    monkeypatch.setattr(main, 'db', box)
+    monkeypatch.setattr(main, 'require_real_launch_ok', lambda: None)
+    account(box)
+    def fail(*a, **kw):
+        raise tmux.TmuxDown('fixture launch failure')
+    if stage in ('new_session', 'send_line'):
+        monkeypatch.setattr(tmux, stage, fail)
+    elif stage == 'add_session':
+        monkeypatch.setattr(box, stage, fail)
+    else:
+        monkeypatch.setattr(box, 'kv_set', fail)
+    with pytest.raises(tmux.TmuxDown):
+        main._start_session_row('pool-launch', 'p', 'r', 'n', 'claude', '/tmp', cmd_line='claude',
+                                claude_session_id=SID, opts={'account_id': 'account-a'})
+    assert not fake_tmux['sessions'] and box.open_rows() == {}
+    assert len(rows(box)) == 1 and rows(box)[0]['end_reason'] == 'launch_failed'
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_pane_scan_ends_bound_agent_even_after_hook_state(box, fake_tmux, monkeypatch, provider):
+    from app import main, tmux
+    from fastapi import HTTPException
+    monkeypatch.setattr(main, 'db', box)
+    monkeypatch.setattr(main.notify, 'notify_session', lambda *a: None)
+    monkeypatch.setattr(main, '_taskflow', lambda: type('Flow', (), {'on_turn_end': lambda *a, **kw: None})())
+    account(box, provider)
+    for name in ['pool-one', 'pool-two']:
+        tmux.new_session(name, '/tmp')
+        rid = box.add_session(tmux_name=name, project='p', repo='r', name=name, launcher=provider, agent=provider,
+                              opts={'account_id': 'account-a'})
+        profiles.start_attempt(box, provider, 'account-a', session_row=rid)
+        box.conn.execute("UPDATE sessions SET created_at='2020-01-01T00:00:00Z' WHERE id=?", (rid,))
+        box.set_state(name, 'idle', 'Stop')
+    with pytest.raises(HTTPException) as err:
+        profiles.guard_switch(box)
+    assert all(n in err.value.detail for n in ['pool-one', 'pool-two'])
+    main._merged_sessions(rich=True)
+    assert all(r['end_reason'] == 'agent_exited' for r in rows(box))
+    assert set(fake_tmux['sessions']) == {'pool-one', 'pool-two'}
+    profiles.guard_switch(box)
+
+
+def test_pool_db_access_is_locked_and_reconciliation_batches_bindings(box, fake_tmux, monkeypatch):
+    store, keys = saved_slots(box, monkeypatch, 'claude')
+    conn = box.conn
+    statements = []
+    class CheckedConnection:
+        def execute(self, sql, *args):
+            assert box.lock.locked(), sql
+            statements.append(sql)
+            return conn.execute(sql, *args)
+        def __getattr__(self, key):
+            return getattr(conn, key)
+    monkeypatch.setattr(box, 'conn', CheckedConnection())
+    aid = profiles.migrate(box)[0]['moved']
+    for i in range(10):
+        rid = box.add_session(tmux_name=f's{i}', project='p', repo='r', name=str(i), launcher='claude')
+        profiles.start_attempt(box, 'claude', aid, session_row=rid)
+    original_get = box.kv_get
+    monkeypatch.setattr(box, 'kv_get', lambda *a: pytest.fail('per-session kv lookup'))
+    statements.clear()
+    profiles.reconcile_attempts(box)
+    assert sum('JOIN kv' in s for s in statements) == 1
+    assert not any('SELECT' in s and 'FROM kv' in s for s in statements)
+    monkeypatch.setattr(box, 'kv_get', original_get)
+    # Check release separately too, including its first read and active-attempt query.
+    monkeypatch.setattr(box, 'conn', CheckedConnection())
+    profiles.release(box, aid)
+
+
+@pytest.mark.parametrize('method,url,function', [
+    ('GET', '/api/pools/accounts', 'accounts_view'),
+    ('POST', '/api/pools/migrate', 'migrate'),
+    ('POST', '/api/pools/accounts/account-a/release', 'release'),
+])
+def test_pool_routes_map_sqlite_errors_to_json(lite_client, monkeypatch, method, url, function):
+    import sqlite3
+    monkeypatch.setattr(settings, 'pools', True)
+    monkeypatch.setattr(settings, 'allowed_users', {'owner'})
+    def fail(*a):
+        raise sqlite3.OperationalError('private diagnostic')
+    monkeypatch.setattr(profiles, function, fail)
+    response = lite_client.request(method, url, headers=HEADERS)
+    assert response.status_code == 500 and response.json() == {
+        'detail': 'pool database operation failed', 'error': 'pool database operation failed'}
+
+
+def test_migrate_propagates_database_failure_for_route_500(box, monkeypatch):
+    import sqlite3
+    saved_slots(box, monkeypatch, 'claude')
+    monkeypatch.setattr(profiles, '_set_slot_owner', lambda *a: (_ for _ in ()).throw(sqlite3.OperationalError('fixture')))
+    with pytest.raises(sqlite3.OperationalError):
+        profiles.migrate(box)
+
+
+def test_flag_off_event_paths_do_zero_pool_kv_reads(box, monkeypatch):
+    from app import hooks, accounts, autoresume
+    monkeypatch.setattr(settings, 'pools', False)
+    box.add_session(tmux_name='legacy', project='p', repo='r', name='n', launcher='claude', account='old')
+    reads = []
+    original = box.kv_get
+    def counting(key):
+        reads.append(key)
+        return original(key)
+    monkeypatch.setattr(box, 'kv_get', counting)
+    assert box.set_session_account('legacy', 'new')
+    assert reads == []
+    monkeypatch.setattr(accounts, 'for_reading', lambda *a: 'new')
+    monkeypatch.setattr(accounts, 'current', lambda *a: 'new')
+    assert hooks._attribute_reading(box, 'legacy', box.open_row('legacy'), {}) == ('new', True)
+    assert reads == []
+    monkeypatch.setattr(autoresume, 'episodes', lambda *a: [{'session': 'legacy', 'resets_at': 123, 'kind': '5h'}])
+    monkeypatch.setattr(autoresume, '_still_parked', lambda *a: True)
+    assert autoresume.continue_parked(box, send=lambda *a: None, clients=lambda n: 0, alive=lambda n: True) == ['legacy']
+    assert reads == ['autoresume:legacy:123']  # the existing deduplication read only
+
+
+def test_extended_scrub_list_and_intentional_subagent_model(box):
+    from scripts.profile_env import scrub
+    keys = ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+            'AWS_PROFILE', 'AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+            'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUD_ML_REGION']
+    assert set(keys) <= set(profiles.UNSET)
+    assert scrub({**dict.fromkeys(keys, 'inherited'), 'CLAUDE_CODE_SUBAGENT_MODEL': 'intentional'}) == {
+        'CLAUDE_CODE_SUBAGENT_MODEL': 'intentional'}
+
+
+def test_codex_profile_trust_review_instructions_and_existing_records(box):
+    path = account(box, 'codex')
+    reviewed = (path / 'config.toml').read_text() + f'\n[hooks.state."{path}/hooks.json:session_start:0:0"]\ntrusted_hash = "sha256:fixture"\n'
+    (path / 'config.toml').write_text(reviewed)
+    profiles.ensure_profile('codex', 'account-a')
+    assert (path / 'config.toml').read_text() == reviewed
+    doc = (Path(__file__).resolve().parents[1] / 'docs/pools.md').read_text()
+    for required in ['CCBOARD_CODEX_HOOK_TRUST=review', "CODEX_HOME='<data dir>/profiles/codex/<account_id>' codex",
+                     '/hooks', 'trusted_hash', 'per profile', 'does not grant trust automatically']:
+        assert required in doc

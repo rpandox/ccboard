@@ -738,7 +738,7 @@ def _row(db, key: str, rec: dict, cur, full: bool) -> dict:
     row = {"key": key, "email": rec.get("email"), "name": rec.get("name"), "label": rec.get("label"), "plan": rec.get("plan"),
            "rl_5h": v5, "rl_7d": v7, "resets_5h": _int(rec.get("resets_5h")) or m5, "resets_7d": _int(rec.get("resets_7d")) or m7,
            "rl_5h_at": at5, "rl_7d_at": at7, "source": s5 if (at5 or "") >= (at7 or "") else s7,
-           "current": key == cur, **({"pool_account": rec["pool_account"]} if rec.get("pool_account") else {})}
+           "current": key == cur, "pool_account": rec.get("pool_account")}
     if full:
         row.update({"org": rec.get("org"), "org_id": rec.get("org_id"), "tier": rec.get("tier"), "config_dir": rec.get("config_dir"),
                     "first_seen": rec.get("first_seen"), "last_seen": rec.get("last_seen")})

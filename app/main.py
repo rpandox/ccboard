@@ -10,6 +10,7 @@ import math
 import logging
 import os
 import re
+import sqlite3
 import shlex
 import shutil
 import socket
@@ -183,7 +184,10 @@ async def lifespan(app: FastAPI):
     db = DB(settings.db_path)
     profiles.refresh_handover_views(db)
     if settings.pools:
-        profiles.reconcile_attempts(db)
+        try:
+            profiles.reconcile_attempts(db)
+        except Exception as e:
+            log.warning("pool attempt reconciliation failed at startup: %s", type(e).__name__)
     hooks.ensure_token()
     notify.set_db(db)
     deploy.clear(db)                                      # a new container is up: the update that was pending has happened
@@ -846,8 +850,9 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             out[name]["queued_prompts"] = queued.get(row.get("row_id"), 0)
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
             out[name]["wait_kind"] = waits[name]
-        if not row.get("state") and ((row.get("agent") == "claude" and row.get("launcher") == "task")
-                                     or (rich and row.get("agent") == "codex")):
+        if ((settings.pools and (row.get("opts") or {}).get("account_id"))
+                or (not row.get("state") and ((row.get("agent") == "claude" and row.get("launcher") == "task")
+                                              or (rich and row.get("agent") == "codex")))):
             _agent_launch_view(name, row, s["command"], out[name])
     if rich and out:
         try:                                         # #71: a session parked on a rate limit says when it continues (display only; never breaks the poll)
@@ -1563,7 +1568,10 @@ def api_account_problem_clear():
 def api_pool_accounts():
     if not settings.pools:
         raise HTTPException(404, "pools are off")
-    return profiles.accounts_view(db)
+    try:
+        return profiles.accounts_view(db)
+    except sqlite3.Error:
+        return _refuse(500, "pool database operation failed")
 
 
 @app.post("/api/pools/migrate")
@@ -1572,6 +1580,8 @@ def api_pool_migrate():
         raise HTTPException(404, "pools are off")
     try:
         results = profiles.migrate(db)
+    except sqlite3.Error:
+        return _refuse(500, "pool database operation failed")
     except Exception as e:
         return JSONResponse({"results": [{"slot": "unknown", "error": type(e).__name__}]}, status_code=400)
     return JSONResponse({"results": results}, status_code=409 if any("error" in r for r in results) else 200)
@@ -1588,6 +1598,8 @@ def api_pool_release(account_id: str):
         raise HTTPException(404, "pools are off")
     try:
         return profiles.release(db, account_id)
+    except sqlite3.Error:
+        return _refuse(500, "pool database operation failed")
     except OSError:
         return _refuse(409, "could not release credential files; retry release")
 
@@ -3557,32 +3569,43 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
         if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
             raise projects.BadRequest("profile resumes require a thread UUID")
         cmd_line = profiles.wrap_command(cmd_line, agent, bound)
-    real = tmux.new_session(name, cwd, env=env)
-    try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
-        account = bound or (accounts.current(db) if agent == "claude" else None)
-    except Exception as e:
-        log.debug("current account lookup failed: %s", e)
-        account = None
-    row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
-                            claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
-                            account=account)
     if bound is not None:
-        attempt = profiles.start_attempt(db, agent, bound, task_id=task_id, session_row=row_id,
+        # Reserve under release's lock before tmux exists. Release sees the reservation even before its session binding.
+        attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
                                          provider_session_id=claude_session_id, resumed_from=previous)
-    if agent == "codex":                                      # what -a / -s the line runs under, for the Tune's Approvals and Sandbox rows (None: config.toml decides)
-        try:
-            perm = agents.get("codex").permissions_of(opts, cmd_line)
-            if perm:
-                db.update_flags(real, {"perm": perm})
+    real = None
+    try:
+        real = tmux.new_session(name, cwd, env=env)
+        try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
+            account = bound or (accounts.current(db) if agent == "claude" else None)
         except Exception as e:
-            log.debug("permissions of %s unknown: %s", real, e)
-    if cmd_line:
-        try:
+            log.debug("current account lookup failed: %s", e)
+            account = None
+        row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
+                                claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
+                                account=account)
+        if attempt is not None:
+            db.kv_set(f"runtime_session:{row_id}", {"attempt": attempt})
+        if agent == "codex":                                      # what -a / -s the line runs under, for the Tune's Approvals and Sandbox rows (None: config.toml decides)
+            try:
+                perm = agents.get("codex").permissions_of(opts, cmd_line)
+                if perm:
+                    db.update_flags(real, {"perm": perm})
+            except Exception as e:
+                log.debug("permissions of %s unknown: %s", real, e)
+        if cmd_line:
             tmux.send_line(real, cmd_line)
-        except tmux.TmuxError:
-            tmux.kill_session(real)
-            db.end(real, "killed")
-            raise
+    except Exception:
+        try:
+            if real is not None:
+                try:
+                    tmux.kill_session(real)
+                finally:
+                    db.end(real, "launch_failed")
+        finally:
+            if attempt is not None:
+                profiles.finish_attempt(db, attempt, "launch_failed")
+        raise
     if attempt is not None and claude_session_id is None:
         profiles.discover_attempt(db, attempt, cwd, agent, launch_started, real)
     if task_id is not None:                                   # only once the command is really typed: a failed launch leaves the task unbound
@@ -4008,6 +4031,17 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
                 return "dialog", "Claude is asking for a permission"
         except (tmux.TmuxError, tmux.TmuxDown, OSError):
             return None
+    if settings.pools and row and (row.get("opts") or {}).get("account_id"):
+        made = _parse_at(row.get("created_at"))
+        if made is not None and (datetime.now(timezone.utc) - made).total_seconds() >= LAUNCH_GRACE:
+            try:
+                cmd = command if command is not None else tmux.pane_info(name).get("cmd")
+                if shell and codex_pane.shell_foreground(cmd):
+                    reason = "agent exited to the shell"
+                    _mark_exited(name, row, reason, invalidate)
+                    return "agent_exited", reason
+            except (tmux.TmuxError, tmux.TmuxDown, OSError):
+                return None
     if agent != "codex" and not (agent == "claude" and (row or {}).get("launcher") == "task"):
         return None
     if agent == "claude":
@@ -4043,6 +4077,7 @@ def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> 
             fresh = db.open_row(name)
             if not fresh or fresh.get("row_id") != row.get("row_id"):
                 return
+            profiles.sync_session(db, name, "agent_exited")
             if fresh.get("state") in ("ended", "errored") and fresh.get("last_message") == reason:
                 return
             db.set_state(name, "errored", "AgentExited", message=reason, attention=True)

@@ -919,7 +919,7 @@ def test_view_lists_the_current_account_first_with_its_windows(env):
     assert v["current"] == UUID_B and [a["key"] for a in v["list"]] == [UUID_B, UUID_A]
     b, a = v["list"]
     assert b == {"key": UUID_B, "email": "b@example.com", "name": "Bob", "label": None, "plan": "max", "rl_5h": 20.0, "rl_7d": 60.0,
-                 "resets_5h": w.r5b, "resets_7d": w.r7b, "rl_5h_at": iso(T0 + 11), "rl_7d_at": iso(T0 + 11), "source": "statusline", "current": True}
+                 "resets_5h": w.r5b, "resets_7d": w.r7b, "rl_5h_at": iso(T0 + 11), "rl_7d_at": iso(T0 + 11), "source": "statusline", "current": True, "pool_account": None}
     assert a["rl_5h"] == 80.0 and a["rl_7d"] == 40.0 and a["current"] is False
     full = accounts.view(env.db, full=True)["list"][0]
     assert {"org", "org_id", "tier", "config_dir", "first_seen", "last_seen", "rl_5h_at", "rl_7d_at", "source"} <= set(full)

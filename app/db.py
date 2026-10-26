@@ -702,9 +702,11 @@ class DB:
         its statusline readings to it). Writes only when the value changes. Returns whether a row was updated."""
         if not account:
             return False
-        row = self.open_row(tmux_name)
-        if row and self.kv_get(f"runtime_session:{row['id']}"):
-            return False
+        from .config import settings
+        if settings.pools:
+            row = self.open_row(tmux_name)
+            if row and self.kv_get(f"runtime_session:{row['id']}"):
+                return False
         with self.lock:
             cur = self.conn.execute(
                 "UPDATE sessions SET account=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND ended_at IS NULL"

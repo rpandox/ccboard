@@ -1137,7 +1137,8 @@ def test_view_shape_order_and_the_store_summary(box):
     assert set(v) == {"current", "list", "store", "login", "notice"} and v["current"] == ka and v["notice"] is None
     assert [r["key"] for r in v["list"]][0] == ka and {r["key"] for r in v["list"]} == {ka, kb, kc}
     row = v["list"][0]
-    assert set(row) == {"key", "label", "account_id", "plan", "saved", "saved_at", "current", "added_at", "last_seen"}
+    assert set(row) == {"key", "label", "account_id", "plan", "saved", "saved_at", "current", "added_at", "last_seen", "pool_account"}
+    assert row["pool_account"] is None
     assert (row["label"], row["plan"], row["account_id"], row["saved"], row["current"]) == ("Work", "pro", ACCT_A, True, True)
     assert {r["key"]: r["saved"] for r in v["list"]} == {ka: True, kb: True, kc: False}
     assert v["store"] == {"supported": True, "add": True, "reason": None, "count": 2}
@@ -1607,7 +1608,8 @@ def test_the_demo_state_carries_two_codex_accounts_one_current():
     demo = json.loads((Path(__file__).resolve().parent.parent / "app" / "static" / "demo" / "state.json").read_text(encoding="utf-8"))
     ca = demo["codex_accounts"]
     assert len(ca["list"]) == 2 and sum(1 for r in ca["list"] if r["current"]) == 1 and ca["current"] in {r["key"] for r in ca["list"]}
-    assert all(set(r) == {"key", "label", "account_id", "plan", "saved", "current", "added_at", "last_seen", "saved_at"} and r["saved"] is True for r in ca["list"])
+    assert all(set(r) == {"key", "label", "account_id", "plan", "saved", "current", "added_at", "last_seen", "saved_at", "pool_account"}
+               and r["saved"] is True and r["pool_account"] is None for r in ca["list"])
     assert ca["store"] == {"supported": True, "add": True, "reason": None, "count": 2}
     assert set(ca["login"]) == {"running", "adding", "label", "started_at", "url", "code", "result", "replace_key"} and ca["login"]["adding"] is False
 

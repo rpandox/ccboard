@@ -285,7 +285,8 @@ def migrate(db):
                     aid = provider + "-" + hashlib.sha256(key.encode()).hexdigest()[:24]
                     path = profile_dir(provider, aid)
                     marked = owner(slot)
-                    exists = db.conn.execute("SELECT state FROM pool_account WHERE id=?", (aid,)).fetchone()
+                    with db.lock:
+                        exists = db.conn.execute("SELECT state FROM pool_account WHERE id=?", (aid,)).fetchone()
                     if exists and exists[0] == "releasing":
                         raise projects.BadRequest("release is incomplete; retry Release")
                     if not marked and not exists and not store.has_saved(key) and not path.exists():
@@ -323,7 +324,7 @@ def migrate(db):
                     elif isinstance(e, OSError):
                         result["error"] = f"could not access slot files ({e.strerror or type(e).__name__})"
                     elif isinstance(e, sqlite3.Error):
-                        result["error"] = "database could not record the handover; retry migration"
+                        raise
                     else:
                         result["error"] = f"invalid slot or profile configuration ({type(e).__name__})"
                 results.append(result)
@@ -335,13 +336,15 @@ def release(db, account_id):
     require_enabled()
     validate_account_id(account_id)
     with _migration_lock, account_store._lock, codex_accounts._lock:
-        row = db.conn.execute("SELECT * FROM pool_account WHERE id=?", (account_id,)).fetchone()
+        with db.lock:
+            row = db.conn.execute("SELECT * FROM pool_account WHERE id=?", (account_id,)).fetchone()
         if row is None:
             raise projects.BadRequest("no such pool account")
-        reconcile_attempts(db)
-        if db.conn.execute("SELECT 1 FROM runtime_attempt WHERE account_id=? AND ended_at IS NULL", (account_id,)).fetchone():
+        _check_liveness(db)
+        active = _open_attempts(db, account_id)
+        if active:
             from fastapi import HTTPException
-            raise HTTPException(409, "this pool account has an open attempt")
+            raise HTTPException(409, "this pool account has an open attempt: " + _attempt_names(active))
         provider = row["provider"]
         store = account_store if provider == "claude" else codex_accounts
         records = accounts._load(db) if provider == "claude" else codex_accounts._load(db)
@@ -365,40 +368,60 @@ def release(db, account_id):
         return {"released": account_id}
 
 
-def reconcile_attempts(db):
-    if not settings.pools:
-        return
-    from . import tmux
+def _open_attempts(db, account_id=None):
+    # One snapshot includes all bindings; never read kv once per session/attempt.
     with db.lock:
-        attempts = list(db.conn.execute("SELECT * FROM runtime_attempt WHERE ended_at IS NULL"))
-        sessions = list(db.conn.execute("SELECT id,tmux_name,ended_at FROM sessions"))
-    for attempt in attempts:
+        return list(db.conn.execute("""
+            SELECT a.*, s.tmux_name, s.ended_at AS session_ended, r.finished_at AS run_finished,
+                   r.id AS run_id
+            FROM runtime_attempt a
+            LEFT JOIN kv k ON k.key LIKE 'runtime_session:%' AND json_extract(k.value, '$.attempt')=a.id
+            LEFT JOIN sessions s ON k.key='runtime_session:' || s.id
+            LEFT JOIN runs r ON a.task_id='run:' || r.id
+            WHERE a.ended_at IS NULL AND (? IS NULL OR a.account_id=?)
+        """, (account_id, account_id)))
+
+
+def _attempt_names(active):
+    return ", ".join(sorted({r["tmux_name"] or r["task_id"] or f"attempt {r['id']}" for r in active}))
+
+
+def reconcile_attempts(db):
+    """Close proven stale attempts. False means tmux liveness was unknown."""
+    if not settings.pools:
+        return True
+    from . import tmux
+    known = True
+    for attempt in _open_attempts(db):
         stale = False
-        for session in sessions:
-            binding = db.kv_get(f"runtime_session:{session['id']}")
-            if binding and binding["value"]["attempt"] == attempt["id"]:
-                try:
-                    stale = bool(session["ended_at"]) or not tmux.has_session(session["tmux_name"])
-                except tmux.TmuxError:
-                    stale = False
-                break
-        if str(attempt["task_id"] or "").startswith("run:"):
-            rid = str(attempt["task_id"])[4:]
-            run = db.conn.execute("SELECT finished_at FROM runs WHERE id=?", (rid,)).fetchone()
-            stale = run is None or bool(run[0])
+        if attempt["session_ended"]:
+            stale = True
+        elif attempt["tmux_name"]:
+            try:
+                stale = not tmux.has_session(attempt["tmux_name"])
+            except (tmux.TmuxError, tmux.TmuxDown):
+                known = False
+        elif str(attempt["task_id"] or "").startswith("run:"):
+            stale = attempt["run_id"] is None or bool(attempt["run_finished"])
         if stale:
             finish_attempt(db, attempt["id"], "reconciled")
+    return known
+
+
+def _check_liveness(db):
+    if not reconcile_attempts(db):
+        from fastapi import HTTPException
+        raise HTTPException(503, "tmux is not running; cannot check pool sessions")
 
 
 def guard_switch(db):
     if not settings.pools:
         return
-    reconcile_attempts(db)
-    with db.lock:
-        active = db.conn.execute("SELECT 1 FROM runtime_attempt WHERE ended_at IS NULL LIMIT 1").fetchone()
+    _check_liveness(db)
+    active = _open_attempts(db)
     if active:
         from fastapi import HTTPException
-        raise HTTPException(409, SWITCH_REASON)
+        raise HTTPException(409, SWITCH_REASON + ": " + _attempt_names(active))
 
 
 def _serialized(fn):

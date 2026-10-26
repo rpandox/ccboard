@@ -737,6 +737,7 @@ def start_login(db, email: str | None = None, *, restart: bool = False) -> None:
     _require()
     email = claude_auth.clean_email(email)
     with _lock:
+        check_login_owner(db, email)
         if not restart and _login_running():
             raise Busy("a login is already running")
         pend = pending_dir()
@@ -779,10 +780,10 @@ def _decide(result: dict) -> dict:
     return result
 
 
-def _fail(pend: Path, t: float) -> dict:
+def _fail(pend: Path, t: float, error: str = ERR_DID_NOT_COMPLETE) -> dict:
     _kill_login_session()
     shutil.rmtree(pend, ignore_errors=True)
-    return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
+    return _decide({"ok": False, "error": error, "at": iso(t)})
 
 
 def _complete(db, pend: Path, ident: dict, t: float, now, asked: str | None = None) -> dict | None:
@@ -793,6 +794,8 @@ def _complete(db, pend: Path, ident: dict, t: float, now, asked: str | None = No
     the result says `replaced`. When the live account IS this account (its login is the dead one) the fresh login goes live at once, and
     the live bytes it replaces are kept in the slot's `.prev` rather than first saved over the fresh slot. `asked` is the email the login
     was started for: when the person signed in as somebody else the result says `different_account` (that account got a row of its own)."""
+    key = accounts._key_for(accounts._load(db), ident)
+    check_slot(slot_dir(key))
     key = accounts.remember(db, {**ident, "config_dir": None}, now)
     _kill_login_session()                                        # nothing writes into .pending any more
     slot = _slot_ready(key)
@@ -860,7 +863,10 @@ def finalize(db, now=None) -> dict | None:
         if have_creds and t - cst.st_mtime >= PENDING_MIN_AGE:
             ident = accounts.read_identity(config_dir=pend, auth=False, force=True)
             if ident:
-                return _complete(db, pend, ident, t, now, asked)
+                try:
+                    return _complete(db, pend, ident, t, now, asked)
+                except HandoverError as e:
+                    return _fail(pend, t, f"this login belongs to pool account {e.account_id}; release it first")
         if started is None:
             with contextlib.suppress(OSError):
                 started = pend.stat().st_mtime
