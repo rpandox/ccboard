@@ -172,6 +172,7 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 [ "$CCBOARD_MEM_HTTPS_PORT" != off ] || CCBOARD_MEM_HTTPS_PORT=
 : "${CCBOARD_MEM_SERVICE:=0}"
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"
+: "${CCBOARD_LINK_ROOTS:=}"      # empty = the board's own default ($HOME on a native board, off in Docker); off = disabled; or colon-separated roots
 : "${CCBOARD_LOCAL_SIGNIN:=0}"
 : "${CCBOARD_LOCAL_SIGNIN_HOURS:=12}"
 : "${CCBOARD_MCP_REMOTE:=0}"

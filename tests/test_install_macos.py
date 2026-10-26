@@ -1257,3 +1257,8 @@ def test_help_prints_the_header_and_changes_nothing(mac):
         assert r.stdout.lstrip().startswith(("ccboard installer for macOS", "Uninstall ccboard"))
         assert "#!/bin/bash" not in r.stdout and "set -euo" not in r.stdout
     assert mac.plists() == [] and not mac.data.exists()
+
+
+def test_link_roots_default_is_left_to_board_runtime(mac):
+    mac.install()
+    assert "CCBOARD_LINK_ROOTS=" in (mac.data / "env").read_text().splitlines()

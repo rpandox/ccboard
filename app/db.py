@@ -1064,6 +1064,21 @@ class DB:
     def perm_expire(self, pid: int, decision: str = "timeout") -> None:
         self.perm_decide(pid, decision, "system")
 
+    def forget_repo(self, project: str, repo: str | None = None) -> None:
+        """Forget board metadata, leaving session history and files alone."""
+        where = "project=?" + (" AND repo=?" if repo is not None else "")
+        args = (project, repo) if repo is not None else (project,)
+        with self.lock:
+            self.conn.execute("BEGIN")
+            try:
+                self.conn.execute(f"DELETE FROM runs WHERE job_id IN (SELECT id FROM jobs WHERE {where})", args)
+                self.conn.execute(f"DELETE FROM jobs WHERE {where}", args)
+                self.conn.execute(f"DELETE FROM tasks WHERE {where}", args)
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+
     def kv_del(self, key: str) -> None:
         with self.lock:
             self.conn.execute("DELETE FROM kv WHERE key=?", (key,))

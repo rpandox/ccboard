@@ -96,3 +96,135 @@ def test_root_project_folder(projects_dir):
     assert [s["name"] for s in root["sessions"]] == ["s1"] and [r["name"] for r in out["multi"]["repos"]] == ["api"]
     assert out["multi"]["orphan_sessions"] == []
     assert out["single"]["root"] is None                 # a folder that is itself the repo needs none
+
+
+@pytest.fixture
+def linked_home(projects_dir, tmp_path, monkeypatch):
+    from app.config import settings
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(settings, "link_roots", (home,))
+    return home
+
+
+def test_linked_projects_scan_and_cwds(projects_dir, linked_home):
+    from app import links
+    target = linked_home / "mono"
+    target.mkdir()
+    (target / ".git").mkdir()
+    p = links.add("mono", None, target)
+    other = linked_home / "api"
+    other.mkdir()
+    projects.create_project("shop")
+    r = links.add("shop", "api", other)
+    rows = {x["name"]: x for x in projects.scan({})}
+    assert rows["mono"]["linked"] and rows["mono"]["target"] == str(target)
+    assert rows["shop"]["linked"] is False and rows["shop"]["target"] is None
+    assert rows["shop"]["repos"][0]["linked"]
+    assert projects.contained(p) == target
+    assert projects.contained(r / "sub") == other / "sub"
+    assert projects.repo_for_cwd(str(target)) == ("mono", "mono")
+    assert projects.repo_for_cwd(str(target / ".claude/worktrees/task")) == ("mono", "mono")
+    assert projects.repo_for_cwd(str(other / "sub")) == ("shop", "api")
+    assert projects.repo_for_cwd(str(other / ".claude/worktrees/task")) == ("shop", "api")
+    with pytest.raises(projects.BadRequest):
+        projects.remove_tree(p)
+    assert target.is_dir() and (target / ".git").is_dir()
+    with pytest.raises(projects.BadRequest):
+        projects.remove_tree(r / "sub")
+    links.remove("mono", None)
+    assert target.is_dir() and not p.exists()
+
+
+def test_linked_container_cwds_and_nested_links(projects_dir, linked_home):
+    from app import links
+    target = linked_home / "container"
+    (target / "api").mkdir(parents=True)
+    p = links.add("group", None, target)
+    assert projects.repo_for_cwd(str(target)) == ("group", projects.ROOT)
+    assert projects.repo_for_cwd(str(target / "api/sub")) == ("group", "api")
+    (target / "escape").symlink_to(linked_home, target_is_directory=True)
+    assert [r["name"] for r in projects.scan({})[0]["repos"]] == ["api"]
+    with pytest.raises(projects.BadRequest, match="path escapes its linked folder"):
+        projects.contained(p / "escape/file")
+    with pytest.raises(projects.BadRequest):
+        projects.add_repo_blank("group", "new")
+    assert not (target / "new").exists()
+
+
+def test_link_target_rules_and_overlap(projects_dir, linked_home):
+    from app import links
+    from app.config import settings
+    folder = linked_home / "ok"
+    folder.mkdir()
+    file = linked_home / "file"
+    file.write_text("ordinary text")
+    denied = linked_home / ".ssh"
+    denied.mkdir()
+    for path in ("/", str(linked_home), str(denied), str(projects_dir), str(file), "relative", str(linked_home / "missing")):
+        with pytest.raises(projects.BadRequest):
+            links.check_target(path)
+    assert links.check_target("~/ok") == folder
+    (folder / "child").mkdir()
+    links.add("one", None, folder / "child")
+    for path in (folder, folder / "child", folder / "child/deeper"):
+        path.mkdir(exist_ok=True)
+        with pytest.raises(projects.Conflict):
+            links.check_target(str(path))
+    assert settings.projects_dir == projects_dir
+
+
+def test_stray_and_repointed_links_are_untrusted(projects_dir, linked_home):
+    from app import links
+    a, b = linked_home / "a", linked_home / "b"
+    a.mkdir()
+    b.mkdir()
+    (projects_dir / "stray").symlink_to(a)
+    assert projects.scan({}) == []
+    p = links.add("registered", None, a)
+    p.unlink()
+    p.symlink_to(b)
+    assert links.trusted(p) is None
+    assert projects.scan({}) == []
+    assert links.owner_of_real(b) is None
+    with pytest.raises(projects.BadRequest):
+        projects.contained(p / "file")
+    with pytest.raises(projects.BadRequest):
+        links.remove("registered", None)
+    assert p.is_symlink() and b.is_dir()
+
+
+def test_target_protected_paths_within_allowed_root(projects_dir, linked_home, tmp_path, monkeypatch):
+    from app import links
+    from app.config import settings
+    monkeypatch.setattr(settings, "link_roots", (tmp_path,))
+    for path in (linked_home, projects_dir, projects_dir / "child", settings.data_dir, settings.codex_home):
+        # CODEX_HOME comes from the hermetic test bootstrap.
+        if path == settings.codex_home:
+            path = tmp_path / "custom-codex"
+            monkeypatch.setattr(settings, "codex_home", path)
+        path.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(projects.BadRequest):
+            links.check_target(str(path))
+    for name in (".ssh", ".gnupg", ".claude", ".codex", ".config", ".local", "Library", ".aws", ".kube", ".docker"):
+        path = linked_home / name / "child"
+        path.mkdir(parents=True)
+        with pytest.raises(projects.BadRequest):
+            links.check_target(str(path))
+
+
+def test_registry_read_is_cached_and_rechecks_link(projects_dir, linked_home, monkeypatch):
+    from app import links
+    target = linked_home / "target"
+    target.mkdir()
+    p = links.add("linked", None, target)
+    calls = []
+    original = links._db().kv_get
+    monkeypatch.setattr(links._db(), "kv_get", lambda key: calls.append(key) or original(key))
+    assert links.trusted(p) == str(target)
+    assert links.trusted(p) == str(target)
+    assert calls == ["linked_folders"]
+    p.unlink()
+    p.symlink_to(linked_home)
+    assert links.trusted(p) is None

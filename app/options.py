@@ -106,6 +106,7 @@ def registry() -> tuple[Option, ...]:
         Option("CCBOARD_MEM_SERVICE", "memory", "Memory service", "Run the memory worker as a managed service.", "bool", "0", "installer", applies="installer"),
         Option("CCBOARD_CODEX_HOOK_TRUST", "safety", "Codex hook trust", "Review trusts hooks once in Codex and bypass also trusts repository hooks.", "choice", "review", "file", attr="codex_hook_trust", choices=("review", "bypass")),
         Option("CCBOARD_CLONE_ALLOWED_HOSTS", "safety", "Private clone hosts", "Comma-separated private hosts or wildcard domains that clones may reach.", "list", "", "file", attr="clone_allowed_hosts"),
+        Option("CCBOARD_LINK_ROOTS", "safety", "Linked folder roots", "Colon-separated absolute roots for linked folders; empty disables linking.", "text", "", "file", attr="link_roots"),
         Option("CCBOARD_MCP_REMOTE", "safety", "Remote MCP default", "Start remote MCP enabled only with 1 unless its page switch overrides it.", "bool", "", "file", attr="mcp_remote"),
         Option("CODEX_HOME", "advanced", "Codex folder", "Empty uses Codex's own default configuration folder.", "path", "", "file", attr="codex_home"),
         Option("CCBOARD_AUTOCLOSE_GRACE", "agents", "Auto-close grace", "Seconds to wait after Stop before closing a task session.", "float", "45", "page", attr="autoclose_grace", bad="autoclose_grace_bad", bounds=(0, 86400)),
@@ -400,7 +401,7 @@ def effective(settings, option):
     if option.key == "CCBOARD_EPIC_AUTHORS":
         return ",".join(name + (":" + str(settings.epic_author_ids[name]) if name in settings.epic_author_ids else "") for name in value)
     if isinstance(value, (list, tuple)):
-        return ",".join(value)
+        return (":" if option.key == "CCBOARD_LINK_ROOTS" else ",").join(value)
     return str(value)
 
 

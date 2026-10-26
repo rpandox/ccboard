@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictBool, StrictInt, model_validator
 
-from . import account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, links, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -947,6 +947,7 @@ def build_state(user: str) -> dict:
     from .options import pending_state
     st = _scan_entry()
     st["boot"] = BOOT
+    st["links_enabled"] = links.enabled()
     # #309: the banner names this platform's start command, the one Doctor's tmux check shows; null while tmux is up (the key is always there, so the
     # demo fixture matches the live keys whether or not a tmux server runs), and not in the scan cache, so GET /api/node/state is untouched
     st["tmux_fix"] = plat.hint("start", "ccboard-tmux") if st.get("tmux_down") else None
@@ -1245,6 +1246,38 @@ def api_preflight_clone(body: PreflightIn):
     return preflight.preflight_clone(body.url)
 
 
+class FolderIn(BaseModel):
+    path: str
+
+
+@app.post("/api/preflight/folder")
+def api_preflight_folder(body: FolderIn):
+    links.require_enabled()
+    try:
+        target = links.check_target(body.path)
+        git = projects.is_repo(target)
+        branch, remote = None, None
+        if git:
+            cp = projects._git(target, "symbolic-ref", "--short", "-q", "HEAD")
+            if cp is not None and cp.returncode == 0:
+                branch = cp.stdout.strip() or None
+            else:
+                cp = projects._git(target, "rev-parse", "--short", "HEAD")
+                if cp is not None and cp.returncode == 0:
+                    branch = "detached " + cp.stdout.strip()
+            cp = projects._git(target, "remote", "get-url", "origin")
+            if cp is not None and cp.returncode == 0:
+                # Drop URL userinfo entirely, including usernames and passwords.
+                remote = re.sub(r"(://)[^/]*@", r"\1", cp.stdout.strip()) or None
+                if remote and "://" not in remote and "@" in remote:
+                    remote = remote.split("@", 1)[1]
+        return {"ok": True, "path": str(target), "git": git, "branch": branch, "remote": remote,
+                "repos": [] if git else [p.name for p in projects._subdirs(target) if projects.is_repo(p)][:50],
+                "suggested_name": projects.derive_repo_name(target.name)}
+    except (projects.BadRequest, projects.Conflict) as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/sessions/{name}")
 def api_session(name: str):
     try:
@@ -1288,8 +1321,7 @@ def api_external(agent: str | None = None, project: str | None = None):
         snap = _registry_snapshot(pane_pids) or {"external": [], "scanned_at": None}
         claude_ext, at = snap["external"], snap["scanned_at"]
         if project:
-            base = str(settings.projects_dir / project)
-            claude_ext = [e for e in claude_ext if (e.get("cwd") or "") == base or (e.get("cwd") or "").startswith(base + "/")]
+            claude_ext = [e for e in claude_ext if (owner := projects.repo_for_cwd(e.get("cwd"))) and owner[0] == project]
     codex_ext: list = []
     if want_codex:
         codex_ext, codex_at = codex_discovery.external(db, project)
@@ -1317,7 +1349,8 @@ def _external_target(agent: str, sid: str) -> dict:
     pr = codex_discovery.project_repo(cwd)
     if not pr or not cwd or not Path(cwd).is_dir():
         raise projects.BadRequest(f"this session's directory ({cwd or 'unknown'}) is not under the projects folder, so the board cannot open it")
-    projects.contained(Path(cwd))                      # a symlink, or a path that resolves outside PROJECTS_DIR, is refused like everywhere else
+    if not links.owner_of_real(Path(cwd).resolve()):
+        projects.contained(Path(cwd))
     return {"cwd": cwd, "project": pr[0], "repo": pr[1], "name": e.get("name") or e.get("title")}
 
 
@@ -1760,11 +1793,13 @@ def api_codex_account_forget(key: str):
 class ProjectIn(BaseModel):
     name: str
     url: str | None = None
+    link: str | None = None
 
 
 class RepoIn(BaseModel):
     name: str | None = None
     url: str | None = None
+    link: str | None = None
 
 
 def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[Path]) -> str:
@@ -1793,6 +1828,14 @@ def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[P
 
 @app.post("/api/projects", status_code=201)
 def api_create_project(body: ProjectIn):
+    if body.link is not None:
+        links.require_enabled()
+        if body.url is not None:
+            raise projects.BadRequest("link and url are mutually exclusive")
+        target = links.check_target(body.link)
+        p = links.add(body.name, None, target)
+        _invalidate_scan()
+        return {"name": body.name, "path": str(p)}
     projects.check_name("project", body.name)
     rname = None
     if body.url:
@@ -1855,16 +1898,44 @@ def api_delete_project(project: str):
     p = projects.project_path(project)
     if not p.is_dir():
         raise projects.NotFound(f"project {project} not found")
+    unlinked = links.trusted(p) is not None
+    children = [key.split("/", 1)[1] for key in links.all() if key.startswith(project + "/")]
+    if unlinked or children or links.get(project):
+        links.require_enabled()
+    if not unlinked:
+        projects.check_removal(p)
+    for child in children:
+        child_path = p / child
+        if (child_path.exists() or child_path.is_symlink()) and not links.trusted(child_path):
+            raise projects.BadRequest("the linked folder has changed; refusing to unlink it")
     killed = tmux.kill_prefix(project + tmux.SEP)
     for k in killed:
         db.end(k, "project_deleted")
-    projects.remove_tree(p)
+    if unlinked:
+        links.remove(project, None)
+    else:
+        for child in children:
+            links.remove(project, child)
+        projects.remove_tree(p)
+        unlinked = bool(children)
+    db.forget_repo(project)
     _invalidate_scan()
-    return {"deleted": project, "killed_sessions": killed}
+    return {"deleted": project, "killed_sessions": killed, "unlinked": unlinked}
 
 
 @app.post("/api/projects/{project}/repos", status_code=201)
 def api_add_repo(project: str, body: RepoIn):
+    if body.link is not None:
+        links.require_enabled()
+        if body.url is not None:
+            raise projects.BadRequest("link and url are mutually exclusive")
+        target = links.check_target(body.link)
+        name = body.name or projects.derive_repo_name(target.name)
+        if not name:
+            raise projects.BadRequest("could not derive a repo name from the folder; give one")
+        r = links.add(project, name, target)
+        _invalidate_scan()
+        return {"name": name, "path": str(r)}
     if body.url:
         rname, rpath = projects.prepare_repo_clone(project, body.name, body.url)
         sess = _launch_clone(project, rname, rpath, body.url, cleanup=[rpath])
@@ -1880,16 +1951,29 @@ def api_add_repo(project: str, body: RepoIn):
 @app.delete("/api/projects/{project}/repos/{repo}")
 def api_remove_repo(project: str, repo: str):
     r = projects.repo_path(project, repo)
-    if not r.is_dir():
+    registered = links.get(project + "/" + repo) is not None
+    missing_link = registered and not r.exists() and not r.is_symlink()
+    if not r.is_dir() and not missing_link:
         raise projects.NotFound(f"repo {project}/{repo} not found")
     if r == projects.project_path(project):
         raise projects.BadRequest("this repo is the project folder itself; delete the project instead")
-    killed = tmux.kill_prefix(tmux.tmux_name(project, repo, "") )
+    unlinked = links.trusted(r) is not None or missing_link
+    if unlinked or registered:
+        links.require_enabled()
+    if registered and not unlinked:
+        raise projects.BadRequest("the linked folder has changed; refusing to unlink it")
+    if not unlinked:
+        projects.check_removal(r)
+    killed = tmux.kill_prefix(tmux.tmux_name(project, repo, ""))
     for k in killed:
         db.end(k, "project_deleted")
-    projects.remove_tree(r)
+    if unlinked:
+        links.remove(project, repo)
+    else:
+        projects.remove_tree(r)
+    db.forget_repo(project, repo)
     _invalidate_scan()
-    return {"removed": f"{project}/{repo}", "killed_sessions": killed}
+    return {"removed": f"{project}/{repo}", "killed_sessions": killed, "unlinked": unlinked}
 
 
 # ---------- tasks (worktree + branch per task) ----------

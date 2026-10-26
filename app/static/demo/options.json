@@ -817,6 +817,27 @@
       "edit_value": "[]"
     },
     {
+      "key": "CCBOARD_LINK_ROOTS",
+      "group": "safety",
+      "label": "Linked folder roots",
+      "help": "Colon-separated absolute roots for linked folders; empty disables linking.",
+      "kind": "text",
+      "default": "",
+      "cls": "file",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": [],
+      "set": false,
+      "line": "CCBOARD_LINK_ROOTS=",
+      "source": "default",
+      "problem": null,
+      "running": [],
+      "pending": false,
+      "edit_value": ""
+    },
+    {
       "key": "CCBOARD_MCP_REMOTE",
       "group": "safety",
       "label": "Remote MCP default",

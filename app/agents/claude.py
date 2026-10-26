@@ -697,7 +697,8 @@ class ClaudeAgent(Agent):
             raise projects.BadRequest(what)
         roots = [Path(settings.projects_dir), Path(settings.claude_config_dir)]
         real = Path(os.path.realpath(path))
-        if not any(real == r or r.resolve() in real.parents for r in roots):
+        from .. import links
+        if not any(real == r or r.resolve() in real.parents for r in roots) and not links.owner_of_real(real):
             raise projects.BadRequest(what)
         if must_exist and not real.is_file():
             raise projects.BadRequest("mcp_config: no such file")

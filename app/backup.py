@@ -208,8 +208,9 @@ def repos() -> list[Path]:
     root = settings.projects_dir
     if not root.is_dir():
         return out
-    for proj in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        for r in sorted(x for x in proj.iterdir() if x.is_dir() and not x.name.startswith(".")):
+    from . import projects
+    for proj in projects._subdirs(root):
+        for r in ([proj] if projects.is_repo(proj) else projects._subdirs(proj)):
             if (r / ".git").is_dir():
                 out.append(r)
     return out

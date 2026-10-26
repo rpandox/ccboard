@@ -344,7 +344,8 @@ def _first_text(body: dict) -> str:
 
 def _project_dir(project: str) -> Path:
     p = projects.project_path(project)             # BadRequest for a bad name
-    if not p.is_dir() or p.is_symlink():
+    from . import links
+    if not p.is_dir() or (p.is_symlink() and not links.trusted(p)):
         raise projects.NotFound(f"no project {project}")
     return p
 
@@ -418,14 +419,17 @@ def candidate_keys(project: str) -> list[dict]:
             out.append({"key": key, "wing": wing, "kind": kind})
 
     for wing, rdir in _repo_dirs(pdir):
-        en = _env_name(rdir, env)
-        add(en or rdir.name, wing, "env" if en else "repo")
-        for wt in _worktree_dirs(rdir):
-            ew = _env_name(wt, env)
-            add(ew or worktree_key(rdir.name, wt.name), wing, "env" if ew else "worktree")
+        # Agents may report the board alias or the real cwd of a linked repo.
+        for folder in dict.fromkeys((rdir, rdir.resolve())):
+            en = _env_name(folder, env)
+            add(en or folder.name, wing, "env" if en else "repo")
+            for wt in _worktree_dirs(folder):
+                ew = _env_name(wt, env)
+                add(ew or worktree_key(folder.name, wt.name), wing, "env" if ew else "worktree")
     if not projects.is_repo(pdir):
-        en = _env_name(pdir, env)
-        add(en or pdir.name, projects.ROOT, "env" if en else "root")
+        for folder in dict.fromkeys((pdir, pdir.resolve())):
+            en = _env_name(folder, env)
+            add(en or folder.name, projects.ROOT, "env" if en else "root")
     return out
 
 
@@ -450,12 +454,15 @@ def _owners() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for pdir in projects._subdirs(Path(settings.projects_dir)):
         if projects.is_repo(pdir):
-            out.setdefault(pdir.name.lower(), []).append(pdir.name)
+            for name in {pdir.name.lower(), pdir.resolve().name.lower()}:
+                out.setdefault(name, []).append(pdir.name)
             continue
-        out.setdefault(pdir.name.lower(), []).append(f"{pdir.name}/{projects.ROOT}")
+        for name in {pdir.name.lower(), pdir.resolve().name.lower()}:
+            out.setdefault(name, []).append(f"{pdir.name}/{projects.ROOT}")
         for c in projects._subdirs(pdir):
             if c.name != projects.ROOT:
-                out.setdefault(c.name.lower(), []).append(f"{pdir.name}/{c.name}")
+                for name in {c.name.lower(), c.resolve().name.lower()}:
+                    out.setdefault(name, []).append(f"{pdir.name}/{c.name}")
     return out
 
 
@@ -534,7 +541,7 @@ def _belongs(row: dict, project: str) -> bool:
     if not abs_paths:
         return True
     pre = str(Path(settings.projects_dir) / project).rstrip("/") + "/"
-    return any(p.startswith(pre) for p in abs_paths)
+    return any(p.startswith(pre) or ((owner := projects.repo_for_cwd(p)) and owner[0] == project) for p in abs_paths)
 
 
 def _key_of(row: dict, by_lower: dict) -> dict | None:

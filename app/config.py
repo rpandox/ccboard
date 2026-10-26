@@ -547,6 +547,12 @@ class Settings:
         # or 'host' (a dev shell). An unknown CCBOARD_RUNTIME is ignored, never trusted (app/platform.py resolve_runtime).
         runtime, _detected = plat.resolve_runtime(env)
         self.runtime = runtime
+        link_roots = env.get("CCBOARD_LINK_ROOTS", "").strip()
+        if not link_roots:
+            link_roots = "" if runtime == "docker" else str(Path.home())
+        elif link_roots.lower() == "off":
+            link_roots = ""
+        self.link_roots = tuple(str(Path(p).resolve()) for p in link_roots.split(":") if p and Path(p).is_absolute())
         self.image_version = (env.get("CCBOARD_IMAGE_VERSION") or "").strip()   # baked into the image by CI
         self.checkout_version = "" if self.image_version else checkout_version()   # a native board: the newest CHANGELOG heading (issue #233)
         # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID), launchd and inside the container.
@@ -741,6 +747,13 @@ class Settings:
             else:
                 self.mem_https_port = mp
         self.login_shell = plat.login_shell()
+
+    @property
+    def home_dir(self) -> Path:
+        return Path.home()
+
+    def expand_user_path(self, path: str) -> Path:
+        return Path(path).expanduser()
 
     @property
     def sources(self):

@@ -400,6 +400,9 @@ def _resolve(project: str, repo: str, path) -> _Loc:
         pst = os.lstat(projects.project_path(project))
     except OSError:
         raise projects.NotFound(f"project {project} not found")
+    from . import links
+    if stat.S_ISLNK(pst.st_mode) and links.trusted(projects.project_path(project)):
+        pst = projects.project_path(project).stat()
     if stat.S_ISLNK(pst.st_mode):
         raise projects.BadRequest(f"{project} is a symlink; refusing")
     if not stat.S_ISDIR(pst.st_mode):
@@ -408,6 +411,8 @@ def _resolve(project: str, repo: str, path) -> _Loc:
         rst = os.lstat(rpath)
     except OSError:
         raise projects.NotFound(f"repo {project}/{repo} not found")
+    if stat.S_ISLNK(rst.st_mode) and links.trusted(rpath):
+        rst = rpath.stat()
     if stat.S_ISLNK(rst.st_mode):
         raise projects.BadRequest(f"{rpath.name} is a symlink; refusing")
     if not stat.S_ISDIR(rst.st_mode):
