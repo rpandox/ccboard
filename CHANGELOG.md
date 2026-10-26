@@ -14,6 +14,13 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: nothing to do.
 
+## v0.5.117 - 2026-10-26
+
+### Fixed
+- Linked folders added or removed by another process are seen on the next registry read, without restarting the board (#326). Cheap database change checks keep the parsed registry cached between changes.
+
+Upgrade: nothing to do.
+
 ## v0.5.116 - 2026-10-26
 
 ### Added

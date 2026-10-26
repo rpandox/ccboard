@@ -222,9 +222,56 @@ def test_registry_read_is_cached_and_rechecks_link(projects_dir, linked_home, mo
     calls = []
     original = links._db().kv_get
     monkeypatch.setattr(links._db(), "kv_get", lambda key: calls.append(key) or original(key))
-    assert links.trusted(p) == str(target)
-    assert links.trusted(p) == str(target)
+    for _ in range(100):
+        assert links.trusted(p) == str(target)
     assert calls == ["linked_folders"]
     p.unlink()
     p.symlink_to(linked_home)
     assert links.trusted(p) is None
+
+
+@pytest.mark.parametrize("delete_row", [False, True])
+def test_link_registry_changes_from_another_connection(projects_dir, linked_home, delete_row):
+    from app import links
+    from app.config import settings
+    from app.db import DB
+
+    target = linked_home / "external"
+    target.mkdir()
+    link = projects_dir / "external"
+    other = DB(settings.db_path)
+    try:
+        # Use one timestamp throughout to cover writes within the same second.
+        stamp = "2026-10-26T00:00:00+00:00"
+        other.kv_set("linked_folders", {}, at=stamp)
+        assert links.trusted(link) is None
+        assert projects.scan({}) == []
+        assert other.conn is not links._db().conn
+
+        link.symlink_to(target)
+        other.kv_set("linked_folders", {"external": {"target": str(target), "added_at": 1}}, at=stamp)
+        assert links.trusted(link) == str(target)
+        rows = projects.scan({})
+        assert len(rows) == 1 and rows[0]["name"] == "external"
+        assert rows[0]["linked"] and rows[0]["target"] == str(target)
+        assert links.owner_of_real(target) == ("external", projects.ROOT)
+
+        if delete_row:
+            other.kv_del("linked_folders")
+        else:
+            other.kv_set("linked_folders", {}, at=stamp)
+        assert link.is_symlink()
+        assert links.trusted(link) is None
+        assert projects.scan({}) == []
+        assert links.owner_of_real(target) is None
+    finally:
+        other.close()
+
+
+def test_link_registry_read_does_not_create_database(projects_dir):
+    from app import links
+    from app.config import settings
+
+    assert not settings.db_path.exists()
+    assert links.all() == {}
+    assert not settings.db_path.exists()

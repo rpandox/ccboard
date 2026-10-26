@@ -13,17 +13,19 @@ from .db import DB
 OFF = "linking local folders is off on this board (CCBOARD_LINK_ROOTS)"
 _lock = threading.RLock()
 _cache = None
+_cache_marker = None
 _database = None
 _database_path = None
 
 
 def _db():
-    global _database, _database_path, _cache
+    global _database, _database_path, _cache, _cache_marker
     if _database_path != settings.db_path:
         if _database is not None:
             _database.conn.close()
         _database = None
         _cache = None
+        _cache_marker = None
         _database_path = settings.db_path
     if _database is None:
         _database = DB(settings.db_path)
@@ -31,15 +33,24 @@ def _db():
 
 
 def _rows() -> dict:
-    global _cache
+    global _cache, _cache_marker
     with _lock:
         # Scanning an uninitialised board must not create its database.
         if not settings.db_path.exists() and _database_path != settings.db_path:
             return {}
         db = _db()
-        if _cache is None:
+        with db.lock:
+            # kv.at has second precision; data_version also catches external
+            # commits that replace the registry with the very same timestamp.
+            version = db.conn.execute("PRAGMA data_version").fetchone()[0]
+            stamp = db.conn.execute("SELECT at FROM kv WHERE key=?", ("linked_folders",)).fetchone()
+        marker = (version, stamp[0] if stamp else None)
+        if _cache is None or marker != _cache_marker:
             row = db.kv_get("linked_folders")
             _cache = row["value"] if row else {}
+            # Capture the marker before reading: a concurrent commit must
+            # trigger another reload on the next call, never hide a change.
+            _cache_marker = marker
         return _cache
 
 
