@@ -1,0 +1,11 @@
+/* Four add choices stay readable on a phone and inside the launcher sheet. */
+#page .add-modes.seg-ctl, #sheet .add-modes.seg-ctl { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:100%; }
+#page .add-modes .seg-btn, #sheet .add-modes .seg-btn { flex:none; text-align:left; white-space:normal; min-height:44px; padding:10px 12px; line-height:1.4; border:1px solid var(--line); border-radius:2px; }
+#sheet .wiz-chips { display:flex; flex-wrap:wrap; gap:6px; }
+#page .wiz-chips .badge, #sheet .wiz-chips .badge { white-space:normal; overflow-wrap:anywhere; max-width:100%; }
+
+/* Keep the selected card distinct after the stacked choice border reset. */
+#page .add-modes .seg-btn[aria-pressed=true], #sheet .add-modes .seg-btn[aria-pressed=true] { border-color:var(--sig); box-shadow:inset 3px 0 0 var(--sig); background:rgba(77,208,225,.14); color:var(--fg); font-weight:600; }
+#page .add-modes .seg-btn, #sheet .add-modes .seg-btn { min-width:0; overflow-wrap:anywhere; }
+
+#page .wiz-form > p.field-hint, #sheet .wiz-form > p.field-hint { margin:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }

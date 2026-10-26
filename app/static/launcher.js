@@ -119,6 +119,24 @@ function sessionForm(p, r) {
   return form;
 }
 
+// Folder demo answers live with the Link form; core.js loads this bundle before dispatching them.
+function demoFolderPreflight(body) {
+  const value = String(body && body.path || '').trim().replace(/^~(?=\/)/, '/home/ccboard');
+  if (!value.startsWith('/')) return { ok: false, error: 'Give an absolute folder path.' };
+  const multi = /\/tools\/?$/.test(value);
+  return { ok: true, path: value, git: !multi, branch: multi ? null : 'main', remote: multi ? null : 'github.com/demo/mailgate', repos: multi ? ['mailgate', 'scripts'] : [], suggested_name: demoRepoName(value) };
+}
+function demoLinkFolder(project, name, link) {
+  const p = demoMade.projects.find((p) => p.name === project);
+  if (name !== null) {
+    Object.assign(p.repos.find((r) => r.name === name), { linked: true, target: link });
+    return;
+  }
+  Object.assign(p, { linked: true, target: link });
+  const r = { name: project, path: p.path, state: 'ok', branch: 'main', dirty: false, sessions: [], linked: true, target: link };
+  if (/\/tools\/?$/.test(link)) p.root = { ...r, name: 'root', root: true, state: 'project' }; else p.repos = [r];
+}
+
 // Shared by every project/repo entry point, including the onboarding wizard.
 const ADD_MODES = [['clone', 'Clone a git repo'], ['link', 'Link a folder on this computer'], ['import', 'Import from GitHub'], ['blank', 'Start a blank repo']];
 const LINK_OFF = 'Linking local folders is off on this board (CCBOARD_LINK_ROOTS)';

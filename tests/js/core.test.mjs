@@ -496,6 +496,10 @@ test('a click on a link marked data-standalone="skip" is left to the browser in 
 
 test('demo folder preflight and link creation retain linked/target for projects and repos', async () => {
   const w = coreWorld();
+  w.ctx.Lazy = { load: async (bundle) => {
+    assert.equal(bundle, 'launcher');
+    if (!w.get("typeof demoFolderPreflight === 'function'")) w.load('launcher.js');
+  } };
   const res = plain(await w.get('demoApi')('POST', '/api/preflight/folder', { path: '~/work/tools' }));
   assert.equal(res.ok, true);
   assert.equal(res.path, '/home/ccboard/work/tools');

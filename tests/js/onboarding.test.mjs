@@ -640,6 +640,6 @@ test('add choices expose one selected radio, support arrow keys and explain the 
   assert.match(text(active(w).querySelector('p.field-hint')), /linked as a new project/);
   selected()[0].dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
   assert.equal(text(selected()[0]), 'Import from GitHub');
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'launcher.css'), 'utf8');
   assert.match(css, /\.add-modes \.seg-btn\[aria-pressed=true\][^{]*\{[^}]*border-color:var\(--sig\)/);
 });

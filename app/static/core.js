@@ -266,12 +266,7 @@ function demoMake(method, path, body) {
   } else if (method === 'POST' && path === '/api/projects' && typeof b.name === 'string' && b.name) {
     demoMakeRepo(b.name, '');
     if (b.url) demoMakeRepo(b.name, demoRepoName(b.url));
-    if (b.link) {
-      const p = demoMade.projects.find((p) => p.name === b.name);
-      Object.assign(p, { linked: true, target: b.link });
-      const r = { name: b.name, path: p.path, state: 'ok', branch: 'main', dirty: false, sessions: [], linked: true, target: b.link };
-      if (/\/tools\/?$/.test(b.link)) p.root = { ...r, name: 'root', root: true, state: 'project' }; else p.repos = [r];
-    }
+    if (b.link) demoLinkFolder(b.name, null, b.link);
   } else if (method === 'POST' && (m = /^\/api\/projects\/([^/]+)\/repos(\/bulk)?$/.exec(path))) {
     const project = decodeURIComponent(m[1]);
     demoMakeRepo(project, '');
@@ -279,7 +274,7 @@ function demoMake(method, path, body) {
     else {
       const name = b.name || demoRepoName(b.link || b.url);
       demoMakeRepo(project, name);
-      if (b.link) Object.assign(demoMade.projects.find((p) => p.name === project).repos.find((r) => r.name === name), { linked: true, target: b.link });
+      if (b.link) demoLinkFolder(project, name, b.link);
     }
   }
 }
@@ -327,11 +322,9 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
-  if (method === 'POST' && path === '/api/preflight/folder') {
-    const value = String(body && body.path || '').trim().replace(/^~(?=\/)/, '/home/ccboard');
-    if (!value.startsWith('/')) return { ok: false, error: 'Give an absolute folder path.' };
-    const multi = /\/tools\/?$/.test(value);
-    return { ok: true, path: value, git: !multi, branch: multi ? null : 'main', remote: multi ? null : 'github.com/demo/mailgate', repos: multi ? ['mailgate', 'scripts'] : [], suggested_name: demoRepoName(value) };
+  if (method === 'POST' && (path === '/api/preflight/folder' || body?.link)) {
+    await Lazy.load('launcher');
+    if (path === '/api/preflight/folder') return demoFolderPreflight(body);
   }
   if (/^\/api\/bare(\/|$)/.test(path.split('?')[0])) {
     if (typeof Lazy !== 'undefined') await Lazy.load('demobare');
