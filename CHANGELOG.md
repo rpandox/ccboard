@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.114 - 2026-10-26
+
+### Added
+- Runtime profiles (P1): set `CCBOARD_POOLS=1` to run bound Claude and Codex accounts side by side with private logins and shared conversation history. Saved logins hand over explicitly into profiles, Settings lists the pool accounts, and the legacy switcher waits while a profile session is running. Each bound process records its account and updates the credential fingerprint when it ends. Release returns credentials to the legacy slot for rollback; it serializes with launches and names active sessions when blocked. Codex profiles require their own one-time hook review under the default trust setting.
+
+Upgrade: rerun `./install.sh` to remember `CCBOARD_POOLS` in the settings file. It defaults off; release handed-over accounts in Settings before turning it off.
+
 ## v0.5.111 - 2026-10-19
 
 ### Added

@@ -867,6 +867,12 @@ class ClaudeAgent(Agent):
         return self._opt_args(self._validate(raw, interactive=interactive, tasks_or_headless=tasks_or_headless)[0])
 
     def launch_plan(self, req: LaunchReq) -> LaunchPlan:
+        if req.account_id is not None:
+            from .. import profiles
+            profiles.require_enabled()
+            profiles.profile_dir("claude", req.account_id)
+            if req.bypass or req.opts.get("devcontainer"):
+                raise projects.BadRequest("profiles require a local launch without bypass")
         if req.kind not in LAUNCH_KINDS:
             raise projects.BadRequest(f"launch kind must be one of {', '.join(LAUNCH_KINDS)}")
         full, clean, extra = self._validate(req.opts, interactive=True, tasks_or_headless=bool(req.task))
@@ -943,6 +949,8 @@ class ClaudeAgent(Agent):
             # devcontainer CLI: build/start the container, then run claude inside it (its own ~/.claude; log in once there)
             cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", cwd]) + " && "
                         + shlex.join(["devcontainer", "exec", "--workspace-folder", cwd, "--"]) + " " + cmd_line)
+        if req.account_id is not None:
+            cmd_line = profiles.wrap_command(cmd_line, "claude", req.account_id, prepare=False)
         return LaunchPlan(argv=argv, cmd_line=cmd_line, agent_session_id=agent_sid, cwd=cwd, opts_clean=clean, worktree=worktree)
 
     @staticmethod

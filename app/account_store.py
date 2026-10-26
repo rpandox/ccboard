@@ -35,6 +35,8 @@ the credentials file has not changed since the switch). The credentials, which a
 """
 from __future__ import annotations
 
+from .handover import check_slot, owner, HandoverError
+
 import contextlib
 import hashlib
 import json
@@ -244,6 +246,7 @@ def _read_stable(path: Path) -> tuple[bytes, list] | None:
 def _write_atomic(dest: Path, data: bytes, mode: int = 0o600, *, still=None) -> None:
     """Replace `dest` with `data` (platform.secure_write: a private temp file in the same directory, fsync, atomic replace). `still`, when
     given, is asked just before the replace and must say the destination is as it was (else _Changed and nothing is replaced)."""
+    check_slot(dest.parent)
     plat.secure_write(dest, data, mode, still=still)
 
 
@@ -282,6 +285,7 @@ class FileCredentialStore(CredentialStore):
 
 def _store_creds(slot: Path, data: bytes) -> None:
     """Put `data` in the slot as its credentials; the generation it replaces (when different) becomes `.prev`."""
+    check_slot(slot)
     dest, prev = slot / CREDS, slot / PREV
     old = _read_plain(dest)
     if old is not None and old != data:
@@ -303,6 +307,7 @@ def _snapshot(slot: Path) -> dict[str, bytes | None]:
 
 def _restore(slot: Path, snap: dict[str, bytes | None]) -> None:
     """Put a slot back as _snapshot saw it (best effort: one file failing does not stop the others)."""
+    check_slot(slot)
     for n, data in snap.items():
         try:
             if data is None:
@@ -362,6 +367,7 @@ def _put_oauth(path: Path, oa, *, create: bool = False):
     """Set the one key `oauthAccount` of the state file `path` to `oa` (`_MISSING` removes it), every other key and the file's mode as
     they are (0600 for a file created here). Read-modify-write: retried while the file does not parse and while Claude rewrites it
     between our read and our replace. Never writes a file it could not parse. Returns what _put_oauth must be given to undo it."""
+    check_slot(path.parent)
     for i in range(STATE_RETRIES):
         try:
             before = os.stat(path)
@@ -508,6 +514,7 @@ def _drop_saved(db, key: str) -> None:
 def _save_live(db, key: str, now) -> list | None:
     """The work of save_live. Returns the stamp of the live credentials file that was copied, None when nothing was saved (the identity
     does not name `key`, no credentials, or the identity changed while copying: then the slot is put back as it was)."""
+    check_slot(slot_dir(key))
     live = _live_creds()
     _wait_settled(live)
     if not _names(db, key):
@@ -542,6 +549,7 @@ def save_live(db, key: str, *, now=None) -> bool:
     oauthAccount from the live state file. The live identity must name `key` before AND after the copy, else the copy is undone and
     False is returned; a credentials file younger than SETTLE is waited for first. False too for anything else that stops the save
     (no credentials, a file that kept changing, a state file that does not parse): the slot is then as it was."""
+    check_slot(slot_dir(key))
     _require()
     with _lock:
         try:
@@ -646,6 +654,9 @@ def switch(db, key: str, *, now=None) -> dict:
     """Make `key` the live login. UnknownAccount (no such account), NoSavedLogin (nothing saved for it), Busy (a login from Settings
     is in flight), SwitchRefused (the current login could not be saved first, or the switch could not be applied: nothing is changed
     then, or the previous login is put back). Switching to the account that is live is a no-op ({"already": True})."""
+    from . import profiles
+    check_slot(slot_dir(key))
+    profiles.guard_switch(db)
     _require()
     with _lock:
         if key not in accounts._load(db):
@@ -685,6 +696,7 @@ def switch(db, key: str, *, now=None) -> dict:
 def forget(db, key: str) -> dict:
     """Delete the key's saved login. The kv accounts record stays (usage history). UnknownAccount for an account the board never saw,
     Busy for the live account (switch to another one first). Returns {"ok": True, "forgotten": whether there was a slot}."""
+    check_slot(slot_dir(key))
     _require()
     with _lock:
         if key not in accounts._load(db):
@@ -711,12 +723,21 @@ def _set_result(result: dict | None, at: float) -> None:
         _result, _result_at = result, at
 
 
+def check_login_owner(db, email):
+    if email:
+        for key, rec in accounts._load(db).items():
+            if str(rec.get("email") or "").lower() == str(email).strip().lower():
+                check_slot(slot_dir(key))
+
+
 def start_login(db, email: str | None = None, *, restart: bool = False) -> None:
     """Start `claude auth login` for a NEW account in the internal tmux session, with an empty `.pending` as its config dir (the live
     login is not touched). One at a time: Busy while any login session is running, unless `restart`. ValueError for a bad email."""
+    check_login_owner(db, email)
     _require()
     email = claude_auth.clean_email(email)
     with _lock:
+        check_login_owner(db, email)
         if not restart and _login_running():
             raise Busy("a login is already running")
         pend = pending_dir()
@@ -759,10 +780,10 @@ def _decide(result: dict) -> dict:
     return result
 
 
-def _fail(pend: Path, t: float) -> dict:
+def _fail(pend: Path, t: float, error: str = ERR_DID_NOT_COMPLETE) -> dict:
     _kill_login_session()
     shutil.rmtree(pend, ignore_errors=True)
-    return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
+    return _decide({"ok": False, "error": error, "at": iso(t)})
 
 
 def _complete(db, pend: Path, ident: dict, t: float, now, asked: str | None = None) -> dict | None:
@@ -773,9 +794,12 @@ def _complete(db, pend: Path, ident: dict, t: float, now, asked: str | None = No
     the result says `replaced`. When the live account IS this account (its login is the dead one) the fresh login goes live at once, and
     the live bytes it replaces are kept in the slot's `.prev` rather than first saved over the fresh slot. `asked` is the email the login
     was started for: when the person signed in as somebody else the result says `different_account` (that account got a row of its own)."""
+    key = accounts._key_for(accounts._load(db), ident)
+    check_slot(slot_dir(key))
     key = accounts.remember(db, {**ident, "config_dir": None}, now)
     _kill_login_session()                                        # nothing writes into .pending any more
     slot = _slot_ready(key)
+    check_slot(slot)
     snap = _snapshot(slot)
     replaced = has_saved(key)
     try:
@@ -839,7 +863,10 @@ def finalize(db, now=None) -> dict | None:
         if have_creds and t - cst.st_mtime >= PENDING_MIN_AGE:
             ident = accounts.read_identity(config_dir=pend, auth=False, force=True)
             if ident:
-                return _complete(db, pend, ident, t, now, asked)
+                try:
+                    return _complete(db, pend, ident, t, now, asked)
+                except HandoverError as e:
+                    return _fail(pend, t, f"this login belongs to pool account {e.account_id}; release it first")
         if started is None:
             with contextlib.suppress(OSError):
                 started = pend.stat().st_mtime

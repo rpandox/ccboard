@@ -43,6 +43,8 @@ one's, and nothing in the file says which), and are saved into the current accou
 """
 from __future__ import annotations
 
+from .handover import check_slot, owner, HandoverError
+
 import contextlib
 import hashlib
 import json
@@ -290,6 +292,7 @@ def _slot_ready(key: str) -> Path:
 
 def _store_auth(slot: Path, data: bytes) -> None:
     """Put `data` in the slot as its login; the generation it replaces (when different) becomes `.prev`."""
+    check_slot(slot)
     dest, prev = slot / AUTH, slot / PREV
     old = _read_plain(dest)
     if old is not None and old != data:
@@ -402,7 +405,8 @@ def _put_record(db, key: str, **fields) -> dict:
         accts[key] = rec
         _save(db, accts)
         with contextlib.suppress(OSError, ValueError):
-            _write_meta(key, rec)
+            if not owner(slot_dir(key)):
+                _write_meta(key, rec)
         return rec
 
 
@@ -684,6 +688,10 @@ def switch(db, key: str, *, now=None) -> dict:
     in flight, or one of the board's own Codex sessions is open), SwitchRefused (the current login could not be saved first, or the
     switch could not be applied: the previous login is then still in place). Switching to the account that is live is a no-op
     ({"already": True}). Returns {ok, already, from, to, warnings}."""
+    from . import profiles
+    if SLOT_RE.fullmatch(str(key)):
+        check_slot(slot_dir(key))
+    profiles.guard_switch(db)
     _require()
     with _lock:
         _known(db, key)
@@ -734,9 +742,12 @@ def switch(db, key: str, *, now=None) -> dict:
 def forget(db, key: str) -> dict:
     """Delete the key's saved login. The kv record stays (saved: false). UnknownAccount for an account the board never saw, Busy for the live
     account (switch to another one first). Returns {"ok": True, "forgotten": whether there was a slot}."""
+    if SLOT_RE.fullmatch(str(key)):
+        check_slot(slot_dir(key))
     _require()
     with _lock:
         _known(db, key)
+        check_slot(slot_dir(key))
         live = None
         with contextlib.suppress(_Unstable):
             live = _live_bytes()
@@ -849,15 +860,20 @@ def start_login(db, label, *, restart: bool = False, replace_key: str | None = N
     see _replace) instead of making a second account. The account keeps its own name, `label` is not asked for then (UnknownAccount for a key
     the board never saw)."""
     global _watch_gen
+    if replace_key is not None and SLOT_RE.fullmatch(str(replace_key)):
+        check_slot(slot_dir(replace_key))
     _require()
     if replace_key is not None:
         _known(db, replace_key)
+        check_slot(slot_dir(replace_key))
         label = label_of(db, replace_key)
     else:
         label = clean_label(label)
     if not _agent().device_auth(fetch=True):
         raise Unsupported(REASON_UPDATE)
     with _lock:
+        if replace_key is not None:
+            check_slot(slot_dir(replace_key))
         if not restart and _login_running():
             raise Busy("a login is already running")
         pend = pending_dir()
@@ -908,10 +924,10 @@ def _decide(result: dict) -> dict:
     return result
 
 
-def _fail(pend: Path, t: float) -> dict:
+def _fail(pend: Path, t: float, error: str = ERR_DID_NOT_COMPLETE) -> dict:
     _kill_login_session()
     shutil.rmtree(pend, ignore_errors=True)
-    return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
+    return _decide({"ok": False, "error": error, "at": iso(t)})
 
 
 def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
@@ -920,6 +936,7 @@ def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
     dead one) the fresh login goes live at once, the live bytes it replaces kept in `.prev`, unless one of the board's own Codex sessions is
     open: a running Codex keeps its login and would write the dead one back, so the fresh one stays saved and the result says why
     ({"live": False, "why": ...}). Nobody logged in live: it goes live like a new account's would. None when it could not be saved yet."""
+    check_slot(slot_dir(key))
     _kill_login_session()                                        # nothing writes into .pending any more
     try:
         was_current = current(db) == key or (live is not None and _slot_bytes(key) == live[0])
@@ -1024,7 +1041,10 @@ def finalize(db, now=None) -> dict | None:
             ast = None
         have = bool(ast and ast.st_size > 0)
         if have and t - ast.st_mtime >= PENDING_MIN_AGE:
-            res = _complete(db, pend, label, t, now, replace_key)
+            try:
+                res = _complete(db, pend, label, t, now, replace_key)
+            except HandoverError as e:
+                return _fail(pend, t, f"this login belongs to pool account {e.account_id}; release it first")
             if res is not None:
                 return res
         if started is None:
@@ -1189,7 +1209,7 @@ def _learn(db, now, *, force: bool = False) -> None:
     global _learn_at
     cur = current(db)
     rec = _load(db).get(cur) if cur else None
-    if not rec or (rec.get("account_id") and rec.get("plan")):
+    if not rec or rec.get("pool_account") or owner(slot_dir(cur)) or (rec.get("account_id") and rec.get("plan")):
         return
     t = _wall()
     if not force and t - _learn_at < (LEARN_EVERY if not rec.get("account_id") else LEARN_EVERY * 10):
@@ -1222,7 +1242,8 @@ def _learn(db, now, *, force: bool = False) -> None:
         fields["plan"] = plan
     if fields:
         _put_record(db, cur, **fields)
-    other = [k for k, r in _load(db).items() if k != cur and r.get("account_id") == aid]
+    other = [k for k, r in _load(db).items() if k != cur and r.get("account_id") == aid
+             and not r.get("pool_account") and not owner(slot_dir(k))]
     if other:
         _merge(db, cur, other[0], now)
 
@@ -1231,6 +1252,8 @@ def _merge(db, a: str, b: str, now) -> None:
     """Two keys with the same account id are one account: the older key stays (with the newer one's label when it has one), the newer slot
     goes. The survivor's slot takes the newer slot's login unless the survivor is the one that is live; a live newer account hands its
     place to the survivor (the file is not touched: same bytes)."""
+    for key in (a, b):
+        check_slot(slot_dir(key))
     accts = _load(db)
     keep, drop = sorted((a, b), key=lambda k: (str(accts[k].get("added_at") or ""), k))
     kr, dr = accts[keep], accts[drop]
@@ -1457,6 +1480,7 @@ def _row(db, rec: dict, cur, sup: bool | None = None) -> dict:
     sup = supported() if sup is None else sup
     saved = bool(sup and has_saved(key))
     return {"key": key, "label": rec.get("label"), "account_id": rec.get("account_id"), "plan": rec.get("plan"),
+            "pool_account": rec.get("pool_account"),
             "saved": saved, "saved_at": _saved_at(key, rec) if saved else None, "current": key == cur, "added_at": rec.get("added_at"),
             "last_seen": rec.get("last_seen")}
 

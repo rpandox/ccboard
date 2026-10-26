@@ -203,6 +203,8 @@ def continue_parked(db, now: float | None = None, *, send=None, clients=None, al
         if db.kv_get(key) is not None:
             continue
         row = rows.get(name)
+        if settings.pools and row is not None and db.kv_get(f"runtime_session:{row['id']}"):
+            continue
         if row is None or not _still_parked(row, ep):
             continue                                            # nothing is remembered: the reset tick decides for itself
         try:
