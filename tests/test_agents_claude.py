@@ -463,10 +463,12 @@ def test_forbidden_extra_tiers(ag):
     assert ag.forbidden_extra(["bypassPermissions", "--settings"], interactive=True, task=True) == "--settings"
     assert ag.forbidden_extra(["--permission-mode", "plan"], interactive=True, task=True) is None
     # headless: scheduler.FORBIDDEN_ARG_PARTS, any spelling
-    for bad in ("--permission-mode", "--PERMISSION-MODE=auto", "--allow-dangerously-skip-permissions", "dangerously", "BypassPermissions",
+    for bad in ("--permission-mode", "--PERMISSION-MODE=auto", "--allow-dangerously-skip-permissions", "BypassPermissions",
                 "--settings", "--setting-sources", "--permission-prompt-tool"):
         assert ag.forbidden_extra(["--model", "opus", bad], interactive=False) == bad, bad
     assert ag.forbidden_extra(["--model", "opus", "--add-dir", "/tmp"], interactive=False) is None
+    for text in ('dangerously', 'avoid dangerously deleting files', 'avoid bypassPermissions today'):
+        assert ag.forbidden_extra(['--append-system-prompt', text], interactive=False) is None
     assert ag.forbidden_extra([], interactive=False) is None
 
 

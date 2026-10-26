@@ -1885,7 +1885,7 @@ function lxCx(v) {
 function launcherPayload(v, ctx) {
   const c = ctx || {};
   const has = typeof c.has === 'function' ? c.has : () => true;
-  const body = {};
+  const body = { ...launcherPoolFields(v) };
   const put = (k, x) => { if (x !== undefined && x !== null && x !== '' && x !== false && !(Array.isArray(x) && !x.length)) body[k] = x; };
   const t = (x) => String(x === undefined || x === null ? '' : x).trim();
   if (v.agent === 'shell') {
@@ -1937,7 +1937,7 @@ function launcherPayload(v, ctx) {
 /* The launch choices a task or a dispatch carries (POST /api/tasks, POST /api/tasks/{id}/dispatch: TaskIn / DispatchIn read the flat LaunchOpts): never a bypass, never a worktree flag
    (a task is always in its own worktree). */
 function launcherTaskOpts(v) {
-  const out = {};
+  const out = { ...launcherPoolFields(v) };
   const t = (x) => String(x === undefined || x === null ? '' : x).trim();
   const put = (k, x) => { if (x !== undefined && x !== null && x !== '' && x !== false && !(Array.isArray(x) && !x.length)) out[k] = x; };
   put('model', lxModelOf(v));
@@ -1979,6 +1979,7 @@ function lxNextName(r) {
 function lxDisable(node, on, why) {
   if (!node) return;
   node.disabled = !!on;
+  node.setAttribute('aria-disabled', String(!!on));
   if (on) node.setAttribute('disabled', ''); else node.removeAttribute('disabled');
   if (why !== undefined) { if (on && why) node.setAttribute('title', why); else if (!on) node.removeAttribute('title'); }
 }
@@ -2022,6 +2023,161 @@ const LX_LAUNCH = {
   codex: [['new', 'New'], ['resume', 'Resume'], ['continue', 'Last'], ['fork', 'Fork']],
 };
 const LX_TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
+
+/* Optional pool demo, fetched only by a lazy form with ?demo=1&pools=1.
+   The ordinary demo state keeps pools:null. Mutations live only in this tab. */
+let launcherPoolsDemoData = null;
+async function launcherPoolsDemo(method, path, body = {}) {
+  if (!launcherPoolsDemoData) launcherPoolsDemoData = fetch('/static/demo/pools.json').then((r) => { if (!r.ok) throw new Error('Could not load pool demo'); return r.json(); });
+  const d = await launcherPoolsDemoData;
+  const snapshot = () => ({ enabled: true, groups: d.groups, pools: d.pools.map(({ id, name, provider }) => ({ id, name, provider })) });
+  if (!d.overlay) {
+    d.overlay = true;
+    const original = demoMadeState;
+    demoMadeState = (st) => { const next = original(st); if (next && /[?&]pools=1(?:&|$)/.test(location.search)) next.pools = snapshot(); return next; };
+  }
+  const publish = () => { state.pools = snapshot(); };
+  publish();
+  if (path === '/api/pools/accounts') return d.accounts;
+  if (path === '/api/launch/dry-run') {
+    if (!body.account_mode || body.account_mode === 'legacy') return { will_start_as: null, refused_reason: null, candidates: [] };
+    const pool = d.pools.find((p) => p.id === body.pool_id);
+    const ids = body.account_mode === 'pool' ? (pool?.members || []).map((m) => m.account_id) : [body.pinned_account_id];
+    const candidates = d.accounts.filter((a) => ids.includes(a.id)).map((a) => {
+      const g = d.groups.find((g) => g.accounts.includes(a.id));
+      const why = body.node && body.node !== 'local' ? 'pool accounts run on this node until account grants (P5)' :
+        g.window_5h_pct >= (pool?.soft_pct_5h || 70) || g.weekly_pct >= (pool?.soft_pct_weekly || 80) ? 'usage at or above soft thresholds' : '';
+      return { account_id: a.id, label: a.label, pct_5h: g.window_5h_pct, pct_weekly: g.weekly_pct, resets: { '5h': g.window_5h_reset_at, weekly: g.weekly_reset_at }, eligible: !why, why_not: why };
+    });
+    const winner = candidates.filter((c) => c.eligible).sort((a, b) => a.pct_5h - b.pct_5h)[0];
+    return { candidates, will_start_as: winner ? { account_id: winner.account_id, account_label: winner.label, provider: body.agent, node: 'local', reason: 'Lowest usage with a free slot' } : null,
+      refused_reason: winner ? null : candidates[0]?.why_not || 'No eligible members' };
+  }
+  if (path === '/api/pools') {
+    if (method === 'POST') d.pools.push({ ...body, soft_pct_5h: 70, soft_pct_weekly: 80, hard_pct_5h: 85, hard_pct_weekly: 92, concurrency: 2, members: [] });
+    publish(); return d.pools;
+  }
+  const parts = path.split('/'), id = decodeURIComponent(parts[3]), pool = d.pools.find((p) => p.id === id);
+  if (!pool) throw new Error('No such pool');
+  if (parts[4] === 'members') {
+    const account_id = decodeURIComponent(parts[5]);
+    pool.members = pool.members.filter((m) => m.account_id !== account_id);
+    if (method === 'PUT') pool.members.push({ account_id });
+  } else if (method === 'PATCH') Object.assign(pool, body);
+  else if (method === 'DELETE') d.pools = d.pools.filter((p) => p.id !== id);
+  publish(); return {};
+}
+
+/* Account assignment UI lives in the lazy launcher bundle. Each form owns its request
+   sequence; invalidation happens on edit, before the debounce fires. */
+function launcherPoolFields(v) {
+  if (v.account_mode !== 'pool' && v.account_mode !== 'pinned') return {};
+  return { account_mode: v.account_mode,
+    ...(v.account_mode === 'pool' ? { pool_id: v.pool_id } : { pinned_account_id: v.pinned_account_id }),
+    on_limit_policy: v.on_limit_policy || (v.account_mode === 'pool' ? 'auto' : 'wait') };
+}
+function launcherPoolReset(value) {
+  const ms = value ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? clockAt(ms / 1000, true) : 'unknown';
+}
+function launcherPoolsKit(hooks) {
+  const demo = /[?&]pools=1(?:&|$)/.test(location.search) && typeof demoOn === 'function' && demoOn();
+  if (!state || (!state.pools && !demo)) return null;
+  const selection = hooks.selection || { account_mode: 'legacy' };
+  let accounts = (state.pools?.groups || []).flatMap((g) => (g.accounts || []).map((id) => ({ id, provider: g.provider, label: (g.account_labels || {})[id] || id })));
+  let pools = state.pools?.pools || [];
+  let seq = 0, timer = null, key = '', reason = '', pending = false, disposed = false, loaded = false, paused = false;
+  const choice = el('select', { 'aria-label': 'Account' });
+  const policy = selectEl([['auto', 'auto'], ['ask', 'ask'], ['wait', 'wait']], 'auto');
+  policy.setAttribute('aria-label', 'On limit');
+  const note = el('p', { class: 'dim lx-hint', role: 'status' });
+  const limit = field('On limit', policy, 'Stored now. Limit handling starts in P4.');
+  const line = el('p', { class: 'lx-pool-line', role: 'status', 'aria-live': 'polite' });
+  const candidates = el('div', { class: 'lx-pool-candidates hidden' });
+  const summary = el('summary', { text: 'Account candidates', 'aria-expanded': 'false' });
+  const details = el('details', { class: 'lx-pool-details hidden' }, summary, candidates);
+  details.addEventListener('toggle', () => {
+    const open = details.hasAttribute('open');
+    summary.setAttribute('aria-expanded', String(open));
+    candidates.classList.toggle('hidden', !open);
+  });
+  const controls = el('div', { class: 'lx-pool-controls' }, field('Account', choice), limit);
+  const node = el('div', { class: 'lx-pools' }, controls, note);
+  const result = el('div', { class: 'lx-pool-result' }, line, details);
+  const refusal = el('p', { class: 'bad lx-pool-refusal hidden', role: 'status' });
+  const read = () => launcherPoolFields(selection);
+  const pct = (v) => typeof v === 'number' ? `${Math.round(v)}%` : 'unknown';
+
+  const blocked = () => reason || (pending && selection.account_mode !== 'legacy' ? 'Checking the account…' : '');
+  const paintReason = () => { refusal.textContent = blocked(); refusal.classList.toggle('hidden', !blocked()); line.classList.toggle('hidden', !!blocked() || !line.textContent); result.classList.toggle('hidden', !line.textContent && details.classList.contains('hidden')); };
+  const sync = () => {
+    if (disposed || paused || (hooks.current && !hooks.current())) return;
+    const agent = hooks.agent();
+    const aa = accounts.filter((a) => a.provider === agent), pp = pools.filter((p) => p.provider === agent);
+    const options = [['legacy', 'Default login'], ...aa.map((a) => ['pinned:' + a.id, 'Pinned: ' + a.label]), ...pp.map((p) => ['pool:' + p.id, 'Pool: ' + p.name])];
+    let value = selection.account_mode === 'pool' ? 'pool:' + selection.pool_id : selection.account_mode === 'pinned' ? 'pinned:' + selection.pinned_account_id : 'legacy';
+    if (!options.some(([v]) => v === value) && (loaded || (selection.provider && selection.provider !== agent))) {
+      selection.account_mode = 'legacy'; value = 'legacy';
+      note.textContent = 'The selected account or pool is unavailable for this agent. Using Default login.';
+    }
+    if (!loaded && value !== 'legacy' && !options.some(([v]) => v === value)) options.push([value, 'Loading selected account…']);
+    const optionKey = JSON.stringify(options);
+    if (choice._options !== optionKey) { choice.textContent = ''; for (const [value, text] of options) choice.append(el('option', { value, text })); choice._options = optionKey; }
+    choice.value = value;
+    const active = hooks.active ? hooks.active() : true;
+    controls.classList.toggle('hidden', !active || (!aa.length && !pp.length));
+    node.classList.toggle('hidden', !active || (!aa.length && !pp.length && !note.textContent));
+    limit.classList.toggle('hidden', value === 'legacy');
+    policy.value = selection.on_limit_policy || (selection.account_mode === 'pool' ? 'auto' : 'wait');
+    const body = { ...hooks.body(), ...read() };
+    const next = JSON.stringify([active, body]);
+    if (next === key) return;
+    key = next; const request = ++seq;
+    clearTimeout(timer); reason = ''; pending = active && agent !== 'shell';
+    line.textContent = '';
+    candidates.textContent = ''; details.classList.add('hidden');
+    paintReason();
+    if (!pending) return;
+    timer = setTimeout(async () => {
+      try {
+        const r = await (typeof demoOn === 'function' && demoOn() ? launcherPoolsDemo('POST', '/api/launch/dry-run', body) : api('POST', '/api/launch/dry-run', body));
+        if (disposed || request !== seq) return;
+        if (!r || !Array.isArray(r.candidates) || !('refused_reason' in r)) throw new Error('invalid dry-run');
+        pending = false; reason = r.refused_reason || '';
+        const w = r.will_start_as;
+        const selected = w && r.candidates.find((c) => c.account_id === w.account_id);
+        const used = selected && typeof selected.pct_5h === 'number' && typeof selected.pct_weekly === 'number' ? pct(Math.max(selected.pct_5h, selected.pct_weekly)) + ' used' : 'usage unknown';
+        const resets = Object.values(selected?.resets || {}).filter(Boolean).map((v) => new Date(v)).filter((d) => Number.isFinite(d.getTime())).sort((a, b) => a - b);
+        const nextReset = launcherPoolReset(resets[0]?.toISOString());
+        const usage = selected ? ` (${used}, resets ${nextReset})` : '';
+        line.textContent = !reason && w ? `Will start as ${w.account_label}${usage}` : '';
+        line.title = w ? w.reason || '' : '';
+        candidates.textContent = '';
+        for (const c of r.candidates) candidates.append(el('p', { class: 'lx-pool-candidate', text: `${c.label}: 5 h ${pct(c.pct_5h)} (resets ${launcherPoolReset(c.resets?.['5h'])}); weekly ${pct(c.pct_weekly)} (resets ${launcherPoolReset(c.resets?.weekly)}). ${c.eligible ? 'Eligible' : c.why_not || 'Not eligible'}` }));
+        details.classList.toggle('hidden', !r.candidates.length);
+      } catch (_) {
+        if (disposed || request !== seq) return;
+        pending = false;
+        reason = selection.account_mode === 'legacy' ? '' : 'Could not check the account';
+        line.textContent = reason ? '' : 'Could not check the account';
+      }
+      paintReason(); hooks.changed();
+    }, 250);
+  };
+  choice.addEventListener('change', () => {
+    const [mode, id] = choice.value.split(':');
+    Object.assign(selection, { account_mode: mode, provider: hooks.agent(), pool_id: mode === 'pool' ? id : undefined, pinned_account_id: mode === 'pinned' ? id : undefined, on_limit_policy: mode === 'pool' ? 'auto' : 'wait' });
+    note.textContent = ''; sync(); hooks.changed();
+  });
+  policy.addEventListener('change', () => { selection.on_limit_policy = policy.value; sync(); hooks.changed(); });
+  const fetchList = (path) => typeof demoOn === 'function' && demoOn() ? launcherPoolsDemo('GET', path) : api('GET', path);
+  Promise.all([fetchList('/api/pools/accounts'), fetchList('/api/pools')]).then(([aa, pp]) => {
+    if (disposed) return;
+    if (!Array.isArray(aa) || !Array.isArray(pp)) throw new Error('invalid pool list');
+    accounts = aa; pools = pp; loaded = true; sync(); hooks.changed();
+  }).catch(() => { if (!disposed) note.textContent = 'Could not load all accounts and pools.'; });
+  return { node, result, refusal, selection, read, sync, blocked, pause: (on) => { paused = on; ++seq; clearTimeout(timer); key = ''; if (!on) sync(); }, dispose: () => { disposed = true; ++seq; clearTimeout(timer); } };
+}
 
 function launcherForm(o) {
   const opt = o || {};
@@ -2076,7 +2232,8 @@ function launcherForm(o) {
   const first = [opt.agent, mode === 'dispatch' ? (preset.agent || task.agent) : '', launcherAgentPref(p.name, r.name), 'claude', 'codex', 'shell'].find((a) => agentsHere.includes(a) && lxInstalled(a)) || 'claude';
   const V = { agent: first, claude: fromPrefs('claude'), codex: fromPrefs('codex'), shell: { devcontainer: false },
     common: { launch: 'new', name: carry.name && session ? carry.name : '', resume_id: '', from_pr: '', prompt: String(mode === 'dispatch' ? (task.prompt || '') : (carry.prompt || '')), add_dirs: session && first === 'claude' ? sib.map((x) => x.id) : [] } };         // a session starts with its sibling repos checked (as the old form did); a task's directories are a choice
-  const view = () => ({ ...V.common, ...V[V.agent], agent: V.agent });
+  let poolKit = null;
+  const view = () => ({ ...V.common, ...V[V.agent], agent: V.agent, ...(poolKit ? poolKit.read() : {}) });
   const schema = () => launcherSchema(V.agent);
   const ctx = () => ({ mode, caps: launcherSchema('codex').capabilities, cwd: r.path || '', nextName: lxNextName(r), dirs: dirPath, slug: (mode === 'dispatch' && task.slug) || taskTitleFrom(V.common.prompt).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || '<task>',
     devcontainer: !!V.shell.devcontainer, has: (k) => lxHas(V.agent, k), cwd_rel: opt.cwd_rel || '', ultraNative: ultraNative(), subagentDefault: subDefault() });
@@ -2602,7 +2759,17 @@ function launcherForm(o) {
   const goIcon = el('span', { class: 'tf-go-ic' });
   const go = el('button', { class: 'primary', type: 'submit', title: 'Enter in the prompt starts it' }, goIcon, goText);
   const cancel = el('button', { type: 'button', text: 'Cancel', onclick: () => { if (typeof opt.onCancel === 'function') opt.onCancel(); else { ui.openForm = null; closeSheet(); } } });
-  const foot = el('div', { class: 'submit lx-foot' }, acctRow, go, cancel);
+  poolKit = launcherPoolsKit({ agent: () => V.agent, active: () => mode !== 'dispatch' || D.where === 'lane', changed: () => update(),
+    body: () => {
+      const v = view(), place = { project: p.name, repo: r.name };
+      if (session) return { ...place, ...launcherPayload(v, ctx()) };
+      const text = { agent: v.agent, title: T.title || taskTitleFrom(V.common.prompt), prompt: V.common.prompt };
+      if (when() === 'schedule') return { ...place, ...text, ...launcherPoolFields(v), permission_mode: T.jobMode,
+        ...(v.agent === 'codex' ? { model: lxModelOf(v), reasoning_effort: v.reasoning } : { args: C.args, ...jx.body() }) };
+      return { ...place, ...launcherTaskOpts(v), ...text, when: when(), add_dirs: V.common.add_dirs };
+    } });
+  jx.tools.addEventListener('input', () => update());
+  const foot = el('div', { class: 'submit lx-foot' }, acctRow, poolKit ? poolKit.refusal : null, go, cancel);
 
   /* ---- what shows ---- */
   function visible() {
@@ -2644,6 +2811,7 @@ function launcherForm(o) {
 
   const fallbackOver = (v, w) => lxFallbackOver(v) && lxHas('claude', 'fallback_model') && w !== 'schedule' && !(mode === 'dispatch' && D.where === 'session');     // only where the field is shown
   update = () => {
+    if (poolKit) poolKit.sync();
     const v = view();
     cmdText = truth || commandPreview(v, ctx());
     paintCmd();
@@ -2663,10 +2831,11 @@ function launcherForm(o) {
     else goText.textContent = busy ? 'Starting…' : (D.where === 'lane' ? `Start in ${AGENT_NAME[v.agent] || 'a new session'}` : 'Send to the session');
     goIcon.textContent = '';
     goIcon.append(ic(mode === 'task' ? LX_TASK_ICON[w] : 'play'));
-    lxDisable(go, busy || gated || fbOver || (mode === 'dispatch' && D.where === 'session' && !ready.length));
+    lxDisable(go, busy || gated || fbOver || (poolKit && !!poolKit.blocked()) || (mode === 'dispatch' && D.where === 'session' && !ready.length));
     go.setAttribute('title', fbOver ? LX_FALLBACK_MSG : issueHeld ? 'Tick I have read it, under the issue, to go on' : gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
     if (mode !== 'session') autoChk.input.checked = autoValue();
     paintAccount();
+    if (poolKit && view().account_mode) hide(acctRow, true);
   };
 
   const paintAgent = () => {
@@ -2837,7 +3006,7 @@ function launcherForm(o) {
     const name = (T.schedName.trim() || title).slice(0, 80);
     const c = T.cron.trim();
     const codex = v.agent === 'codex';
-    const body = { name, prompt, permission_mode: T.jobMode, run_now: !c };
+    const body = { name, prompt, permission_mode: T.jobMode, run_now: !c, ...launcherPoolFields(v) };
     if (c) body.cron = c;
     if (codex) {                                                       // Codex: its model and reasoning are the job's options; it has no turn or budget limit
       body.agent = 'codex';
@@ -2875,6 +3044,7 @@ function launcherForm(o) {
 
   const submit = async () => {
     if (busy) return;
+    if (poolKit) { poolKit.sync(); if (poolKit.blocked()) return; }
     wipe();
     V.common.prompt = promptEl.value;
     const v = view();
@@ -2931,6 +3101,7 @@ function launcherForm(o) {
     mode === 'dispatch' ? sessField : null,
     trustWarning,                                                                               // up top: on a phone the foot's Start sits far below the fields (#247)
     agentField,
+    poolKit ? [poolKit.node, poolKit.result] : null,
     presetField,
     launchField, resumeField, prField,
     nameField,
@@ -2956,7 +3127,7 @@ function launcherForm(o) {
     paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems(); paintSubagentOptions();
     paintModel(); reasoningFix(); paint();
   };
-  const ctl = { form, V, view, schema, refreshSchema, paint, submit, go, status, acct: () => acct, memHost,
+  const ctl = { form, V, view, schema, poolKit, refreshSchema, paint, submit, go, status, acct: () => acct, memHost,
     preview: () => cmdText, payload: () => launcherPayload(view(), ctx()), T, D, busy: () => busy };
   form._launcher = ctl;
   return ctl;
@@ -3019,7 +3190,7 @@ function openLauncher(o) {
   const holder = el('div', { class: 'sheet-form' }, kit ? kit.pick : null, ctl ? ctl.form : null, kit ? kit.host : null);
   ui.openForm = 'sheet';
   const sheet = openSheet({ title: kit && kit.current() ? kit.title() : title, body: holder, back: opt.back && typeof opt.back.onClick === 'function' ? opt.back : null,
-    onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = null; } });
+    onClose: () => { if (ctl && ctl.poolKit) ctl.poolKit.dispose(); if (kit && kit.dispose) kit.dispose(); if (ui.openForm === 'sheet') ui.openForm = null; if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = null; } });
   const out = ctl || kit.ctl;
   if (ctl) ctl.sheet = sheet;
   if (kit) kit.setTitle = (text) => {                                    // the sheet's heading follows the node chosen

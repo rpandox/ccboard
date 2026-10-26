@@ -176,7 +176,8 @@ def test_the_scheduler_mirror_agrees_with_the_codex_adapter():
     # claude's rules are untouched by the codex ones: -c and --profile are fine for Claude's args, --permission-mode is not
     assert scheduler.forbidden_arg(["-c"], "claude") is None and scheduler.forbidden_arg(["--profile"], "claude") is None
     assert scheduler.forbidden_arg(["--permission-mode", "plan"], "claude") == "--permission-mode"
-    assert scheduler.forbidden_arg(["--model", "opus", "--DangerouslySkip"], "claude") == "--DangerouslySkip"
+    assert scheduler.forbidden_arg(["--model", "opus", "--DangerouslySkip"], "claude") is None, "only actual bypass tokens are refused"
+    assert scheduler.forbidden_arg(["--model", "opus", "--Dangerously-Skip-Permissions"], "claude") == "--Dangerously-Skip-Permissions"
     assert scheduler.forbidden_arg(["--yolo"], "gemini") is None, "an agent with no list of its own is read with claude's"
 
 

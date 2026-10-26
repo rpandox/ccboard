@@ -276,6 +276,10 @@ def guard_final(fields: dict) -> list[str]:
     """The options a launch ends up with, checked by an ALLOW list on top of guard_launch: only the keys of FINAL_KEYS may be set (a copy; `manual`, the adapter's word
     for default, is read as default), `opts` holds a sandbox and an approval and nothing else, and each string has the rule of its kind (check_field). Empty values are not options."""
     f = {k: v for k, v in fields.items() if v not in (None, "", [], {}, False)}
+    # Internal launch models include P3's default. It selects no account; raw
+    # peer bodies still reject every binding field through their allow lists.
+    if f.get('account_mode') == 'legacy':
+        f.pop('account_mode')
     if f.get("permission_mode") == "manual":
         f["permission_mode"] = "default"
     out = guard_launch(f)

@@ -4,7 +4,7 @@ For the owner enabling isolated Claude and Codex accounts on one node. In this p
 
 [Back to the documentation index](README.md)
 
-`CCBOARD_POOLS` is off by default. Set it to `1`, `true` or `on` and restart the board to enable account isolation on the box. With it off, launches and Settings behave as before; the database migration only creates two empty tables, `pool_account` and `runtime_attempt`.
+`CCBOARD_POOLS` is off by default. Set it to `1`, `true` or `on` and restart the board to enable account isolation on the box. With it off, launches and Settings behave as before; the additive database migrations create empty pool metadata tables and default legacy columns; they never migrate credentials at startup.
 
 Migration runs only when the owner chooses **Migrate saved logins** in Settings > Accounts (`POST /api/pools/migrate`). Startup never migrates. The live legacy login is skipped: switch the legacy login to another account first. Each other saved slot hands over its credential files as opaque bytes into `<data dir>/profiles/<provider>/<account_id>`. Each file is written atomically and fsynced before the slot file is removed. The slot retains only a marker naming its pool account. A rerun repairs interrupted moves and missing database rows; conflicting or missing credentials are reported per slot without guessing.
 
@@ -12,7 +12,7 @@ A handed-over slot cannot be switched to, overwritten, forgotten, merged, restor
 
 To roll back: **turn pools on, release each account, then turn pools off**. The two-step **Release** button calls `POST /api/pools/accounts/{id}/release`. Release and launch reserve the account under the same lock. Release is refused with 409 while that account has an open attempt; the response names its tmux sessions. If tmux liveness cannot be checked, Release and legacy switching return JSON 503 and leave the attempts open. It moves the profile's current credential files back to the original slot, removes the marker and account row, and leaves the profile directory without credentials.
 
-`GET /api/pools/accounts` lists id, provider, label, state and a credential fingerprint. Settings shows the same accounts above “Legacy: subscription accounts”. Supply an `account_id` from that list to a task, session or scheduled job request to bind its process. An unbound launch is unchanged. There is no account picker in the launcher yet. When the switch is off, these routes return 404 and account bindings are refused with 400.
+`GET /api/pools/accounts` lists id, provider, label, state and a credential fingerprint. Settings shows the same accounts above “Legacy: subscription accounts”. Supply an `account_id` from that list to a task, session or scheduled job request to bind its process. An unbound launch is unchanged. The launcher Account control also offers pinned accounts and pools (see Assignment below). When the switch is off, these routes return 404 and account bindings are refused with 400.
 
 Each profile has private settings and credentials, with mode 0700 on its directories. Claude profiles reuse ccboard's hook template. Their `projects` links point through `_shared/claude/projects` to the configured global Claude projects folder. Codex profiles install the same ccboard hooks as the global home and pin the file credential store; their `sessions` links point through `_shared/codex/sessions` to the configured Codex sessions folder. Codex shares `CODEX_SQLITE_HOME` and resumes only by thread UUID. Transcript readers keep using the same directories. The global transcript root must already exist; a launch refuses a missing root instead of creating global directories. Validation alone creates nothing.
 
@@ -29,7 +29,7 @@ The agent command scrubs inherited authentication and profile variables after th
 
 On macOS, Claude file-login profiles are refused with “the Mac Keychain adapter comes in P5”. A separately provisioned setup-token profile may keep its opaque token in `.setup-token` as a regular file owned by the user with mode 0600 and nonempty UTF-8 content; the process wrapper reads it into its own environment without putting it in a command or API response. All Claude profile paths are canonical absolute paths. Codex file profiles work independently of the Mac Keychain.
 
-This phase covers local processes only. Profile launches in a devcontainer are refused because the host's private paths are not mounted there. Ranking, rotation, drain, grants, vaults, account selection UI and multi-node bindings come later. The owner's two-login spike is still needed to verify provider behavior with real accounts.
+This phase covers local processes only. Profile launches in a devcontainer are refused because the host's private paths are not mounted there. Assignment and its UI are covered below; rotation, drain, grants, vaults and multi-node bindings come later. The owner's two-login spike is still needed to verify provider behavior with real accounts.
 
 
 ## Usage (P2)
@@ -57,3 +57,47 @@ Free local reads run every 60 seconds for a group with an open attempt, every fi
 `GET /api/pools/usage` returns groups with account ids, both windows and resets, age, source, confidence and nodes. `/api/state` always includes `pools`: null when off, otherwise `{enabled: true, groups: [...]}`. There is no pool account grant model in P2, so pool groups and their hashes/headroom are neither sent to nor accepted from peers. The hub shows only the node's own groups until P5. Nothing sums across groups or providers.
 
 With pools off, no collector starts, no usage rows are written and no active request runs. With pools on but no accounts, no collector starts either. Pool migration starts collection when it creates the first account.
+
+## Assignment (P3)
+
+The v0.5.116 release adds local account assignment, launcher controls and pool management in Settings. All of this remains behind `CCBOARD_POOLS`; `state.pools` stays null when off, and gains only a compact `pools: [{id, provider, name}]` list when on.
+
+Task, session and scheduled-job requests accept `account_mode`: `legacy` (the default, today's behavior), `pinned` with `pinned_account_id`, or `pool` with `pool_id`. P1's explicit `account_id` keeps its original behavior, without selection thresholds or concurrency caps; dry-run reports that binding as pinned. Pool launches pick an account once and reserve its runtime attempt before starting a process. The assignment explanation is stored on that attempt. A failed preparation or launch closes the reservation. Each reservation records its creation time (`started_at`) and owner (`reservation_owner`: task, session or run). Startup reconciliation and launch selection close reservations older than two minutes with no session binding, run or task reference as `reservation_abandoned`. Dry-run ignores the same abandoned reservations without writing. Selection and reservation share P1's account serialization with Release; the assignment lock covers only database selection and insertion, never process, tmux, or usage-probe I/O.
+
+Eligibility is checked in this order:
+
+1. The account and pool must match the requested provider.
+2. The account must be `ready`; `needs_login`, releasing and missing accounts cannot run.
+3. The target must be this node (`node: "local"`, or omitted). Other targets are refused with “pool accounts run on this node until account grants (P5)”. Profiles are local private directories; being paired with a node does not grant it an account. Peer launch bodies still refuse every account field.
+4. Both known usage windows must be below their soft thresholds. P2's `account_headroom` supplies the readings; stale or incomplete readings count as unknown, never as zero. Known percentages above soft still refuse even in a partially unknown reading.
+5. Open attempts on this account must be below its concurrency cap. Accounts sharing a quota group share usage, but have separate concurrency caps.
+6. A requested model must satisfy any explicit account `allowed_models` metadata. The repo has global model catalogs but no authoritative per-plan entitlements: absent account metadata, the reason says “model availability unknown (known restrictions only)”. No model is substituted.
+7. A subscription launch must use a subscription account. The additive `pool_account.billing_class` defaults to `subscription`; any other class is excluded. Neither this field nor `allowed_models` contains credential material or appears on the new public surfaces. They are internal metadata seams for future provisioners, not credentials inferred from profile files.
+
+Among known eligible accounts, ranking is lowest `max(5 h percentage, weekly percentage)`, then earliest next reset, then least recently assigned (`runtime_attempt.started_at`), then account id. Unknown accounts are considered only when no known account passes all eligibility checks; they rank by least recently assigned and id, and say “usage unknown”. Refusals name every candidate, both percentages, its exclusion reason, and reset times, with the earliest reset first. Times in explanations are UTC.
+
+Defaults live together in `app/config.py`: soft **70% / 80%**, hard **85% / 92%** (5 hours / weekly), and **2 open attempts per account**. Pools override all thresholds and concurrency; members override soft thresholds and concurrency. Soft cannot exceed hard. `on_limit_policy` is `auto` in pool mode and `wait` in pinned mode, with an explicit request overriding the pool policy. Both policies are recorded now; automatic continuation, rotation and hard-limit handling wait for P4. Exceeding soft refuses a new launch in this phase, even when every candidate is above soft. Recovery, task reopen and run resume pin the recorded account instead of selecting again. An ineligible recorded account refuses continuation with “resuming on another account comes in P4”. New pool resume requests without a recorded binding still wait for P4. No new environment variables or Settings registry entries are needed.
+
+Person-only CRUD (CSRF on writes): `GET /api/pools`, `POST /api/pools`, `PATCH /api/pools/{id}`, `DELETE /api/pools/{id}`, and `PUT` / `DELETE /api/pools/{id}/members/{account_id}`. A pool is created with `id`, `provider`, and an optional `name`; thresholds are optional. The member PUT body contains optional soft thresholds and concurrency. Membership is a `pool_member` join row, never a JSON array. IDs use P1's validator. Cross-provider membership is refused with both providers named. Deleting a pool returns 409 while an open attempt, or its task, references it. These routes return 404 with pools off.
+
+`POST /api/launch/dry-run` accepts the task or session create body, with `project` and `repo` in the body (session bodies include `launcher`). It returns `will_start_as` (provider, account id and label, node and reason), `refused_reason`, and sanitized `candidates` (account id, label, both percentages, resets, state, eligibility and exclusion reason). It performs no write, executable/version probe, credential read, profile preparation or tmux call. It checks assignment and local request constraints, not live CLI availability. A launch rechecks and reserves against current state, so intervening launches may change the answer. With pools off it always returns 200 and `{will_start_as: null, refused_reason: null, candidates: []}`. Pool selection and dry-run never enable bypass, change repository access, model, sandbox, permission mode or billing class.
+
+Scheduled jobs and batches also persist P1’s `account_id`: the pinned account ID, or `!pool-requires-p3` for a pool request. The v0.5.114/115 scheduler rejects that invalid ID before launching, so rollback cannot run a pool job on the global login. Only the new scheduler decodes this marker. Permission bypass checks share the adapter’s mode normalization between dry-run and launch; Codex’s supported `--dangerously-bypass-hook-trust` is allowed.
+
+### Launch with an account
+
+Open a session or task launcher. With pools enabled and at least one account or pool for the agent, **Account** offers **Default login**, **Pinned: account**, and **Pool: pool**. Default login is the starting choice and preserves the existing global login behavior. Changing Agent filters both lists; an incompatible choice resets to Default login with a note. Choices apply to this launch and are not saved as a new default.
+
+Pinned mode starts with **On limit: wait**; pool mode starts with **auto**. You can select auto, ask or wait. P3 stores this policy; limit handling begins in P4. Scheduled launches also carry the chosen assignment.
+
+After an edit, the launcher waits about 250 ms, then checks the current request. **Will start as** names the selected account and shows its usage and reset. Expand **Account candidates** for each candidate's five-hour and weekly percentages, reset times, and eligibility or exclusion reason. Unknown readings stay unknown. A refusal disables Start and shows the reason beside it. A failed check says **Could not check the account**; only Default login can proceed without a successful check. The server checks assignment again when launching.
+
+The node picker remains available. Choosing another node while an account or pool is selected shows the dry-run refusal that account grants come in P5. Choose This node to use the account locally, or Default login to use the target's existing login.
+
+### Manage pools in Settings
+
+With pools enabled, open **Settings > Accounts > Pools**, next to **Pool accounts**. Enter a pool name and provider, then choose **Create pool**. Expand **Edit** on a pool to add or remove members; only accounts of its provider are offered. The row lists members, soft and hard thresholds, and concurrency. Set the five-hour and weekly soft percentages and choose **Save thresholds**. Soft thresholds cannot exceed the pool's hard thresholds; server validation errors appear in the section.
+
+**Delete** uses the existing two-step confirmation. A pool in use stays in place and the server's 409 reason appears below the pool rows. Releasing an isolated account remains a separate action under Pool accounts.
+
+For a local visual demo, use `?demo=1&pools=1` and open the launcher or Settings > Accounts. The lazy pool fixture includes Claude and Codex pools, a low-usage candidate and an account above soft thresholds. Demo CRUD stays in the tab. Ordinary `?demo=1` retains the pools-off state shape.

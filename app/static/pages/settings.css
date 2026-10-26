@@ -329,3 +329,14 @@ html.force-coarse #page .settings-page .set-worker input[type=checkbox] { width:
 #page .settings-page .kv-main .set-pool-id { font: 12px/1.5 var(--font-mono); overflow-wrap: anywhere; }
 #page .settings-page .set-pool-row > .kv-act { grid-template-columns: 1fr; }
 html.force-coarse .set-pool-list button { min-height: 44px; }
+
+/* Pool editors keep the existing settings rows and chips. */
+.set-pool-definition { margin-bottom: 12px; }
+.set-pool-definition summary { min-height: 28px; cursor: pointer; }
+.set-pool-manager { min-width: 0; overflow-wrap: anywhere; }
+.set-pool-manager input, .set-pool-manager select, .set-pool-manager button { min-height: 28px; max-width: 100%; }
+.set-pool-create, .set-pool-thresholds { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin: 12px 0; }
+.set-pool-create .field, .set-pool-thresholds .field { flex: 1 1 130px; min-width: 0; }
+.set-pool-members { margin: 8px 0; }
+html.force-coarse .set-pool-manager :is(input, select, button, summary) { min-height: 44px; }
+@media (pointer: coarse) { .set-pool-manager :is(input, select, button, summary) { min-height: 44px; } }

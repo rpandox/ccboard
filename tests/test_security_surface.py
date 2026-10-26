@@ -43,6 +43,13 @@ NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 
 EXPECTED = {
+    ("GET", "/api/pools"): "identity",
+    ("POST", "/api/pools"): "identity+csrf",
+    ("PATCH", "/api/pools/{pool_id}"): "identity+csrf",
+    ("DELETE", "/api/pools/{pool_id}"): "identity+csrf",
+    ("PUT", "/api/pools/{pool_id}/members/{account_id}"): "identity+csrf",
+    ("DELETE", "/api/pools/{pool_id}/members/{account_id}"): "identity+csrf",
+    ("POST", "/api/launch/dry-run"): "identity+csrf",
     ("GET", "/api/pools/accounts"): "identity",
     ("GET", "/api/pools/usage"): "identity",
     ("POST", "/api/pools/migrate"): "identity+csrf",
@@ -282,7 +289,7 @@ EXPECTED = {
 }
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
-FILL = {"account_id": "account-a","session": "bare-" + "a" * 32, "agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
+FILL = {"pool_id": "pool-a", "account_id": "account-a","session": "bare-" + "a" * 32, "agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
         "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef", "owner": "o", "n": "1", "issue": "1"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 

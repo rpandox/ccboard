@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import hashlib
 from functools import wraps
+from contextlib import contextmanager
 import json
 import os
 import re
 import shlex
+import secrets
 import sqlite3
 import stat
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .config import settings
@@ -405,13 +408,60 @@ def _attempt_names(active):
     return ", ".join(sorted({r["tmux_name"] or r["task_id"] or f"attempt {r['id']}" for r in active}))
 
 
+@contextmanager
+def inflight_launch(db):
+    """Unique process-local proof of ownership, from reservation through binding.
+
+    Guarded by db.lock, like the reservation snapshot. A fresh DB at startup has
+    no owners; persisted task/run rows cannot keep an unbound reservation alive.
+    """
+    owner = secrets.token_hex(16)
+    with db.lock:
+        if not hasattr(db, '_inflight_launches'):
+            db._inflight_launches = set()
+        db._inflight_launches.add(owner)
+    try:
+        yield owner
+    finally:
+        with db.lock:
+            db._inflight_launches.discard(owner)
+
+
+def abandoned_reservations(db):
+    """Read-only snapshot under db.lock; only a binding or live owner proves life."""
+    owners = getattr(db, '_inflight_launches', ())
+    return [r['id'] for r in db.conn.execute("""
+        SELECT a.id, a.reservation_owner FROM runtime_attempt a
+        WHERE a.ended_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM kv k JOIN sessions s ON k.key='runtime_session:' || s.id
+                        WHERE json_extract(k.value, '$.attempt')=a.id)
+        AND NOT EXISTS (SELECT 1 FROM kv k JOIN runs r ON k.key='runtime_run:' || r.id
+                        WHERE json_extract(k.value, '$.attempt')=a.id)
+    """) if r['reservation_owner'] not in owners]
+
+
+def reconcile_reservations(db):
+    """No profile/probe I/O: an abandoned reservation never reached a bound process."""
+    from .db import now
+    if not settings.pools:
+        return
+    with db.lock:
+        for aid in abandoned_reservations(db):
+            db.conn.execute("UPDATE runtime_attempt SET ended_at=?, end_reason='reservation_abandoned' WHERE id=? AND ended_at IS NULL",
+                            (now(), aid))
+
+
 def reconcile_attempts(db):
     """Close proven stale attempts. False means tmux liveness was unknown."""
     if not settings.pools:
         return True
     from . import tmux
+    reconcile_reservations(db)
     known = True
     for attempt in _open_attempts(db):
+        with db.lock:
+            if attempt['reservation_owner'] in getattr(db, '_inflight_launches', ()):
+                continue
         stale = False
         if attempt["session_ended"]:
             stale = True
@@ -459,29 +509,56 @@ def _serialized(fn):
     return call
 
 
-@_serialized
-def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, provider_session_id=None, resumed_from=None):
+def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, provider_session_id=None, resumed_from=None,
+                  account_mode='legacy', pinned_account_id=None, pool_id=None, on_limit_policy=None, selection=None, reservation_owner=None):
     require_account(db, provider, account_id)
+    path = str(profile_dir(provider, account_id))
+    if reservation_owner is None:
+        if task_id is not None:
+            reservation_owner = str(task_id) if str(task_id).startswith('run:') else f'task:{task_id}'
+        else:
+            reservation_owner = f'session:{session_row or uuid.uuid4().hex}'
+    aid = _record_attempt(db, provider, account_id, path=path, task_id=task_id, session_row=session_row,
+                          provider_session_id=provider_session_id, resumed_from=resumed_from, account_mode=account_mode,
+                          pinned_account_id=pinned_account_id, pool_id=pool_id, on_limit_policy=on_limit_policy, selection=selection,
+                          reservation_owner=reservation_owner)
+    from . import pool_usage
+    pool_usage.attempt_started(db, account_id)
+    return aid
+
+
+@_serialized
+def _record_attempt(db, provider, account_id, *, path, task_id, session_row, provider_session_id, resumed_from,
+                    account_mode, pinned_account_id, pool_id, on_limit_policy, selection, reservation_owner):
+    # Only database work under the account/migration locks. The profile path was
+    # validated outside; recheck the row here so Release cannot race the INSERT.
+    require_enabled()
     with db.lock:
-        row = db.conn.execute("SELECT state FROM pool_account WHERE id=?", (account_id,)).fetchone()
-        if row and row[0] == "releasing":
+        row = db.conn.execute("SELECT provider,state FROM pool_account WHERE id=?", (account_id,)).fetchone()
+        if row is None or row['provider'] != provider:
+            raise projects.BadRequest("no such account profile")
+        if row['state'] == "releasing":
             raise projects.BadRequest("release is incomplete; retry Release")
     from datetime import datetime, timezone
     started_at = datetime.now(timezone.utc).isoformat()
-    with db.lock:
-        n = 1
-        if task_id is not None:
-            n = db.conn.execute("SELECT COALESCE(MAX(n),0)+1 FROM runtime_attempt WHERE task_id=?", (str(task_id),)).fetchone()[0]
-        elif resumed_from is not None:
-            previous = db.conn.execute("SELECT n FROM runtime_attempt WHERE id=?", (resumed_from,)).fetchone()
-            n = previous[0] + 1 if previous else 1
-        cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id) VALUES (?,?,?,?,?,?,?,?)",
-                              (str(task_id) if task_id is not None else None, n, account_id, provider, str(profile_dir(provider, account_id)), started_at, provider_session_id, resumed_from))
-        aid = cur.lastrowid
+    from . import pools
+    from .config import POOL_POLICIES
+    with pools.checked_assignment(db, account_id, selection) as assignment:
+        policy = on_limit_policy
+        if policy is None and account_mode != 'legacy':
+            policy = pools._pool(db, pool_id)['on_limit_policy'] if pool_id else POOL_POLICIES[account_mode]
+        with db.lock:
+            n = 1
+            if task_id is not None:
+                n = db.conn.execute("SELECT COALESCE(MAX(n),0)+1 FROM runtime_attempt WHERE task_id=?", (str(task_id),)).fetchone()[0]
+            elif resumed_from is not None:
+                previous = db.conn.execute("SELECT n FROM runtime_attempt WHERE id=?", (resumed_from,)).fetchone()
+                n = previous[0] + 1 if previous else 1
+            cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id,account_mode,pinned_account_id,pool_id,on_limit_policy,assignment,reservation_owner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (str(task_id) if task_id is not None else None, n, account_id, provider, path, started_at, provider_session_id, resumed_from, account_mode, pinned_account_id, pool_id, policy, json.dumps(assignment) if assignment else None, reservation_owner))
+            aid = cur.lastrowid
     if session_row is not None:
         db.kv_set(f"runtime_session:{session_row}", {"attempt": aid})
-    from . import pool_usage
-    pool_usage.attempt_started(db, account_id)
     return aid
 
 

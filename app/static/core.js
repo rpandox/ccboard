@@ -484,11 +484,11 @@ function boardAutoContinueOff(st) {
 }
 function autoContinueLabel(off) { return 'Auto-continue: ' + (off ? 'off' : 'on'); }
 /* '22:05', with the weekday when it is a day away. */
-function clockAt(epoch) {
+function clockAt(epoch, calendar = false) {
   if (!epoch) return '';
   const d = new Date(epoch * 1000);
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return Math.abs(epoch - Date.now() / 1000) < 20 * 3600 ? hm : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`;
+  return (calendar ? d.toDateString() === new Date().toDateString() : Math.abs(epoch - Date.now() / 1000) < 20 * 3600) ? hm : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`;
 }
 /* #71: a session parked on a rate limit (s.parked {kind, resets_at}, from the server) says what happens next, not a bare "error". */
 function limitParkedText(s) {

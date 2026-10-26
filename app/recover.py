@@ -22,7 +22,7 @@ import time
 
 from pathlib import Path
 
-from . import agents, projects, tasks, tmux
+from . import agents, pools, projects, tasks, tmux
 from .agents.base import LaunchReq
 from .config import settings
 
@@ -180,9 +180,10 @@ def run(db, start_session) -> dict:
         row = t["row"]
         db.end(t["name"], "reconciled")  # the old row is over; the relaunch gets a fresh row
         try:
+            opts = pools.resume_binding(t['opts'])
             real = start_session(t["name"], row["project"], row["repo"], row["name"], "task" if row.get("launcher") == "task" else "recovered", t["cwd"],
                                  cmd_line=shlex.join(t["cmd"]), claude_session_id=row.get("claude_session_id"),
-                                 add_dirs=t["add_dirs"], agent=row.get("agent") or "claude", opts=t["opts"] or None,
+                                 add_dirs=t["add_dirs"], agent=row.get("agent") or "claude", opts=opts or None,
                                  task_id=task_ids.get(t["name"]) if row.get("launcher") == "task" else None)
             real = real if isinstance(real, str) and real else t["name"]
             summary["recovered"].append(t["name"])
