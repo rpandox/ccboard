@@ -3819,6 +3819,8 @@ class SessionIn(LaunchOpts):
     sandbox: str | None = None         # Codex -s (mode custom); `opts` carries the same and wins
     approval: str | None = None        # Codex -a (mode custom)
     search: bool | None = None         # Codex --search
+    profile: object = None            # Codex -p; adapter validates the name with a 400
+    no_alt_screen: StrictBool | None = None  # Codex: false opts out of scrollback
 
 
 def _resolve_add_dirs(ids: list[str] | None, own: Path) -> list[str]:
@@ -4040,6 +4042,10 @@ def _codex_session_opts(body, extra: list[str]) -> dict:
         v = getattr(body, k)
         if v not in (None, "", [], False):
             own[k] = v
+    if body.no_alt_screen is not None:
+        own["no_alt_screen"] = body.no_alt_screen  # false is the meaningful opt-out
+    if body.profile is not None:
+        own["profile"] = body.profile
     flat = _agent_opts("codex", body)
     if own.get("reasoning"):
         flat["reasoning_effort"] = own.pop("reasoning")
