@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.112 - 2026-10-26
+
+### Added
+- Linked folders, backend Phase A: register an existing local project or repo without moving or copying it, with folder preflight, a cached database registry, and `CCBOARD_LINK_ROOTS` to limit allowed targets (unset or empty after stripping whitespace: the board’s own runtime default, `$HOME` natively and off in Docker; case-insensitive `off`: disabled everywhere; otherwise colon-separated absolute roots, honoured inside Docker too, with relative entries ignored). The scan, file tree, external session discovery and backup repo list follow registered, unchanged links once. State always carries `linked`/`target` and `links_enabled`; the UI follows in Phase B.
+
+### Fixed
+- Removing a linked folder only unlinks it; its real files stay on disk. A missing child link is forgotten during project or repo deletion; changed links are still refused. Recursive deletion refuses links and paths outside PROJECTS_DIR. Project and repo deletion now removes their task, job and run metadata without erasing session history.
+
+Upgrade: rerun `./install.sh` on Linux/WSL/Docker or `./scripts/install-macos.sh` on macOS to add CCBOARD_LINK_ROOTS with an empty default to the generated settings file; existing settings remain usable without rerunning.
+
 ## v0.5.109 - 2026-10-19
 
 ### Changed

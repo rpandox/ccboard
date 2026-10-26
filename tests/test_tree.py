@@ -863,3 +863,25 @@ def test_http_the_hint_is_in_the_answer_and_is_never_lost_to_a_304(world, slow, 
     assert slow_one.status_code == 200 and slow_one.json()["hint"]["kind"] == "untracked_cache" and slow_one.headers["etag"] == tag
     again = lite_client.get(URL.format(repo="api"), headers=H | {"If-None-Match": tag})
     assert again.status_code == 304, "given already: the next revalidation is the usual bare 304"
+
+
+@pytest.mark.parametrize("project_link", [False, True])
+def test_tree_and_read_linked_root(lite_client, projects_dir, tmp_path, monkeypatch, project_link):
+    from app import links
+    from app.config import settings
+    target = init_repo(tmp_path / "external" / "api", {"hello.txt": "hello"})
+    monkeypatch.setattr(settings, "link_roots", (target.parent,))
+    if project_link:
+        links.add("shop", None, target)
+        repo = "shop"
+    else:
+        projects.create_project("shop")
+        links.add("shop", "api", target)
+        repo = "api"
+    base = f"/api/projects/shop/repos/{repo}"
+    assert lite_client.get(base + "/tree", headers=H).status_code == 200
+    r = lite_client.get(base + "/file", headers=H, params={"path": "hello.txt"})
+    assert r.status_code == 200 and "hello" in r.text
+    (target / "nested").symlink_to(tmp_path, target_is_directory=True)
+    assert lite_client.get(base + "/tree", headers=H, params={"path": "nested"}).status_code == 400
+    assert lite_client.get(base + "/file", headers=H, params={"path": "nested/anything"}).status_code == 400

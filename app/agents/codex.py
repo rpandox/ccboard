@@ -1695,8 +1695,17 @@ class CodexAgent(Agent):
             return []
         found: list[str] = []
         try:
-            for pat in (".codex/hooks.json", "*/.codex/hooks.json", "*/*/.codex/hooks.json"):
-                found += [str(p) for p in itertools.islice(root.glob(pat), limit)]
+            folders = [root]
+            for project in projects._subdirs(root):
+                folders.append(project)
+                folders.extend(projects._subdirs(project))
+            for folder in folders:
+                config = folder / ".codex"
+                p = config / "hooks.json"
+                if not config.is_symlink() and not p.is_symlink() and p.is_file():
+                    found.append(str(p))
+                    if len(found) >= limit:
+                        break
         except OSError:
             pass
         return sorted(set(found))[:limit]

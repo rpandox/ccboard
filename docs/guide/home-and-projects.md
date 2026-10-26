@@ -31,3 +31,13 @@ The two read endpoints behind it sit behind the same identity check as the rest 
 - **Claude login from the board.** Click *Log in*: ccboard runs `claude auth login` in a tmux session, shows you the sign-in link, and you paste the code the browser gives you back into the board. Nothing is scraped from transcripts; the real CLI does the login.
 - **Transcript search.** The search field in the header searches your Claude and Codex transcripts (an FTS5 index, display only); a hit links to its session when the board knows it.
 - **Session state from Claude Code hooks.** `install.sh` registers async hooks and a statusLine command in `~/.claude/settings.json`; each session shows idle / working / needs you / done / error, the last prompt, the last line Claude printed, its model and context usage. Nothing reads transcripts.
+
+## Linked folders
+
+The backend can link an existing local folder outside `PROJECTS_DIR` without moving or copying it. Phase A provides the API; the UI follows in Phase B. Set `CCBOARD_LINK_ROOTS` to colon-separated absolute parent directories. Native boards default to `$HOME`; Docker defaults to disabled. An empty setting disables all link routes.
+
+Use `POST /api/preflight/folder {"path":"/absolute/folder"}` to check a folder and see its branch, credential-free origin, child repos (up to 50), and suggested name. Then use `POST /api/projects {"name":"tools","link":"/absolute/folder"}` for a whole project, or `POST /api/projects/tools/repos {"name":"api","link":"/absolute/repo"}` for a repo in an ordinary project. `link` and `url` are mutually exclusive; `~` is expanded. Repo names can be inferred from the folder name.
+
+Only registered, unchanged symlinks are followed. Nested symlinks remain refused. Targets cannot overlap, live under `PROJECTS_DIR`, or be a root, home, board data, or private configuration directory. Linked project folders cannot receive new repos through blank-repo or clone creation.
+
+Deleting a linked entry unlinks it and returns `unlinked: true`; its real folder and files stay on disk. Deleting an ordinary project first unlinks its linked repos. Deletion also forgets that project's or repo's tasks, scheduled jobs and runs, while session history is retained. Every project and repo in state includes `linked` and `target` (false/null for ordinary entries); state also includes `links_enabled`.

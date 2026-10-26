@@ -554,3 +554,18 @@ def test_a_corrupt_claude_mem_db_fails_the_run_but_the_rest_completes_and_notifi
     assert len(st["push"]) == 2                                               # and so did the branch copies
     assert sent and sent[0][0] == "ccboard backup failed" and "claude-mem db snapshot" in sent[0][1]
     assert json.loads(backup.status_path().read_text())["status"] == "failed"
+
+
+def test_repos_include_trusted_links(projects_dir, tmp_path, monkeypatch):
+    from app import links, projects
+    from app.config import settings
+    target = tmp_path / "outside" / "api"
+    (target / ".git").mkdir(parents=True)
+    monkeypatch.setattr(settings, "link_roots", (target.parent,))
+    projects.create_project("shop")
+    r = links.add("shop", "api", target)
+    (projects_dir / "stray").symlink_to(target)
+    assert backup.repos() == [r]
+    links.remove("shop", "api")
+    p = links.add("mono", None, target)
+    assert backup.repos() == [p]

@@ -57,7 +57,8 @@ def repo_for_cwd(cwd, projects_dir=None) -> tuple[str, str] | None:
             except BadRequest:
                 continue
             return project, repo
-    return None
+    from . import links
+    return links.owner_of_real(os.path.realpath(cwd)) if projects_dir is None or root == settings.projects_dir else None
 
 
 class BadRequest(Exception):
@@ -349,11 +350,29 @@ def repo_path(project: str, repo: str) -> Path:
 
 
 def contained(path: Path, root: Path | None = None) -> Path:
-    """Refuse a symlink at `path` and anything that resolves outside `root` (default: PROJECTS_DIR); returns the resolved path.
+    """Resolve inside `root` (default: PROJECTS_DIR), following a registered board link once.
 
     Only `path` itself is checked for being a link: callers that take a relative path under `root` (tree.py) check every
     component of it as well."""
+    from . import links
+    path = Path(path)
     default = root is None
+    if default:
+        for ancestor in (path, *path.parents):
+            target = links.trusted(ancestor)
+            if target is not None:
+                rp = path.resolve()
+                base = Path(target)
+                if rp != base and base not in rp.parents:
+                    raise BadRequest("path escapes its linked folder")
+                if path != ancestor and path.is_symlink():
+                    raise BadRequest(f"{path.name} is a symlink; refusing")
+                return rp
+        for ancestor in (path, *path.parents):
+            if ancestor == settings.projects_dir:
+                break
+            if ancestor.is_symlink():
+                raise BadRequest(f"{ancestor.name} is a symlink; refusing")
     root = settings.projects_dir.resolve() if default else root.resolve()
     if path.is_symlink():
         raise BadRequest(f"{path.name} is a symlink; refusing")
@@ -424,10 +443,11 @@ def git_info_reused(path: Path, max_age: float) -> dict:
 
 
 def _subdirs(path: Path) -> list[Path]:
+    from . import links
     out = []
     try:
         for c in sorted(path.iterdir(), key=lambda x: x.name.lower()):
-            if c.name.startswith(".") or c.is_symlink() or not c.is_dir():
+            if c.name.startswith(".") or (c.is_symlink() and not links.trusted(c)) or not c.is_dir():
                 continue
             if not valid_name(c.name):
                 continue
@@ -440,6 +460,12 @@ def _subdirs(path: Path) -> list[Path]:
 def scan(sessions: dict[str, dict], git_max_age: float = 0.0) -> list[dict]:
     """Full project tree. `sessions` is tmux name -> session dict (already merged with DB rows). `git_max_age` > 0 reuses a repo's
     git answer younger than that many seconds (git_info_reused; the state poll passes GIT_TTL_LOADED while the box is busy)."""
+    from . import links
+
+    def link_fields(path):
+        target = links.trusted(path)
+        return {"linked": target is not None, "target": target}
+
     grouped: dict[tuple[str, str], list[dict]] = {}
     for name, s in sessions.items():
         parts = name.split(SEP)
@@ -465,19 +491,19 @@ def scan(sessions: dict[str, dict], git_max_age: float = 0.0) -> list[dict]:
                 info = {"branch": None, "dirty": None, "state": "clone-failed"}  # the shell shows the error
             else:
                 info = {"branch": None, "dirty": None, "state": "nogit"}
-            repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, "devcontainer": has_devcontainer(rdir), **info})
+            repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, "devcontainer": has_devcontainer(rdir), **info, **link_fields(rdir)})
         root_sessions = sorted(grouped.pop((pname, ROOT), []), key=lambda s: s["created"])
         root = None
         if not is_repo(pdir) or root_sessions:
             # the project folder itself (kept apart from `repos`): a session started here has every repo below in scope
             root = {"name": ROOT, "path": str(pdir), "sessions": root_sessions, "root": True, "state": "project",
-                    "branch": None, "dirty": None, "devcontainer": has_devcontainer(pdir)}
+                    "branch": None, "dirty": None, "devcontainer": has_devcontainer(pdir), **link_fields(pdir)}
         orphans = []
         for (pp, rr), ss in list(grouped.items()):
             if pp == pname:
                 orphans += [{**s, "repo": rr} for s in ss]
                 grouped.pop((pp, rr))
-        projects.append({"name": pname, "path": str(pdir), "repos": repos, "root": root,
+        projects.append({"name": pname, "path": str(pdir), "repos": repos, "root": root, **link_fields(pdir),
                          "orphan_sessions": sorted(orphans, key=lambda s: s["created"])})
     return projects
 
@@ -494,6 +520,9 @@ def add_repo_blank(project: str, repo: str) -> Path:
     p = project_path(project)
     if not p.is_dir():
         raise NotFound(f"project {project} not found")
+    contained(p)
+    if p.is_symlink():
+        raise BadRequest("a linked project cannot hold new repos")
     if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
     r = p / check_new_repo_name(repo)
@@ -514,6 +543,9 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
     p = project_path(project)
     if not p.is_dir():
         raise NotFound(f"project {project} not found")
+    contained(p)
+    if p.is_symlink():
+        raise BadRequest("a linked project cannot hold new repos")
     if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
     name = repo or derive_repo_name(url)
@@ -527,10 +559,21 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
     return name, r
 
 
-def remove_tree(path: Path) -> None:
+def check_removal(path: Path) -> Path:
+    """Validate a recursive deletion before sessions or metadata are changed."""
+    if path.is_symlink():
+        raise BadRequest("refusing to remove a symlink")
+    rp = path.resolve()
+    if settings.projects_dir.resolve() not in rp.parents:
+        raise BadRequest("refusing to remove a folder outside PROJECTS_DIR")
     rp = contained(path)
     if rp == settings.projects_dir.resolve():
         raise BadRequest("refusing to remove PROJECTS_DIR")
+    return rp
+
+
+def remove_tree(path: Path) -> None:
+    rp = check_removal(path)
     # A just-killed git clone may still be deleting its own files; tolerate vanished entries once.
     shutil.rmtree(rp, ignore_errors=True)
     if rp.exists():
