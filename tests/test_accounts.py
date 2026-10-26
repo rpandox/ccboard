@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -996,8 +997,10 @@ def test_state_accounts_and_the_api(env, lite_client):
     assert lite_client.get("/api/accounts").status_code == 403
 
 
-def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_client):
+def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_client, monkeypatch):
     from app import main
+    # Keep relative query windows anchored to the fixed account event timestamp.
+    monkeypatch.setattr(main, "_utcnow", lambda: datetime.fromtimestamp(T0 + 60, tz=timezone.utc))
     state_file(settings.claude_config_dir)
     accounts.observe(main.db, T0)
     statusline(main.db, "shop--api--s9", T0 + 3000, T0 + 200000, 33, 44)
