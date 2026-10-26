@@ -37,7 +37,10 @@ def pick(db, **kw):
 
 
 def launch(db, **kw):
-    return pools.reserve(db, 'claude', MODE, **kw)
+    # Low-level selector tests model a launch that reached a session binding.
+    row = db.add_session(tmux_name='fixture-' + str(time.time_ns()), project='project', repo='root', name='fixture', launcher='claude')
+    with profiles.inflight_launch(db) as owner:
+        return pools.reserve(db, 'claude', MODE, session_row=row, reservation_owner=owner, **kw)
 
 
 def test_provider_wall_and_defaults(box):

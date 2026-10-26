@@ -81,16 +81,17 @@ def test_live_reservation_not_abandoned(box, fake_tmux, owner):
     elif owner == 'run':
         jid = box.job_add(project='project', repo='root', name='a', prompt='a')
         fields['task_id'] = f'run:{box.run_start(jid)}'
-    attempt, _ = pools.reserve(box, 'claude', MODE, **fields)
-    if owner == 'session':
-        name = main.tmux.new_session('ccb-project-root-live', '/tmp')
-        row = box.add_session(tmux_name=name, project='project', repo='root', name='live', launcher='claude')
-        box.kv_set(f'runtime_session:{row}', {'attempt': attempt})
-    if owner != 'young':
-        age(box, attempt)
-    profiles.reconcile_attempts(box)
-    assert rows(box)[0]['ended_at'] is None
-    assert rows(box)[0]['reservation_owner']
+    with profiles.inflight_launch(box) as launch_owner:
+        attempt, _ = pools.reserve(box, 'claude', MODE, reservation_owner=launch_owner, **fields)
+        if owner == 'session':
+            name = main.tmux.new_session('ccb-project-root-live', '/tmp')
+            row = box.add_session(tmux_name=name, project='project', repo='root', name='live', launcher='claude')
+            box.kv_set(f'runtime_session:{row}', {'attempt': attempt})
+        if owner != 'young':
+            age(box, attempt)
+        profiles.reconcile_attempts(box)
+        assert rows(box)[0]['ended_at'] is None
+        assert rows(box)[0]['reservation_owner']
 
 
 @pytest.mark.parametrize('binding', [MODE, {'account_mode': 'pinned', 'pinned_account_id': 'codex-a'}])
@@ -277,3 +278,118 @@ def test_remote_dry_run_refuses_p5_before_local_repo_lookup(api, box, monkeypatc
     assert 'account grants (P5)' in data['refused_reason']
     assert data['candidates'] and all(not c['eligible'] for c in data['candidates'])
     assert list(box.conn.iterdump()) == before
+
+
+@pytest.mark.parametrize('backlog', [False, True])
+def test_preparing_launch_keeps_reservation_past_two_minutes(api, box, monkeypatch, backlog):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    seed(box, (10,), cap=1)
+    entered, resume = threading.Event(), threading.Event()
+    wrap = profiles.wrap_command
+    tid = box.task_add(project='project', repo='root', slug='waiting', title='Waiting', prompt='Do it') if backlog else None
+    def paused(*args, **kw):
+        entered.set()
+        assert resume.wait(10)
+        return wrap(*args, **kw)
+    monkeypatch.setattr(profiles, 'wrap_command', paused)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(main._start_session_row, 'project--root--slow', 'project', 'root', 'slow', 'claude', '/tmp',
+                                 cmd_line='claude', opts=MODE, task_id=tid)
+        try:
+            assert entered.wait(5)
+            age(box, rows(box)[0]['id'], 300)
+            profiles.reconcile_attempts(box)
+            assert rows(box)[0]['ended_at'] is None
+            before = list(box.conn.iterdump())
+            dry = api.post('/api/launch/dry-run', json=request_body('session'), headers=HEADERS).json()
+            assert dry['refused_reason'] and dry['will_start_as'] is None
+            assert list(box.conn.iterdump()) == before
+            with pytest.raises(projects.BadRequest, match='concurrency'):
+                pools.reserve(box, 'claude', MODE)
+        finally:
+            resume.set()
+            future.result(timeout=5)
+    assert not box._inflight_launches
+
+
+@pytest.mark.parametrize('owner', ['session', 'task', 'run'])
+@pytest.mark.parametrize('seconds', [0, 300])
+def test_startup_abandons_every_unbound_reservation(box, owner, seconds):
+    from app.db import DB
+    seed(box, (10,), cap=1)
+    fields = {}
+    if owner == 'task':
+        fields['task_id'] = box.task_add(project='project', repo='root', slug='backlog', title='Backlog', prompt='Do it')
+    elif owner == 'run':
+        fields['task_id'] = 'run:' + str(box.run_start(box.job_add(project='project', repo='root', name='Job', prompt='Do it')))
+    aid, _ = pools.reserve(box, 'claude', MODE, **fields)
+    age(box, aid, seconds)
+    # A fresh connection represents a new board process, with no live launch owners.
+    path = box.conn.execute('PRAGMA database_list').fetchone()[2]
+    restarted = DB(Path(path))
+    try:
+        profiles.reconcile_attempts(restarted)
+        assert rows(restarted)[0]['end_reason'] == 'reservation_abandoned'
+        assert pools.reserve(restarted, 'claude', MODE)[1]['account_id'] == 'claude-a'
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize('args,allowed', [
+    ('--append-system-prompt "avoid dangerously deleting files"', True),
+    ('--append-system-prompt "avoid bypassPermissions today"', True),
+    ('--append-system-prompt "never use --dangerously-skip-permissions"', True),
+    ('--dangerously-skip-permissions', False),
+    ('--allow-dangerously-skip-permissions', False),
+    ('--permission-mode=bypassPermissions', False),
+    ('--permission-mode bypassPermissions', False),
+    ('--dangerously-bypass-approvals-and-sandbox', False),
+    ('--yolo', False),
+])
+@pytest.mark.parametrize('kind', ['session', 'task'])
+def test_quoted_danger_text_dry_run_and_launch_agree(api, box, args, allowed, kind):
+    seed(box, (10,))
+    body = {**request_body(kind), 'args': args}
+    dry = api.post('/api/launch/dry-run', json=body, headers=HEADERS).json()
+    response = api.post('/api/tasks' if kind == 'task' else '/api/projects/project/repos/root/sessions', json=body, headers=HEADERS)
+    assert bool(dry['will_start_as']) == allowed, dry
+    assert (response.status_code == 201) == allowed, response.text
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_finished_unbound_backlog_owner_is_abandoned(box, failed):
+    seed(box, (10,), cap=1)
+    tid = box.task_add(project='project', repo='root', slug='backlog', title='Backlog', prompt='Do it')
+    class Interrupted(BaseException):
+        pass
+    try:
+        with profiles.inflight_launch(box) as owner:
+            aid, _ = pools.reserve(box, 'claude', MODE, task_id=tid, reservation_owner=owner)
+            age(box, aid, 300)
+            profiles.reconcile_attempts(box)
+            assert rows(box)[0]['ended_at'] is None
+            if failed:
+                raise Interrupted()
+    except Interrupted:
+        pass
+    assert box.task_get(tid)
+    profiles.reconcile_attempts(box)
+    assert rows(box)[0]['end_reason'] == 'reservation_abandoned'
+    assert not box._inflight_launches
+
+
+def test_headless_preparation_has_live_owner(box, projects_dir, monkeypatch):
+    seed(box, (10,), cap=1)
+    (projects_dir / 'project').mkdir(exist_ok=True)
+    jid = box.job_add(project='project', repo='root', name='Job', prompt='Do it', opts=MODE)
+    rid = box.run_start(jid)
+    def preparing(db, job, run_id, binding):
+        age(db, binding['attempt'], 300)
+        profiles.reconcile_attempts(db)
+        assert rows(db)[0]['ended_at'] is None
+        assert pools.choose(db, 'claude', pool_id='pool-a')['refused']
+        return {'status': 'ok'}
+    monkeypatch.setattr(scheduler, '_run_job', preparing)
+    assert scheduler.run_job(box, box.job_get(jid), rid) == {'status': 'ok'}
+    assert not box._inflight_launches

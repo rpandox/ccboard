@@ -182,18 +182,19 @@ def test_routes_scrubbed_account_response_and_legacy_guard(lite_client, fake_tmu
     assert response.status_code == 200
     assert set(response.json()[0]) == {"id", "provider", "label", "state", "cred_version"}
     assert not [key for key in response.json()[0] if key != "cred_version" and re.search("cred|token|auth|secret|email", key, re.I)]
-    aid = profiles.start_attempt(main.db, "claude", "account-a")
-    from app import pool_usage
-    pool_usage.collector(main.db).tick(active=False)
-    usage = lite_client.get("/api/pools/usage", headers=HEADERS)
-    assert usage.status_code == 200 and set(usage.json()) == {"groups"}
-    group = usage.json()["groups"][0]
-    assert set(group) == {"id", "provider", "plan", "accounts", "window_5h_pct", "window_5h_reset_at", "weekly_pct", "weekly_reset_at", "sampled_at", "age_s", "confidence", "source", "state", "nodes", "account_labels", "reason"}
-    assert not [key for key in group if re.search("cred|token|auth|secret|email|uuid", key, re.I)]
-    for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
-        monkeypatch.setattr(store, "_require", lambda: pytest.fail("guard must precede legacy work"))
-        r = lite_client.post(f"/api/{provider}/any/switch", headers=HEADERS)
-        assert r.status_code == 409 and r.json() == {"detail": profiles.SWITCH_REASON + f": attempt {aid}"}
+    with profiles.inflight_launch(main.db) as owner:
+        aid = profiles.start_attempt(main.db, "claude", "account-a", reservation_owner=owner)
+        from app import pool_usage
+        pool_usage.collector(main.db).tick(active=False)
+        usage = lite_client.get("/api/pools/usage", headers=HEADERS)
+        assert usage.status_code == 200 and set(usage.json()) == {"groups"}
+        group = usage.json()["groups"][0]
+        assert set(group) == {"id", "provider", "plan", "accounts", "window_5h_pct", "window_5h_reset_at", "weekly_pct", "weekly_reset_at", "sampled_at", "age_s", "confidence", "source", "state", "nodes", "account_labels", "reason"}
+        assert not [key for key in group if re.search("cred|token|auth|secret|email|uuid", key, re.I)]
+        for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
+            monkeypatch.setattr(store, "_require", lambda: pytest.fail("guard must precede legacy work"))
+            r = lite_client.post(f"/api/{provider}/any/switch", headers=HEADERS)
+            assert r.status_code == 409 and r.json() == {"detail": profiles.SWITCH_REASON + f": attempt {aid}"}
     profiles.finish_attempt(main.db, aid, "exited")
     # Existing switch handlers still use their original implementation when no attempt is open.
     for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
@@ -545,8 +546,9 @@ def test_handover_switch_saveback_release_and_flag_off(box, lite_client, monkeyp
         response = lite_client.post(f'/api/{endpoint}/{keys[1]}/switch', headers=HEADERS)
         assert response.status_code == 409 and response.json() == {'detail': expected}
     monkeypatch.setattr(settings, 'pools', True)
-    attempt = profiles.start_attempt(box, provider, aid)
-    assert lite_client.post(f'/api/pools/accounts/{aid}/release', headers=HEADERS).status_code == 409
+    with profiles.inflight_launch(box) as owner:
+        attempt = profiles.start_attempt(box, provider, aid, reservation_owner=owner)
+        assert lite_client.post(f'/api/pools/accounts/{aid}/release', headers=HEADERS).status_code == 409
     profiles.finish_attempt(box, attempt, 'exited')
     response = lite_client.post(f'/api/pools/accounts/{aid}/release', headers=HEADERS)
     assert response.status_code == 200, response.text
@@ -759,7 +761,7 @@ def test_reconcile_dead_pane_or_missing_run(box, monkeypatch, kind):
     else:
         profiles.start_attempt(box, 'claude', 'account-a', task_id='run:123')
     profiles.guard_switch(box)
-    assert rows(box)[0]['end_reason'] == 'reconciled'
+    assert rows(box)[0]['end_reason'] == ('reconciled' if kind == 'pane' else 'reservation_abandoned')
 
 
 def test_legacy_restore_merge_and_relogin_raise_typed_conflicts(box, monkeypatch):

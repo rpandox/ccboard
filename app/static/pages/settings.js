@@ -3467,7 +3467,7 @@ function settingsPoolManager() {
       });
       const five = el('input', { type: 'number', min: 0, max: pool.hard_pct_5h, step: 'any', required: true, value: String(pool.soft_pct_5h), 'aria-label': pool.name + ' soft 5 h percent' });
       const weekly = el('input', { type: 'number', min: 0, max: pool.hard_pct_weekly, step: 'any', required: true, value: String(pool.soft_pct_weekly), 'aria-label': pool.name + ' soft weekly percent' });
-      const thresholds = el('form', { class: 'set-pool-thresholds', onsubmit: (e) => {
+      const thresholds = el('form', { class: 'form set-pool-thresholds', onsubmit: (e) => {
         e.preventDefault(); act('PATCH', path, { soft_pct_5h: Number(five.value), soft_pct_weekly: Number(weekly.value) });
       } }, field('Soft 5 h %', five), field('Soft weekly %', weekly), el('button', { type: 'submit', text: 'Save thresholds' }));
       rows.append(el('section', { class: 'set-pool-definition', 'aria-label': pool.name }, head,
@@ -3475,7 +3475,7 @@ function settingsPoolManager() {
     }
     if (!data.length) rows.append(el('p', { class: 'dim set-note', text: 'No pools yet. Create one, then add accounts of its provider.' }));
   };
-  const form = el('form', { class: 'set-pool-create', onsubmit: async (e) => {
+  const form = el('form', { class: 'form set-pool-create', onsubmit: async (e) => {
     e.preventDefault(); if (!name.value.trim()) return;
     const id = 'pool-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
     if (await act('POST', '/api/pools', { id, name: name.value.trim(), provider: provider.value })) name.value = '';

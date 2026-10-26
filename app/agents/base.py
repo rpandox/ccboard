@@ -50,6 +50,23 @@ class TTLCache:
             self._items.clear()
 
 
+# Exact permission/sandbox bypass spellings. Hook trust is a separate supported setting.
+_PERMISSION_BYPASS = frozenset({
+    'bypasspermissions', 'danger-full-access', '--dangerously-skip-permissions',
+    '--allow-dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox', '--yolo',
+})
+
+
+def bypass_requested(extra: list[str]) -> str | None:
+    for word in extra:
+        if word == '--':
+            break
+        parts = word.lower().split('=', 1)
+        if any(part in _PERMISSION_BYPASS for part in parts):
+            return word
+    return None
+
+
 @dataclass
 class LaunchReq:
     """One launch, agent-neutral. `opts` holds the agent's own options (Claude: model, effort, permission_mode, allowed_tools,

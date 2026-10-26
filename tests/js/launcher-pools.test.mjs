@@ -117,7 +117,7 @@ test('fetch failure blocks pinned and pool, permits Default login, and handles m
   const w = world(); await flush(); w.ctx.__answer = () => { throw new Error('offline'); };
   for (const v of ['pool:claude-work', 'pinned:claude-a', 'legacy']) {
     change(choice(w), v); await w.fire();
-    assert.match(line(w).textContent, /Could not check the account/);
+    assert.match(v === 'legacy' ? line(w).textContent : w.document.querySelector('.lx-pool-refusal').textContent, /Could not check the account/);
     assert.equal(w.run('ctl.go.disabled'), v !== 'legacy');
   }
   w.ctx.__answer = {}; change(choice(w), 'pool:claude-work'); await w.fire();
@@ -258,4 +258,57 @@ test('an inactive node form cannot reset a selection made on the visible form', 
   await flush();
   assert.equal(w.run('ctl.poolKit.selection.pool_id'), 'claude-work');
   assert.equal(w.run('ctl.poolKit.selection.account_mode'), 'pool');
+});
+
+test('candidates start closed and synchronize visibility and aria-expanded with the native toggle', async () => {
+  const w = world(); await flush(); change(choice(w), 'pool:claude-work'); await w.fire();
+  const d = w.document.querySelector('.lx-pool-details'), summary = d.querySelector('summary'), list = d.querySelector('.lx-pool-candidates');
+  assert.equal(d.hasAttribute('open'), false);
+  assert.equal(summary.getAttribute('aria-expanded'), 'false');
+  assert.equal(list.classList.contains('hidden'), true);
+  for (const open of [true, false, true]) {
+    if (open) d.setAttribute('open', ''); else d.removeAttribute('open');
+    d.dispatchEvent({ type: 'toggle' });
+    assert.equal(summary.getAttribute('aria-expanded'), String(open));
+    assert.equal(list.classList.contains('hidden'), !open);
+  }
+});
+
+test('refusal is rendered once by Start with the shared native disabled button style', async () => {
+  const w = world(); await flush();
+  const reason = 'No account below soft thresholds';
+  w.ctx.__answer = { will_start_as: null, refused_reason: reason, candidates: [] };
+  change(choice(w), 'pool:claude-work'); await w.fire();
+  assert.equal(w.get('ctl').form.textContent.split(reason).length - 1, 1);
+  assert.equal(w.get('ctl').go.hasAttribute('disabled'), true);
+  assert.match(readFileSync(STATIC + '/style.css', 'utf8'), /\.bp5-button\.bp5-intent-primary:disabled[^}]+opacity:\.45/);
+  assert.equal(w.get('ctl').go.getAttribute('aria-disabled'), 'true');
+  w.ctx.__answer = answer(); change(choice(w), 'pinned:claude-a'); await w.fire();
+  assert.equal(w.get('ctl').go.hasAttribute('disabled'), false);
+});
+
+test('pool reset times share the board clock for today and a short day otherwise', async () => {
+  const w = world(); await flush();
+  const today = new Date(); today.setHours(12, 5, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+  const r = answer(); r.candidates[0].resets = { '5h': today.toISOString(), weekly: tomorrow.toISOString() };
+  w.ctx.__answer = r; change(choice(w), 'pool:claude-work'); await w.fire();
+  assert.match(line(w).textContent, /resets 12:05/);
+  const text = w.document.querySelector('.lx-pool-candidates').textContent;
+  assert.match(text, /resets 12:05/);
+  assert.match(text, new RegExp('resets ' + ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][tomorrow.getDay()] + ' 12:05'));
+  assert.doesNotMatch(text, /AM|PM/);
+  assert.equal(w.run("launcherPoolReset('invalid')"), 'unknown');
+  assert.equal(w.run('launcherPoolReset(null)'), 'unknown');
+});
+
+test('Settings pool fields use the existing form layout with separated labels', async () => {
+  const w = world(); await flush();
+  w.run('settingsPools.rows = __accounts; globalThis.manager = settingsPoolManager(); document.body.append(manager)'); await flush();
+  for (const f of w.get('manager').querySelectorAll('form')) {
+    assert.equal(f.classList.contains('form'), true);
+    for (const field of f.querySelectorAll('.field')) {
+      assert.ok(field.querySelector('label').getAttribute('for'));
+    }
+  }
 });

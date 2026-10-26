@@ -445,8 +445,8 @@ function lxnForm(opt, handle, hooks) {
     goIcon.textContent = '';
     goIcon.append(ic(mode === 'task' && R.when === 'later' ? 'add' : 'play'));
     lxDisable(go, busy || !!w, w || '');
-    why.textContent = w;
-    hide(why, !w);
+    why.textContent = poolKit && poolKit.blocked() ? '' : w;
+    hide(why, !why.textContent);
   };
 
   /* ---- submit ---- */

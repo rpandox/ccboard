@@ -27,7 +27,7 @@ function poolReset(group) {
   const dates = [group.window_5h_reset_at, group.weekly_reset_at].map((v) => v ? new Date(v) : null).filter((d) => d && Number.isFinite(d.getTime()));
   if (!dates.length) return 'reset unknown';
   const next = dates.sort((a, b) => a - b)[0];
-  return `resets ${next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  return `resets ${clockAt(next.getTime() / 1000, true)}`;
 }
 function poolBar(label, pct, known) {
   const valid = known && typeof pct === 'number' && Number.isFinite(pct);

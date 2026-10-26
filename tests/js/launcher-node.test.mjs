@@ -708,3 +708,19 @@ test('remote dispatch trust warning hides for an existing session and returns fo
   all(group(f, 'Where'), 'button').find((b) => text(b) === 'New session').click();
   assert.equal(hidden(warning), false);
 });
+
+test('a remote pool refusal appears only once beside its disabled Start', async () => {
+  const reason = 'pool accounts run on this node until account grants (P5)';
+  const { w } = await lWorld({ st: { pools: { enabled: true, groups: [], pools: [] } }, answers: {
+    '/api/pools/accounts': [{ id: 'claude-a', label: 'Claude A', provider: 'claude' }],
+    '/api/pools': [],
+    '/api/launch/dry-run': { will_start_as: null, refused_reason: reason, candidates: [] },
+  } });
+  w.run(`globalThis.remotePool = lxnForm({mode:'session'}, 'build-box', {poolSelection:{account_mode:'pinned', pinned_account_id:'claude-a'}}); document.body.append(remotePool.form)`);
+  await settle(); await new Promise((r) => setTimeout(r, 350)); await settle();
+  const form = w.get('remotePool').form;
+  assert.equal(form.textContent.split(reason).length - 1, 1);
+  assert.equal(off(start(form)), true);
+  assert.equal(form.querySelector('.lx-foot .lx-pool-refusal').textContent, reason);
+  assert.equal(hidden(form.querySelector('.lx-nodewhy')), true);
+});

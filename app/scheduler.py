@@ -379,28 +379,29 @@ def run_job(db, job: dict, run_id: int) -> dict:
         return _run_job(db, job, run_id)
     pools.binding(opts)
     provider = job.get('agent') or 'claude'
-    context = {"account_id": bound, "attempt": None, "db": db, "run_id": run_id}
-    summary = {}
-    try:
-        if selected:
-            if (job.get('permission_mode') not in (None, *MODES)
-                    or any(recover._is_bypass(k, v) for k, v in opts.items())):
-                raise projects.BadRequest('profiles require a local launch without bypass')
-            extra = check_extra_args(job.get('args'), provider)
-            rpath = projects.repo_path(job['project'], job['repo'])
-            context['attempt'], result = pools.reserve(db, provider, opts, repo=str(rpath),
-                requested_model=pools.requested_model(opts, extra), task_id=f'run:{run_id}')
-            context['account_id'] = bound = result['account_id']
-            with db.lock:
-                policy = db.conn.execute('SELECT on_limit_policy FROM runtime_attempt WHERE id=?', (context['attempt'],)).fetchone()[0]
-            opts = {**opts, 'account_id': bound, 'on_limit_policy': policy}
-            job = {**job, 'opts': opts}
-        else:
-            profiles.require_account(db, provider, bound)
-        summary = _run_job(db, job, run_id, binding=context)
-        return summary
-    finally:
-        profiles.finish_attempt(db, context["attempt"], summary.get("status", "error"), summary.get("session_id"))
+    with profiles.inflight_launch(db) as owner:
+        context = {"account_id": bound, "attempt": None, "db": db, "run_id": run_id, "owner": owner}
+        summary = {}
+        try:
+            if selected:
+                if (job.get('permission_mode') not in (None, *MODES)
+                        or any(recover._is_bypass(k, v) for k, v in opts.items())):
+                    raise projects.BadRequest('profiles require a local launch without bypass')
+                extra = check_extra_args(job.get('args'), provider)
+                rpath = projects.repo_path(job['project'], job['repo'])
+                context['attempt'], result = pools.reserve(db, provider, opts, repo=str(rpath),
+                    requested_model=pools.requested_model(opts, extra), task_id=f'run:{run_id}', reservation_owner=owner)
+                context['account_id'] = bound = result['account_id']
+                with db.lock:
+                    policy = db.conn.execute('SELECT on_limit_policy FROM runtime_attempt WHERE id=?', (context['attempt'],)).fetchone()[0]
+                opts = {**opts, 'account_id': bound, 'on_limit_policy': policy}
+                job = {**job, 'opts': opts}
+            else:
+                profiles.require_account(db, provider, bound)
+            summary = _run_job(db, job, run_id, binding=context)
+            return summary
+        finally:
+            profiles.finish_attempt(db, context["attempt"], summary.get("status", "error"), summary.get("session_id"))
 
 
 def _bound_run(cmd, *, binding, provider, **kwargs):
@@ -408,7 +409,7 @@ def _bound_run(cmd, *, binding, provider, **kwargs):
     kwargs["env"] = profiles.child_env(provider, binding["account_id"], kwargs.get("env"))
     snapshot = profiles.transcript_snapshot(provider, kwargs["cwd"])
     if binding.get("attempt") is None:
-        binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}")
+        binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}", reservation_owner=binding.get("owner"))
     binding["db"].kv_set(f"runtime_run:{binding['run_id']}", {"attempt": binding["attempt"]})
     profiles.discover_attempt(binding["db"], binding["attempt"], kwargs["cwd"], provider, time.time(), None, snapshot)
     return _run_agent(cmd, **kwargs)

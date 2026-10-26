@@ -85,3 +85,11 @@ test('value changes and reordered input never move focused group nodes', () => {
   paint({ pools: { groups: [group(10), group(5, { id: 2 })] } });
   assert.equal(w.document.activeElement, button, 'inserting a preceding group preserves focus');
 });
+
+test('pool reset labels use the board short calendar clock', () => {
+  const w = world();
+  const next = new Date(); next.setDate(next.getDate() + 2); next.setHours(20, 5, 0, 0);
+  w.ctx.__reset = next.toISOString();
+  const expected = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][next.getDay()] + ' 20:05';
+  assert.equal(w.run('poolReset({window_5h_reset_at: __reset})'), 'resets ' + expected);
+});

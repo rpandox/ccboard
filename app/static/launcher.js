@@ -1979,6 +1979,7 @@ function lxNextName(r) {
 function lxDisable(node, on, why) {
   if (!node) return;
   node.disabled = !!on;
+  node.setAttribute('aria-disabled', String(!!on));
   if (on) node.setAttribute('disabled', ''); else node.removeAttribute('disabled');
   if (why !== undefined) { if (on && why) node.setAttribute('title', why); else if (!on) node.removeAttribute('title'); }
 }
@@ -2075,6 +2076,10 @@ function launcherPoolFields(v) {
     ...(v.account_mode === 'pool' ? { pool_id: v.pool_id } : { pinned_account_id: v.pinned_account_id }),
     on_limit_policy: v.on_limit_policy || (v.account_mode === 'pool' ? 'auto' : 'wait') };
 }
+function launcherPoolReset(value) {
+  const ms = value ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? clockAt(ms / 1000, true) : 'unknown';
+}
 function launcherPoolsKit(hooks) {
   const demo = /[?&]pools=1(?:&|$)/.test(location.search) && typeof demoOn === 'function' && demoOn();
   if (!state || (!state.pools && !demo)) return null;
@@ -2088,17 +2093,23 @@ function launcherPoolsKit(hooks) {
   const note = el('p', { class: 'dim lx-hint', role: 'status' });
   const limit = field('On limit', policy, 'Stored now. Limit handling starts in P4.');
   const line = el('p', { class: 'lx-pool-line', role: 'status', 'aria-live': 'polite' });
-  const candidates = el('div', { class: 'lx-pool-candidates' });
-  const details = el('details', { class: 'lx-pool-details hidden' }, el('summary', { text: 'Account candidates' }), candidates);
+  const candidates = el('div', { class: 'lx-pool-candidates hidden' });
+  const summary = el('summary', { text: 'Account candidates', 'aria-expanded': 'false' });
+  const details = el('details', { class: 'lx-pool-details hidden' }, summary, candidates);
+  details.addEventListener('toggle', () => {
+    const open = details.hasAttribute('open');
+    summary.setAttribute('aria-expanded', String(open));
+    candidates.classList.toggle('hidden', !open);
+  });
   const controls = el('div', { class: 'lx-pool-controls' }, field('Account', choice), limit);
   const node = el('div', { class: 'lx-pools' }, controls, note);
   const result = el('div', { class: 'lx-pool-result' }, line, details);
   const refusal = el('p', { class: 'bad lx-pool-refusal hidden', role: 'status' });
   const read = () => launcherPoolFields(selection);
   const pct = (v) => typeof v === 'number' ? `${Math.round(v)}%` : 'unknown';
-  const reset = (v) => { const d = v ? new Date(v) : null; return d && Number.isFinite(d.getTime()) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'unknown'; };
+
   const blocked = () => reason || (pending && selection.account_mode !== 'legacy' ? 'Checking the account…' : '');
-  const paintReason = () => { refusal.textContent = blocked(); refusal.classList.toggle('hidden', !blocked()); result.classList.toggle('hidden', !line.textContent); };
+  const paintReason = () => { refusal.textContent = blocked(); refusal.classList.toggle('hidden', !blocked()); line.classList.toggle('hidden', !!blocked() || !line.textContent); result.classList.toggle('hidden', !line.textContent && details.classList.contains('hidden')); };
   const sync = () => {
     if (disposed || paused || (hooks.current && !hooks.current())) return;
     const agent = hooks.agent();
@@ -2123,7 +2134,7 @@ function launcherPoolsKit(hooks) {
     if (next === key) return;
     key = next; const request = ++seq;
     clearTimeout(timer); reason = ''; pending = active && agent !== 'shell';
-    line.textContent = pending && value !== 'legacy' ? 'Checking the account…' : '';
+    line.textContent = '';
     candidates.textContent = ''; details.classList.add('hidden');
     paintReason();
     if (!pending) return;
@@ -2137,18 +2148,18 @@ function launcherPoolsKit(hooks) {
         const selected = w && r.candidates.find((c) => c.account_id === w.account_id);
         const used = selected && typeof selected.pct_5h === 'number' && typeof selected.pct_weekly === 'number' ? pct(Math.max(selected.pct_5h, selected.pct_weekly)) + ' used' : 'usage unknown';
         const resets = Object.values(selected?.resets || {}).filter(Boolean).map((v) => new Date(v)).filter((d) => Number.isFinite(d.getTime())).sort((a, b) => a - b);
-        const nextReset = resets.length ? resets[0].toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : 'unknown';
+        const nextReset = launcherPoolReset(resets[0]?.toISOString());
         const usage = selected ? ` (${used}, resets ${nextReset})` : '';
-        line.textContent = reason || (w ? `Will start as ${w.account_label}${usage}` : '');
+        line.textContent = !reason && w ? `Will start as ${w.account_label}${usage}` : '';
         line.title = w ? w.reason || '' : '';
         candidates.textContent = '';
-        for (const c of r.candidates) candidates.append(el('p', { class: 'lx-pool-candidate', text: `${c.label}: 5 h ${pct(c.pct_5h)} (resets ${reset(c.resets?.['5h'])}); weekly ${pct(c.pct_weekly)} (resets ${reset(c.resets?.weekly)}). ${c.eligible ? 'Eligible' : c.why_not || 'Not eligible'}` }));
+        for (const c of r.candidates) candidates.append(el('p', { class: 'lx-pool-candidate', text: `${c.label}: 5 h ${pct(c.pct_5h)} (resets ${launcherPoolReset(c.resets?.['5h'])}); weekly ${pct(c.pct_weekly)} (resets ${launcherPoolReset(c.resets?.weekly)}). ${c.eligible ? 'Eligible' : c.why_not || 'Not eligible'}` }));
         details.classList.toggle('hidden', !r.candidates.length);
       } catch (_) {
         if (disposed || request !== seq) return;
         pending = false;
-        line.textContent = 'Could not check the account';
         reason = selection.account_mode === 'legacy' ? '' : 'Could not check the account';
+        line.textContent = reason ? '' : 'Could not check the account';
       }
       paintReason(); hooks.changed();
     }, 250);

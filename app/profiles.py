@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import hashlib
 from functools import wraps
+from contextlib import contextmanager
 import json
 import os
 import re
 import shlex
+import secrets
 import sqlite3
 import stat
 import sys
@@ -406,22 +408,36 @@ def _attempt_names(active):
     return ", ".join(sorted({r["tmux_name"] or r["task_id"] or f"attempt {r['id']}" for r in active}))
 
 
-def abandoned_reservations(db):
-    """Database-only snapshot under db.lock; started_at is creation time.
+@contextmanager
+def inflight_launch(db):
+    """Unique process-local proof of ownership, from reservation through binding.
 
-    An owner label alone is not proof of life: require a session binding, run or task row.
-    Old attempts without an owner column are covered as well after the two-minute grace.
+    Guarded by db.lock, like the reservation snapshot. A fresh DB at startup has
+    no owners; persisted task/run rows cannot keep an unbound reservation alive.
     """
-    return [r[0] for r in db.conn.execute("""
-        SELECT a.id FROM runtime_attempt a
-        WHERE a.ended_at IS NULL AND julianday(a.started_at) < julianday('now', '-2 minutes')
+    owner = secrets.token_hex(16)
+    with db.lock:
+        if not hasattr(db, '_inflight_launches'):
+            db._inflight_launches = set()
+        db._inflight_launches.add(owner)
+    try:
+        yield owner
+    finally:
+        with db.lock:
+            db._inflight_launches.discard(owner)
+
+
+def abandoned_reservations(db):
+    """Read-only snapshot under db.lock; only a binding or live owner proves life."""
+    owners = getattr(db, '_inflight_launches', ())
+    return [r['id'] for r in db.conn.execute("""
+        SELECT a.id, a.reservation_owner FROM runtime_attempt a
+        WHERE a.ended_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM kv k JOIN sessions s ON k.key='runtime_session:' || s.id
                         WHERE json_extract(k.value, '$.attempt')=a.id)
-        AND NOT EXISTS (SELECT 1 FROM tasks t WHERE CAST(t.id AS TEXT)=a.task_id)
-        AND NOT EXISTS (SELECT 1 FROM runs r WHERE a.task_id='run:' || r.id)
         AND NOT EXISTS (SELECT 1 FROM kv k JOIN runs r ON k.key='runtime_run:' || r.id
                         WHERE json_extract(k.value, '$.attempt')=a.id)
-    """)]
+    """) if r['reservation_owner'] not in owners]
 
 
 def reconcile_reservations(db):
@@ -443,6 +459,9 @@ def reconcile_attempts(db):
     reconcile_reservations(db)
     known = True
     for attempt in _open_attempts(db):
+        with db.lock:
+            if attempt['reservation_owner'] in getattr(db, '_inflight_launches', ()):
+                continue
         stale = False
         if attempt["session_ended"]:
             stale = True

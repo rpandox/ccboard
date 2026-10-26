@@ -38,7 +38,7 @@ from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
 from . import profiles
-from .agents.base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, BYPASS_REFUSAL_CODEX, LaunchReq
+from .agents.base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, BYPASS_REFUSAL_CODEX, LaunchReq, bypass_requested as _bypass_requested
 from .agents import claude as claude_adapter
 from .agents.claude import OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
@@ -3732,21 +3732,6 @@ def _override_requested(extra: list[str]) -> str | None:
     return _arg_matching(extra, OVERRIDE_PARTS)
 
 
-# Exact permission/sandbox bypass spellings. Hook trust is a separate supported setting.
-_PERMISSION_BYPASS = frozenset({
-    'bypasspermissions', 'danger-full-access', '--dangerously-skip-permissions',
-    '--allow-dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox', '--yolo',
-})
-
-
-def _bypass_requested(extra: list[str]) -> str | None:
-    for word in extra:
-        if word == '--':
-            break
-        parts = word.lower().split('=', 1)
-        if any(part in _PERMISSION_BYPASS for part in parts):
-            return word
-    return None
 
 
 def _launch_danger(agent, raw, extra=(), *, bypass=False):
@@ -3869,75 +3854,76 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     bound = (opts or {}).get("account_id")
     selected = (opts or {}).get('account_mode', 'legacy') != 'legacy'
-    attempt = None
-    previous = None
-    launch_started = time.time()
-    real = None
-    try:
-        if bound is not None or selected:
-            if not cmd_line:
-                raise projects.BadRequest("a profile requires an agent command")
-            words = shlex.split(cmd_line)
-            option_words = words[:words.index("--")] if "--" in words else words
-            if ((opts or {}).get("devcontainer") or _launch_danger(agent, opts, option_words)
-                    or _override_requested(option_words)):
-                raise projects.BadRequest("profiles require a local launch without bypass")
-            if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
-                raise projects.BadRequest("profile resumes require a thread UUID")
-            previous = profiles.previous_attempt(db, name, task_id)
-            transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
-            if selected:
-                try:
-                    attempt, assignment = pools.reserve(db, agent, opts, repo=f'{project}/{repo}',
-                        requested_model=pools.requested_model(opts, words), task_id=task_id,
-                        provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=f'session:{name}')
-                except projects.BadRequest as exc:
-                    if task_id is not None and previous is not None:
-                        raise projects.BadRequest(pools.P4_RESUME_REASON + ': ' + str(exc)) from exc
-                    raise
-                bound = assignment['account_id']
-                opts = {**opts, 'account_id': bound}
-            else:
-                profiles.require_account(db, agent, bound)
-                attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
-                    provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=f'session:{name}')
-            cmd_line = profiles.wrap_command(cmd_line, agent, bound)
-        real = tmux.new_session(name, cwd, env=env)
-        try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
-            account = bound or (accounts.current(db) if agent == "claude" else None)
-        except Exception as e:
-            log.debug("current account lookup failed: %s", e)
-            account = None
-        row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
-                                claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
-                                account=account)
-        if attempt is not None:
-            db.kv_set(f"runtime_session:{row_id}", {"attempt": attempt})
-        if agent == "codex":                                      # what -a / -s the line runs under, for the Tune's Approvals and Sandbox rows (None: config.toml decides)
-            try:
-                perm = agents.get("codex").permissions_of(opts, cmd_line)
-                if perm:
-                    db.update_flags(real, {"perm": perm})
-            except Exception as e:
-                log.debug("permissions of %s unknown: %s", real, e)
-        if cmd_line:
-            tmux.send_line(real, cmd_line)
-    except Exception:
+    with profiles.inflight_launch(db) as owner:
+        attempt = None
+        previous = None
+        launch_started = time.time()
+        real = None
         try:
-            if real is not None:
-                try:
-                    tmux.kill_session(real)
-                finally:
-                    db.end(real, "launch_failed")
-        finally:
+            if bound is not None or selected:
+                if not cmd_line:
+                    raise projects.BadRequest("a profile requires an agent command")
+                words = shlex.split(cmd_line)
+                option_words = words[:words.index("--")] if "--" in words else words
+                if ((opts or {}).get("devcontainer") or _launch_danger(agent, opts, option_words)
+                        or _override_requested(option_words)):
+                    raise projects.BadRequest("profiles require a local launch without bypass")
+                if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
+                    raise projects.BadRequest("profile resumes require a thread UUID")
+                previous = profiles.previous_attempt(db, name, task_id)
+                transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
+                if selected:
+                    try:
+                        attempt, assignment = pools.reserve(db, agent, opts, repo=f'{project}/{repo}',
+                            requested_model=pools.requested_model(opts, words), task_id=task_id,
+                            provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=owner)
+                    except projects.BadRequest as exc:
+                        if task_id is not None and previous is not None:
+                            raise projects.BadRequest(pools.P4_RESUME_REASON + ': ' + str(exc)) from exc
+                        raise
+                    bound = assignment['account_id']
+                    opts = {**opts, 'account_id': bound}
+                else:
+                    profiles.require_account(db, agent, bound)
+                    attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
+                        provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=owner)
+                cmd_line = profiles.wrap_command(cmd_line, agent, bound)
+            real = tmux.new_session(name, cwd, env=env)
+            try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
+                account = bound or (accounts.current(db) if agent == "claude" else None)
+            except Exception as e:
+                log.debug("current account lookup failed: %s", e)
+                account = None
+            row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
+                                    claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
+                                    account=account)
             if attempt is not None:
-                profiles.finish_attempt(db, attempt, "launch_failed")
-        raise
-    if attempt is not None and claude_session_id is None:
-        profiles.discover_attempt(db, attempt, cwd, agent, launch_started, real, transcript_snapshot)
-    if task_id is not None:                                   # only once the command is really typed: a failed launch leaves the task unbound
-        db.task_update(task_id, session_row=row_id)
-    return real, row_id
+                db.kv_set(f"runtime_session:{row_id}", {"attempt": attempt})
+            if agent == "codex":                                      # what -a / -s the line runs under, for the Tune's Approvals and Sandbox rows (None: config.toml decides)
+                try:
+                    perm = agents.get("codex").permissions_of(opts, cmd_line)
+                    if perm:
+                        db.update_flags(real, {"perm": perm})
+                except Exception as e:
+                    log.debug("permissions of %s unknown: %s", real, e)
+            if cmd_line:
+                tmux.send_line(real, cmd_line)
+        except Exception:
+            try:
+                if real is not None:
+                    try:
+                        tmux.kill_session(real)
+                    finally:
+                        db.end(real, "launch_failed")
+            finally:
+                if attempt is not None:
+                    profiles.finish_attempt(db, attempt, "launch_failed")
+            raise
+        if attempt is not None and claude_session_id is None:
+            profiles.discover_attempt(db, attempt, cwd, agent, launch_started, real, transcript_snapshot)
+        if task_id is not None:                                   # only once the command is really typed: a failed launch leaves the task unbound
+            db.task_update(task_id, session_row=row_id)
+        return real, row_id
 
 
 def _start_session(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,

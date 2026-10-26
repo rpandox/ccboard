@@ -26,7 +26,7 @@ from typing import NamedTuple
 
 from .. import claude_auth, projects
 from ..config import settings
-from .base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec
+from .base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, bypass_requested
 from .pickers import PROVEN
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$")           # an alias or id, optionally the 1M-context variant (opus[1m])
@@ -121,10 +121,8 @@ WORKTREE_DIR = ".claude/worktrees"                # where `claude --worktree <na
 # Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in extra args, use
 # the controls instead. The bypass flags themselves are an explicit choice on interactive sessions.
 OVERRIDE_PARTS = ("--settings", "--setting-sources", "--permission-prompt")
-BYPASS_PARTS = ("dangerously", "bypasspermissions")
 # Unattended runs: the permission mode is set by the job itself and may never be escalated through the args (any spelling).
-FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
-                       "--permission-prompt", "--allow-dangerously")
+FORBIDDEN_ARG_PARTS = ("--permission-mode", "--settings", "--setting-sources", "--permission-prompt")
 TASK_REFUSAL = ("bypassPermissions (or a settings override) is not allowed for tasks; "
                 "bypass is only for an interactive Claude session in the repo's devcontainer (#104)")
 
@@ -638,11 +636,11 @@ class ClaudeAgent(Agent):
         if "--" in extra:                    # a bare `--` turns the board's own --session-id / --name / --worktree into positionals (#44 F-07)
             return "--"
         if not interactive:
-            return _arg_matching(extra, FORBIDDEN_ARG_PARTS) or bare_refused(extra)
+            return bypass_requested(extra) or _arg_matching(extra, FORBIDDEN_ARG_PARTS) or bare_refused(extra)
         bad = _arg_matching(extra, OVERRIDE_PARTS)
         if bad or not task:
             return bad
-        return _arg_matching(extra, BYPASS_PARTS)
+        return bypass_requested(extra)
 
     @staticmethod
     def _extra_list(raw) -> list[str]:
@@ -897,12 +895,12 @@ class ClaudeAgent(Agent):
         if devc and not projects.has_devcontainer(Path(cwd)):
             raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
         add_dirs = [] if devc else [str(d) for d in (req.add_dirs or [])]
-        if not req.task and not devc and (req.bypass or full.get("permission_mode") == "bypassPermissions" or _arg_matching(extra, BYPASS_PARTS)):
+        if not req.task and not devc and (req.bypass or full.get("permission_mode") == "bypassPermissions" or bypass_requested(extra)):
             raise projects.BadRequest(BYPASS_REFUSAL)          # bypass only inside the repo's devcontainer (#104): the one gate for every caller and every launch kind
-        if not req.task and devc and not req.bypass and (full.get("permission_mode") == "bypassPermissions" or _arg_matching(extra, BYPASS_PARTS)):
+        if not req.task and devc and not req.bypass and (full.get("permission_mode") == "bypassPermissions" or bypass_requested(extra)):
             raise projects.BadRequest(BYPASS_ACK_REQUIRED)     # and there every spelling still needs the acknowledgement (mode, permission_mode, the args)
         # the acknowledgement adds the flag only when nothing else already says bypass (the mode, permission_mode or the args): one spelling, not two
-        bypass = ["--dangerously-skip-permissions"] if req.bypass and full.get("permission_mode") != "bypassPermissions" and not _arg_matching(extra, BYPASS_PARTS) else []
+        bypass = ["--dangerously-skip-permissions"] if req.bypass and full.get("permission_mode") != "bypassPermissions" and not bypass_requested(extra) else []
         tail = [*self._opt_args(full), *extra]
         more = ["--add-dir", *add_dirs] if add_dirs else []
         worktree = None
