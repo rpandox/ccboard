@@ -45,6 +45,7 @@ HOME_USE_ALLOWED = {
     "scripts/install-macos.sh": "shell: the macOS installer works in the user's home by design (LaunchAgents, Logs, the data dir, ~/.local/bin); tests run it with a temp HOME and fakes on PATH",
     "scripts/uninstall-macos.sh": "shell: removes the LaunchAgents plists from the user's home; tests run it with a temp HOME and fakes on PATH",
     "scripts/ccboard-mem-env": "shell: default claude-mem data dir and board data dir, overridden by CLAUDE_MEM_DATA_DIR / CCBOARD_DATA_DIR (test seams); reads names only",
+    "scripts/dev/pools_spike.py": "dev spike (issue #219): finds the real ~/.claude and ~/.codex to REFUSE them and to stat them (names and mtimes only, no content); the tests point HOME at a temp dir",
     "scripts/dev/axe-run.sh": "shell: default path of the gstack browse binary (dev QA tooling, overridden by BROWSE; not the board)",
     "bin/ccboard-mem-run": "shell wrapper: claude-mem cache and data dir defaults, overridden by CLAUDE_CONFIG_DIR / CLAUDE_MEM_DATA_DIR",
     "bin/ccboard-hook-fast": "hook token default path, overridden by CCBOARD_HOOK_TOKEN_FILE",

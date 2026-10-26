@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.111 - 2026-10-19
+
+### Added
+- Pools P0: the spike notes and a one-command spike for two logins (refs #219). `docs/spikes/pools-p0.md` records, from the installed CLIs, the Codex source and the vendor docs, how a session resumes under a second Claude or Codex profile, where the usage numbers and the subscription id live, and which questions the owner's two-login run settles. `scripts/dev/pools_spike.py` builds scratch profiles, walks through the two logins, runs the resume test through each CLI's own commands and writes a results file and a comment for the issue; `--dry-run` prints every command and starts nothing. No change to the board.
+
+Upgrade: nothing to do.
+
 ## v0.5.110 - 2026-10-19
 
 ### Fixed
