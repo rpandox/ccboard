@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from app import agents, main, pools, profiles, projects, recover, scheduler
+from app import agents, main, nodes_relay, pools, profiles, projects, recover, scheduler
 from app.config import settings
 from tests.test_pools import api, seed, request_body, MODE
 from tests.test_profiles import box, rows, HEADERS, SID
@@ -225,6 +225,34 @@ def test_unrelated_text_is_not_permission_bypass(args):
     assert main._bypass_requested(args) is None
 
 
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+@pytest.mark.parametrize('spelling', nodes_relay.SPELLINGS)
+@pytest.mark.parametrize('form', ['plain', 'upper', 'equals'])
+def test_node_bypass_spellings_are_refused_by_shared_check_and_adapters(provider, spelling, form):
+    token = spelling.upper() if form == 'upper' else f'--option={spelling}' if form == 'equals' else spelling
+    assert main._bypass_requested([token]) == token
+    adapter = agents.get(provider)
+    assert adapter.forbidden_extra([token], interactive=True, task=True) == token
+    assert adapter.forbidden_extra([token], interactive=False) == token
+    assert scheduler.forbidden_arg([token], provider) == token
+    with pytest.raises(ValueError, match='not allowed for unattended runs'):
+        scheduler.check_extra_args(token, provider)
+    assert nodes_relay.guard_launch({'prompt': token})
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+@pytest.mark.parametrize('text', ['dangerously', 'avoid dangerously deleting files', 'avoid bypassPermissions today',
+                                  'never use --dangerously-skip-permissions'])
+def test_quoted_prose_stays_allowed_by_scheduler_and_adapter(provider, text):
+    import shlex
+    extra = ['--append-system-prompt', text]
+    assert main._bypass_requested(extra) is None
+    assert scheduler.forbidden_arg(extra, provider) is None
+    assert scheduler.check_extra_args(shlex.join(extra), provider) == extra
+    for interactive, task in [(True, False), (True, True), (False, False)]:
+        assert agents.get(provider).forbidden_extra(extra, interactive=interactive, task=task) is None
+
+
 def test_deleted_task_reference_is_abandoned(box):
     seed(box, (10,), cap=1)
     aid, _ = pools.reserve(box, 'claude', MODE, task_id=12345)
@@ -346,11 +374,15 @@ def test_startup_abandons_every_unbound_reservation(box, owner, seconds):
     ('--permission-mode bypassPermissions', False),
     ('--dangerously-bypass-approvals-and-sandbox', False),
     ('--yolo', False),
+    ('--sandbox=danger-full-access', False),
+    ('danger-full-access', False),
+    ('bypassPermissions', False),
 ])
 @pytest.mark.parametrize('kind', ['session', 'task'])
-def test_quoted_danger_text_dry_run_and_launch_agree(api, box, args, allowed, kind):
-    seed(box, (10,))
-    body = {**request_body(kind), 'args': args}
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_quoted_danger_text_dry_run_and_launch_agree(api, box, args, allowed, kind, provider):
+    seed(box, (10,), provider=provider)
+    body = {**request_body(kind, provider), 'args': args}
     dry = api.post('/api/launch/dry-run', json=body, headers=HEADERS).json()
     response = api.post('/api/tasks' if kind == 'task' else '/api/projects/project/repos/root/sessions', json=body, headers=HEADERS)
     assert bool(dry['will_start_as']) == allowed, dry

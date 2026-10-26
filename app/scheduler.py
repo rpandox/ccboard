@@ -41,10 +41,8 @@ KV_LOGIN_ALERT_BY_AGENT = {"claude": KV_LOGIN_ALERT, "codex": "sched_login_alert
 AGENT_LABEL = {"claude": "Claude", "codex": "Codex"}
 
 
-# Unattended-run argument rules per agent. FORBIDDEN_ARG_PARTS (above, re-exported) is Claude's list of substrings, any spelling. Codex's
-# are the substrings dangerously / yolo / bypass plus exact tokens that change configuration or the model's profile behind the board's
-# back (-c, --config, -p, --profile, --enable, --disable, --strict-config) and anything --remote*. app/agents/codex.py enforces them
-# through forbidden_extra(); these are the mirror (tests pin both against each other).
+# Compatibility exports for callers inspecting the unattended rules. Enforcement lives in the adapters;
+# permission bypass uses their shared exact-token check, so prompt text is not mistaken for a flag.
 CODEX_FORBIDDEN_PARTS = codex_agent.FORBIDDEN_ARG_PARTS            # ("dangerously", "yolo", "bypass"): one list, the adapter's
 CODEX_FORBIDDEN_EXACT = ("-c", "--config", "-p", "--profile", "--enable", "--disable", "--strict-config")
 CODEX_FORBIDDEN_PREFIX = ("--remote",)
@@ -52,17 +50,14 @@ FORBIDDEN_ARG_PARTS_BY_AGENT = {"claude": FORBIDDEN_ARG_PARTS, "codex": CODEX_FO
 
 
 def forbidden_arg(extra: list[str], agent: str = "claude") -> str | None:
-    """The first argument an unattended run of `agent` may not carry, by the scheduler's own mirror of the rules (None when clean).
-    check_extra_args asks the adapter; this is the adapter-free check, for callers that must not import it and for the tests."""
+    """Mirror the adapter's unattended check without maintaining a second set of danger rules."""
+    if agent in agents.names():
+        return agents.get(agent).forbidden_extra(extra, interactive=False)
+    # Preserve the legacy fallback for callers probing an unknown agent. check_extra_args rejects it.
     parts = FORBIDDEN_ARG_PARTS_BY_AGENT.get(agent, FORBIDDEN_ARG_PARTS)
     for a in extra:
         low = str(a).lower()
         if any(p in low for p in parts):
-            return a
-        tok = str(a)
-        if agent == "codex" and (tok in CODEX_FORBIDDEN_EXACT or low.startswith(CODEX_FORBIDDEN_PREFIX)
-                                 or any(tok.startswith(x + "=") for x in CODEX_FORBIDDEN_EXACT if x.startswith("--"))
-                                 or (tok.startswith(("-c", "-p")) and not tok.startswith("--"))):   # -cmodel=x: a short flag with its value attached
             return a
     return None
 
@@ -76,7 +71,7 @@ def check_extra_args(args: str | None, agent: str = "claude") -> list[str]:
         parts = shlex.split(args)
     except ValueError as e:
         raise ValueError(f"args: {e}")
-    bad = agents.get(agent).forbidden_extra(parts, interactive=False) or forbidden_arg(parts, agent)
+    bad = agents.get(agent).forbidden_extra(parts, interactive=False)
     if bad:
         if agent == "claude" and str(bad).lower() == "--bare":
             raise ValueError(f"argument not allowed for unattended runs: {bad}. {BARE_REFUSAL}")

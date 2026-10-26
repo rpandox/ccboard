@@ -123,6 +123,8 @@ WORKTREE_DIR = ".claude/worktrees"                # where `claude --worktree <na
 OVERRIDE_PARTS = ("--settings", "--setting-sources", "--permission-prompt")
 # Unattended runs: the permission mode is set by the job itself and may never be escalated through the args (any spelling).
 FORBIDDEN_ARG_PARTS = ("--permission-mode", "--settings", "--setting-sources", "--permission-prompt")
+# Compatibility labels used by guard consumers; bypass_requested owns the exact-token decision.
+BYPASS_PARTS = ("dangerously", "bypasspermissions")
 TASK_REFUSAL = ("bypassPermissions (or a settings override) is not allowed for tasks; "
                 "bypass is only for an interactive Claude session in the repo's devcontainer (#104)")
 
@@ -636,7 +638,7 @@ class ClaudeAgent(Agent):
         if "--" in extra:                    # a bare `--` turns the board's own --session-id / --name / --worktree into positionals (#44 F-07)
             return "--"
         if not interactive:
-            return bypass_requested(extra) or _arg_matching(extra, FORBIDDEN_ARG_PARTS) or bare_refused(extra)
+            return _arg_matching(extra, FORBIDDEN_ARG_PARTS) or bypass_requested(extra) or bare_refused(extra)
         bad = _arg_matching(extra, OVERRIDE_PARTS)
         if bad or not task:
             return bad

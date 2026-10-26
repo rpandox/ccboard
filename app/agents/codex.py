@@ -48,7 +48,7 @@ except ImportError:                                  # Python < 3.11: the trust 
 from .. import platform as plat
 from .. import projects
 from ..config import settings
-from .base import BYPASS_REFUSAL_CODEX, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, TTLCache
+from .base import BYPASS_REFUSAL_CODEX, Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, TTLCache, bypass_requested
 from .claude import (CONTINUING_END, FRESH_SOURCES, LIMIT_MSG_RE, PATH_MAX, RATE_RE, RESULT_MAX, UUID_RE, WORKTREE_RE, _kind, _str,
                      _truthy)
 
@@ -111,7 +111,7 @@ FORBIDDEN_LONG = frozenset({"--config", "--profile", "--enable", "--disable", "-
                             "--full-auto", "--model", "--cd", "--search", "--no-alt-screen", "--no-daemon", "--worktree"})
 FORBIDDEN_PREFIX = ("--remote",)
 FORBIDDEN_STRICT_LONG = frozenset({"--add-dir"})        # unattended runs and tasks: extra write access only through the controls
-FORBIDDEN_ARG_PARTS = ("dangerously", "yolo", "bypass")  # substrings, any case (scheduler.FORBIDDEN_ARG_PARTS mirrors them)
+FORBIDDEN_ARG_PARTS = ("dangerously", "yolo", "bypass")  # reserved flag-name fragments, any case; never prose values
 FORBIDDEN_ARG_TOKENS = tuple(sorted(FORBIDDEN_SHORT | FORBIDDEN_LONG))
 
 # Codex's own flag set at 0.160 (tests/fixtures/codex_help_0160.txt: the 0.157.1 capture, whose option list the box's 0.160.1 `--help`
@@ -936,11 +936,12 @@ class CodexAgent(Agent):
         for raw in extra or []:
             t = str(raw)
             low = t.lower()
-            if t == "--" or any(part in low for part in FORBIDDEN_ARG_PARTS):
+            if t == "--" or bypass_requested([t]):
                 return t                                     # a bare `--` would turn the adapter's own flags into positionals
             if t.startswith("--"):
                 base = low.split("=", 1)[0]
-                if base in FORBIDDEN_LONG or base.startswith(FORBIDDEN_PREFIX) or (strict and base in FORBIDDEN_STRICT_LONG):
+                if (any(part in base for part in FORBIDDEN_ARG_PARTS) or base in FORBIDDEN_LONG
+                        or base.startswith(FORBIDDEN_PREFIX) or (strict and base in FORBIDDEN_STRICT_LONG)):
                     return t
             elif t.startswith("-") and len(t) >= 2 and t[:2] in FORBIDDEN_SHORT:
                 return t                                     # -c, or -cfoo=1 (clap takes an attached value)
@@ -1028,7 +1029,7 @@ class CodexAgent(Agent):
             # bypass is Claude-in-the-devcontainer only (owner decision, #104) and Codex never runs in the devcontainer: every bypass spelling is refused
             # with that one answer, ahead of the generic "the launcher sets this flag itself"
             if (bypass or pm == "bypassPermissions" or sandbox == "danger-full-access"
-                    or any(w in str(a).lower() for a in extra for w in (*FORBIDDEN_ARG_PARTS, "danger-full-access"))):
+                    or bypass_requested(extra)):
                 raise projects.BadRequest(BYPASS_REFUSAL_CODEX)
             bad = self.forbidden_extra(extra, interactive=True)
             if bad:

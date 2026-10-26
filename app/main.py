@@ -3112,7 +3112,7 @@ def api_create_chain(project: str, repo: str, body: ChainIn):
         chain_id = uuid.uuid4().hex[:12]
         ids: list[int] = []
         for i, (step, c, slug, agent) in enumerate(checked):
-            spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(step, k, None)) not in (None, "", [])}
+            spec = _task_spec_values(step, agent)
             if not auto:
                 spec["auto_close"] = False
             ids.append(db.task_add(project=project, repo=repo, slug=slug, title=c["title"], prompt=c["prompt"], tmux_name="", worktree="",
