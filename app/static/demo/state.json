@@ -435,7 +435,7 @@
               "state": "errored",
               "state_at": "2026-10-03T00:12:00+00:00",
               "last_event": "StopFailure",
-              "last_message": "5-hour limit reached · resets 6:25am",
+              "last_message": "5-hour limit reached \u00b7 resets 6:25am",
               "last_prompt": "do it",
               "stats": {
                 "model": "Fable 5.1",
@@ -988,7 +988,7 @@
       "installed": true,
       "version": "2.1.288",
       "loggedIn": true,
-      "glyph": "◆",
+      "glyph": "\u25c6",
       "hooks": {
         "installed": true
       },
@@ -1000,7 +1000,7 @@
       "version": "0.58.0",
       "loggedIn": true,
       "authMethod": "chatgpt",
-      "glyph": "◇",
+      "glyph": "\u25c7",
       "hooks": {
         "installed": true,
         "trust": "review"
@@ -2568,7 +2568,7 @@
   "rate_limited": {
     "value": {
       "session": "petroit--api--s2",
-      "message": "5-hour limit reached · resets 6:25am",
+      "message": "5-hour limit reached \u00b7 resets 6:25am",
       "kind": "5h",
       "resets_at": 1791006000
     },
@@ -2626,5 +2626,6 @@
       "2 terminals are open; ttyd and tmux sessions keep running"
     ]
   },
+  "pools": null,
   "links_enabled": true
 }

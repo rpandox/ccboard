@@ -84,6 +84,53 @@ test('index.html loads only the shell set: no lazy script is in it, and with jus
   assert.deepEqual(L.net.scripts, [], 'loading the shell set fetched nothing');
 });
 
+test('pools load only when enabled, wait for styles, paint current state and disappear when disabled', async () => {
+  const L = lazyWorld();
+  const { w } = L;
+  w.document.body.append(w.get('el')('div', { id: 'banner' }));
+  w.run('state.pools = null; Shell.limit(state)');
+  assert.deepEqual(L.net.scripts, []);
+  assert.deepEqual(L.net.sheets, []);
+  w.run(`state.pools = { groups: [{ id: 1, provider: 'claude', accounts: ['work'], state: 'ok', window_5h_pct: 10 }] }; Shell.limit(state); Shell.limit(state)`);
+  assert.equal(w.document.querySelector('.pool-strip'), null, 'no unstyled strip during the load');
+  w.run('state = { ...state, pools: { groups: [{ ...state.pools.groups[0], window_5h_pct: 90 }] } }');
+  assert.ok(await settle(() => w.document.querySelector('.pool-group')));
+  assert.match(w.document.querySelector('.pool-group').textContent, /90%/);
+  assert.deepEqual(L.net.scripts, ['/static/pool-usage.js']);
+  assert.deepEqual(L.net.sheets, ['/static/pool-usage.css']);
+  w.run('Shell.limit(state)');
+  assert.equal(L.net.scripts.length, 1, 'subsequent paints reuse the bundle');
+  w.run('state.pools = null; Shell.limit(state)');
+  assert.equal(w.document.getElementById('pool-strip-host'), null);
+});
+
+for (const failed of ['/static/pool-usage.js', '/static/pool-usage.css']) {
+  test(`pools retry a failed ${failed} through the shared loader without painting a partial bundle`, async () => {
+    const L = lazyWorld({ fail: [failed] });
+    const { w } = L;
+    w.document.body.append(w.get('el')('div', { id: 'banner' }));
+    w.run("globalThis.poolErrors = 0; toast = () => { poolErrors++; }; state.pools = { groups: [] }; Shell.limit(state)");
+    assert.ok(await settle(() => w.get('poolErrors') === 1));
+    assert.equal(w.document.querySelector('.pool-strip'), null);
+    assert.equal(w.run("Lazy.done('pools')"), false);
+    L.net.fail.clear();
+    w.run('Shell.limit(state)');
+    assert.ok(await settle(() => w.document.querySelector('.pool-strip')));
+    assert.equal(L.net.scripts.length, failed.endsWith('.js') ? 2 : 1);
+    assert.equal(L.net.sheets.length, failed.endsWith('.css') ? 2 : 1);
+    assert.equal(w.run("Lazy.done('pools')"), true);
+  });
+}
+
+test('pools disabled during loading do not paint stale data', async () => {
+  const L = lazyWorld();
+  const { w } = L;
+  w.document.body.append(w.get('el')('div', { id: 'banner' }));
+  w.run('state.pools = { groups: [] }; Shell.limit(state); state.pools = null; Shell.limit(state)');
+  assert.ok(await settle(() => w.run("Lazy.done('pools')")));
+  assert.equal(w.document.getElementById('pool-strip-host'), null);
+});
+
 test('the pages of the first-paint set mount without a fetch, with a mouse or without', async () => {
   for (const fine of [false, true]) {
     const L = lazyWorld({ fine });

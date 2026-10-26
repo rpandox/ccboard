@@ -679,7 +679,7 @@ def test_runtime_profiles_add_empty_tables_to_old_db(tmp_path):
     make_old_db(path)
     db = DB(path)
     try:
-        assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at"}
+        assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at", "quota_group_id"}
         assert set(columns(db.conn, "runtime_attempt")) == {"id", "task_id", "n", "account_id", "provider", "node_id", "provider_session_id",
                                                             "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id"}
         for table in ("pool_account", "runtime_attempt"):
@@ -692,3 +692,17 @@ def test_runtime_profiles_add_empty_tables_to_old_db(tmp_path):
         assert dump(reopened) == before
     finally:
         reopened.close()
+
+
+def test_pool_usage_migration_is_empty_and_idempotent(tmp_path):
+    path = tmp_path / 'usage-old.db'
+    make_old_db(path)
+    db = DB(path)
+    assert columns(db.conn, 'pool_account')['quota_group_id'] == ('INTEGER', 0, None)
+    for table in ('quota_group', 'usage_sample'):
+        assert db.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0] == 0
+    db.conn.execute("INSERT INTO pool_account(id,provider,label,state,created_at) VALUES ('one','claude','One','ready','2026-01-01')")
+    db.close()
+    db = DB(path)
+    assert db.conn.execute('SELECT quota_group_id FROM pool_account').fetchone()[0] is None
+    db.close()

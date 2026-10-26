@@ -201,8 +201,10 @@ def clean_state(body, row: dict) -> dict:
         if isinstance(w, dict):
             usage[agent] = {"pct": _n(w.get("pct")), "resets_at": w.get("resets_at") if isinstance(w.get("resets_at"), int) and not isinstance(w.get("resets_at"), bool) else _s(w.get("resets_at"), 40),
                             "backoff_until": _s(w.get("backoff_until"), 40), "known": bool(w.get("known")), "limited": bool(w.get("limited"))}
+    from . import pool_usage
+    pools = pool_usage.clean_peer(body.get("pools"))
     login = body.get("login_problems")
-    return {"api": _i(body.get("api")), "node": {"id": node["id"], "version": _s(node.get("version"), 40), "now": _s(node.get("now"), 40)},
+    return {**({"pools": pools} if pools is not None else {}), "api": _i(body.get("api")), "node": {"id": node["id"], "version": _s(node.get("version"), 40), "now": _s(node.get("now"), 40)},
             "etag_base": _s(body.get("etag_base"), 64), "projects": projects, "sessions": sessions, "tasks": tasks,
             "needs_you": {k: _i(ny.get(k)) for k in ("permissions", "input", "errors")}, "usage": usage,
             "lanes": {k: _i(lanes.get(k)) for k in ("cap", "running", "free")},
@@ -461,11 +463,17 @@ class NodeHub:
     def _public(self, row: dict, rec: dict, now: float) -> dict:
         ok = rec.get("ok_ts")
         skew = rec.get("skew_ms")
+        state = rec.get("state")
+        if settings.pools and isinstance(state, dict) and state.get("pools"):
+            from . import pool_usage
+            state = {**state, "pools": pool_usage.clean_peer(state["pools"], now)}
+        elif isinstance(state, dict) and "pools" in state:
+            state = {k: v for k, v in state.items() if k != "pools"}
         return {"peer_id": row["peer_id"], "handle": row.get("handle"), "node_id": row.get("node_id"), "name": row.get("name"), "url": row.get("url"),
                 "status": self.status_of(rec, now), "polled_at": iso(rec["polled_ts"]) if rec.get("polled_ts") is not None else None,
                 "last_ok_at": iso(ok) if ok is not None else None, "age_s": int(max(0.0, now - ok)) if ok is not None else None,
                 "skew_ms": skew, "skew_warn": bool(skew is not None and abs(skew) > SKEW_WARN_MS), "error_kind": rec.get("error_kind"),
-                "card": rec.get("card"), "state": rec.get("state"), "etag": rec.get("etag"), "legacy": bool(row.get("legacy")),
+                "card": rec.get("card"), "state": state, "etag": rec.get("etag"), "legacy": bool(row.get("legacy")),
                 "pubkey": row.get("pubkey"), "key_id": row.get("key_id"), "key_source": row.get("key_source"),
                 "scopes": row.get("scopes") or [], "peer_api": rec.get("peer_api"), "api": nodes.API_VERSION, "needs_repair": bool(row.get("needs_repair"))}
 
@@ -625,6 +633,9 @@ class NodeHub:
         if api not in SUPPORTED_API:                              # another node API (or none): the card still reads, the state is not merged, actions are refused
             card = self._card_update(row, {**rec, "card": None})
             return {"hard": "incompatible", "error_kind": "api_version", "peer_api": api, "etag": None, **card}
+        if settings.pools and state.get("pools") is not None:
+            from . import pool_usage
+            pool_usage.merge_peer(self.db, state["pools"], state["node"]["id"])
         tag = r.headers.get("etag")
         out = {"hard": None, "error_kind": None, "ok_ts": self.clock(), "state": state, "etag": tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None,
                "peer_api": api}

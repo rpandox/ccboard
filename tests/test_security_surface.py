@@ -44,6 +44,7 @@ NO_CSRF = "missing X-CCBoard header"
 
 EXPECTED = {
     ("GET", "/api/pools/accounts"): "identity",
+    ("GET", "/api/pools/usage"): "identity",
     ("POST", "/api/pools/migrate"): "identity+csrf",
     ("POST", "/api/pools/accounts/{account_id}/release"): "identity+csrf",
     # Bare devices (#273): person-only management, with CSRF on mutations; no hook or node tokens.

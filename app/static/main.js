@@ -1,8 +1,7 @@
-/* ccboard main: the boot sequence, loaded last by index.html. The only file that starts the state poll. */
+/* ccboard boot: loaded last, starts the state poll. */
 'use strict';
 
-/* html.pwa marks an installed window (standalone, minimal-ui, fullscreen or the window-controls overlay; iPad and iPhone report it as navigator.standalone):
-   the CSS only styles the title-bar overlay and the app-like chrome under it, and never needs to sniff the user agent. */
+/* Mark installed windows for the app shell CSS. */
 function markStandalone() {
   const root = document.documentElement;
   if (!root || !root.classList) return false;
@@ -23,8 +22,7 @@ function withPalette(fn) {
   return undefined;
 }
 
-/* A page or snippet shared to the installed app (the manifest's share_target, GET /?title=&text=&url=) opens the palette's "send to session" list
-   with the text in its box. Once the first state is in, so the list has sessions to offer. */
+/* Offer shared text after the first state supplies session choices. */
 let shareOffered = { text: '', at: 0 };
 
 function offerShare(text) {
@@ -45,8 +43,7 @@ function openSharedText() {
   });
 }
 
-/* The manifest says launch_handler focus-existing: with the app already open, a share or a shortcut does not navigate its window, the browser
-   hands the URL to launchQueue instead (Chromium; elsewhere there is no launchQueue and the address carries it). */
+/* Handle share/shortcut URLs delivered to an already-open installed window. */
 function watchLaunches() {
   const q = typeof window !== 'undefined' ? window.launchQueue : null;
   if (!q || typeof q.setConsumer !== 'function') return;

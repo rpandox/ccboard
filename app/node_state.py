@@ -284,6 +284,9 @@ def build(db, scan: dict) -> dict:
                      "now": datetime.now(timezone.utc).isoformat(timespec="milliseconds")},
             "etag_base": "0" * ETAG_LEN, "projects": plist, "sessions": sess, "tasks": tasks, "needs_you": needs, "usage": _usage(db),
             "lanes": nodes.lanes_view(db), "login_problems": _problems(db), "truncated": truncated}
+    if settings.pools:
+        from . import pool_usage
+        body["pools"] = pool_usage.peer_view(db)
     return fit(body)
 
 
@@ -303,6 +306,12 @@ def fit(body: dict) -> dict:
         key = "tasks" if len(body["tasks"]) >= len(body["sessions"]) and body["tasks"] else "sessions" if body["sessions"] else "projects"
         del body[key][-10:]                                  # the tail of the longer list: oldest finished tasks, then the rest
         body["truncated"] = True
+    pools = body.get("pools")
+    if pools:
+        while _size(body) > BODY_MAX and (pools["accounts"] or pools["groups"]):
+            key = "accounts" if pools["accounts"] else "groups"
+            del pools[key][-10:]
+            body["truncated"] = True
     body["etag_base"] = digest(body)
     return body
 

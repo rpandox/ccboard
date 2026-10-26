@@ -524,8 +524,10 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
         stats = statusline_stats(p)
         db.set_stats(name, stats, claude_session_id=sid)
         _stats_hooks(db, name, stats)
-        acct, is_current = None, True
-        if stats["rate_limits"]:
+        from . import pool_usage
+        pooled = pool_usage.observe_statusline(db, name, stats["rate_limits"])
+        acct, is_current = None, not pooled
+        if stats["rate_limits"] and not pooled:
             # whose windows are these? A session still running on account A's token keeps reporting A after the shared login moved to
             # B: such a reading belongs to A's own series, and the current-account views (the pills, the scheduler's quota guard, the
             # limit banner: kv rate_limits and the 'claude' series) keep B's numbers
@@ -536,7 +538,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
                 _login_fine(db, agent, acct)                     # a reading with rate limits came from a request that worked: the login is good
         _sample(db.kv_set, "statusline_sample", _statusline_sample(p))
         # the statusline is Claude Code's own: the rate-limit series are keyed 'claude' whatever the row's agent says
-        _sample(samples.record_statusline, db, name, stats, "claude", account=acct, current=is_current)
+        _sample(samples.record_statusline, db, name, {**stats, "rate_limits": None} if pooled else stats, "claude", account=acct, current=is_current)
         return {"session": name, "event": event, "stats": True}
 
     if event == "PostToolBatch":

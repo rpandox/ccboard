@@ -201,6 +201,7 @@ RAISED_TIMEOUTS = {                               # module -> constants lifted t
     "app.nodes": ("TS_TIMEOUT",),
     "app.agents.codex": ("CMD_TIMEOUT", "MODELS_TIMEOUT", "LOGOUT_TIMEOUT"),
     "app.agents.claude": ("CAPS_TIMEOUT",),
+    "app.pool_usage": ("APP_SERVER_TIMEOUT",),
     "app.tree": ("STATUS_TIMEOUT", "LS_TIMEOUT"),
     "app.projects": ("GIT_TIMEOUT",),
     "app.github": ("TIMEOUT", "CONFIG_TIMEOUT"),

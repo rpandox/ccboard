@@ -902,7 +902,7 @@ def test_the_migration_is_additive_and_idempotent(tmp_path):
     assert db.open_row("a")["account"] is None
     DB(p)                                                                   # a second start is a no-op
     db.conn.execute("INSERT INTO sessions(tmux_name, project, repo, name, launcher, created_at) VALUES ('b','p','r','n','claude','2026-01-01')")
-    assert [m for m in dbmod.MIGRATIONS if "account" in m] == ["ALTER TABLE sessions ADD COLUMN account TEXT"]
+    assert [m for m in dbmod.MIGRATIONS if "sessions ADD COLUMN account" in m] == ["ALTER TABLE sessions ADD COLUMN account TEXT"]
 
 
 # ================================================================== views, headroom and the HTTP surface

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .config import settings
 from . import projects
+from .projects import BadRequest
 from scripts.profile_env import UNSET, PREFIXES, scrub, setup_token_value
 from .handover import MARKER as READ_ONLY, owner, HandoverError
 
@@ -25,6 +26,20 @@ SETUP_TOKEN = ".setup-token"
 MAC_REASON = "the Mac Keychain adapter comes in P5"
 SWITCH_REASON = "a pool session is running on a profile"
 _migration_lock = threading.RLock()
+_account_locks_guard = threading.Lock()
+_account_locks = {}
+_sampling = {}  # guarded by the corresponding account_lock
+
+
+class Sampling:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+
+
+def account_lock(account_id):
+    with _account_locks_guard:
+        return _account_locks.setdefault(account_id, threading.RLock())
 
 
 def require_enabled():
@@ -310,7 +325,7 @@ def migrate(db):
                         if not raw:
                             raise projects.BadRequest("credentials are missing from both slot and profile")
                         with db.lock:
-                            db.conn.execute("INSERT OR IGNORE INTO pool_account VALUES (?,?,?,?,?,?)",
+                            db.conn.execute("INSERT OR IGNORE INTO pool_account(id,provider,label,state,cred_version,created_at) VALUES (?,?,?,?,?,?)",
                                             (aid, provider, rec.get("label") or aid, "ready", hashlib.sha256(raw).hexdigest()[:16], now()))
                         # Metadata is not needed by the handed-over slot.
                         if provider == "codex":
@@ -333,7 +348,7 @@ def release(db, account_id):
     from . import account_store, accounts, codex_accounts
     require_enabled()
     validate_account_id(account_id)
-    with _migration_lock, account_store._lock, codex_accounts._lock:
+    with account_lock(account_id), _migration_lock, account_store._lock, codex_accounts._lock:
         with db.lock:
             row = db.conn.execute("SELECT * FROM pool_account WHERE id=?", (account_id,)).fetchone()
         if row is None:
@@ -343,6 +358,10 @@ def release(db, account_id):
         if active:
             from fastapi import HTTPException
             raise HTTPException(409, "this pool account has an open attempt: " + _attempt_names(active))
+        sampling = _sampling.get(account_id)
+        if sampling is not None:
+            sampling.cancelled.set()
+            sampling.done.wait()  # No credential move until the CLI is reaped.
         provider = row["provider"]
         store = account_store if provider == "claude" else codex_accounts
         records = accounts._load(db) if provider == "claude" else codex_accounts._load(db)
@@ -363,6 +382,8 @@ def release(db, account_id):
                 _set_slot_owner(db, provider, key, None)
         with db.lock:
             db.conn.execute("DELETE FROM pool_account WHERE id=?", (account_id,))
+            db.conn.execute("DELETE FROM kv WHERE key=?", ('pool_refresh:' + account_id,))
+            db.conn.execute('DELETE FROM quota_group WHERE id NOT IN (SELECT quota_group_id FROM pool_account WHERE quota_group_id IS NOT NULL)')
         return {"released": account_id}
 
 
@@ -425,7 +446,15 @@ def guard_switch(db):
 def _serialized(fn):
     @wraps(fn)
     def call(*args, **kwargs):
-        with _migration_lock:
+        account_id = args[2] if len(args) > 2 else kwargs['account_id']
+        with account_lock(account_id):
+            sampling = _sampling.get(account_id)
+        if sampling is not None:
+            sampling.done.wait(1.0)
+        with account_lock(account_id), _migration_lock:
+            sampling = _sampling.get(account_id)
+            if sampling is not None:
+                sampling.cancelled.set()
             return fn(*args, **kwargs)
     return call
 
@@ -451,6 +480,8 @@ def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, p
         aid = cur.lastrowid
     if session_row is not None:
         db.kv_set(f"runtime_session:{session_row}", {"attempt": aid})
+    from . import pool_usage
+    pool_usage.attempt_started(db, account_id)
     return aid
 
 
@@ -469,6 +500,7 @@ def finish_attempt(db, attempt_id, reason, provider_session_id=None):
     with db.lock:
         db.conn.execute("UPDATE runtime_attempt SET ended_at=?, end_reason=?, provider_session_id=COALESCE(?,provider_session_id) WHERE id=? AND ended_at IS NULL",
                         (now(), reason, provider_session_id, attempt_id))
+        db.conn.execute("DELETE FROM kv WHERE key=?", (f"pool_statusline:{attempt_id}",))
         if version is not None:
             db.conn.execute("UPDATE pool_account SET cred_version=? WHERE id=? AND cred_version IS NOT ?", (version, row["account_id"], version))
 
@@ -519,15 +551,19 @@ def transcript_snapshot(provider, cwd):
     return frozenset(snapshot)
 
 
-def newest_transcript(provider, cwd, started, snapshot=()):
+def newest_transcript(provider, cwd, started, snapshot=None):
     matches = []
     # An append or rewrite of an existing inode is still the old transcript,
     # even if its size and mtime have changed since the snapshot.
-    existing = {(name, inode) for name, inode, size in snapshot}
+    existing = {(name, inode) for name, inode, size in snapshot or ()}
     for path in transcript_directory(provider, cwd).glob("*.jsonl"):
         try:
             st = path.stat()
-            if (path.name, st.st_ino) in existing or st.st_mtime < started:
+            if (path.name, st.st_ino) in existing:
+                continue
+            # A snapshot (even an empty one) establishes freshness by identity.
+            # Without one, allow for filesystem clocks lagging the wall clock.
+            if snapshot is None and st.st_mtime < started - 2:
                 continue
             with path.open() as f:
                 for line in f:
@@ -544,7 +580,7 @@ def newest_transcript(provider, cwd, started, snapshot=()):
     return matches[0] if len(matches) == 1 else None
 
 
-def discover_attempt(db, attempt_id, cwd, provider, started, name=None, snapshot=()):
+def discover_attempt(db, attempt_id, cwd, provider, started, name=None, snapshot=None):
     """A ten-second fallback only for a bound process that has not learned an id yet."""
     def discover():
         deadline = time.monotonic() + 10

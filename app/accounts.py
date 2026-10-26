@@ -325,20 +325,24 @@ def _cache_windows(util) -> dict[str, dict]:
     return out
 
 
-def _usage_from_file(d: Path) -> tuple[str, dict | None]:
+def _usage_from_file(d: Path, *, profile_only=False) -> tuple[str, dict | None]:
     """('ok', {at, account, windows}) | ('none', None) no file, or none with a usable cache | ('bad', None) a file that could not be read
     or parsed (half-written is normal). `at` is the cache's fetchedAtMs as epoch seconds, `account` its accountUuid (or None). Only
     `cachedUsageUtilization` is taken out of the file and only its whitelisted fields are copied; the rest of the (large, private)
     state is dropped unread, and nothing of it reaches a log. With two candidate files the one with the newer cache wins."""
     verdict = "none"
     best: dict | None = None
-    for path in _candidates(d):
+    for path in ([d / ".claude.json"] if profile_only else _candidates(d)):
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
                 verdict = "bad"
                 continue
-            with open(path, "rb") as f:
-                data = json.loads(f.read())
+            if profile_only:
+                from . import profiles
+                data = json.loads(profiles._plain(path) or b'{}')
+            else:
+                with open(path, "rb") as f:
+                    data = json.loads(f.read())
         except FileNotFoundError:
             continue
         except (OSError, ValueError, RecursionError, MemoryError):
@@ -358,19 +362,19 @@ def _usage_from_file(d: Path) -> tuple[str, dict | None]:
     return ("ok", best) if best else (verdict, None)
 
 
-def read_usage_cache(config_dir=None) -> dict | None:
+def read_usage_cache(config_dir=None, *, profile_only=False) -> dict | None:
     """Claude Code's own usage cache of a config dir (default: the board's) as {at, account, windows}, or None (see _usage_from_file).
     Gated by the state file's stamp (path, mtime, size, inode of both candidates: two stats): an unchanged stamp answers from memory,
     a changed one parses the file again. A file that could not be read keeps the last answer and is retried next time. Never raises."""
     try:
         d = Path(config_dir) if config_dir else Path(settings.claude_config_dir)
-        k = str(d)
+        k = (str(d), profile_only)
         stamp = _stamp(d)                                       # before the parse: a write during it shows up as a change next time
         with _lock:
             hit = _ucache.get(k)
         if hit and hit[0] == stamp:
             return dict(hit[1]) if hit[1] else None
-        status, found = _usage_from_file(d)
+        status, found = _usage_from_file(d, profile_only=profile_only)
         if status == "bad":
             return dict(hit[1]) if hit and hit[1] else None
         with _lock:

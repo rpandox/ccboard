@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictBool, StrictInt, model_validator
 
-from . import account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, links, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import pool_usage, account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, links, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -216,6 +216,7 @@ async def lifespan(app: FastAPI):
         nodes.node_id()
     except Exception as e:
         log.warning("node id could not be read: %s", e.__class__.__name__)
+    pool_usage.start(db)
     poller = usage.Poller(db)
     poller.start()
     sampler = samples.Sampler(db, health_fn=_sampler_health, counts_fn=_sampler_counts)
@@ -302,6 +303,11 @@ async def lifespan(app: FastAPI):
             team_github.poller.stop(5.0)
         if team_presence.publisher is not None:
             team_presence.publisher.stop(5.0)
+        if getattr(db, "_pool_usage", None):
+            db._pool_usage.stop.set()
+            db._pool_usage.wake.set()
+            if db._pool_usage.thread:
+                await asyncio.to_thread(db._pool_usage.thread.join, 20)
         poller.stop.set()
         sampler.stop()
         cloner.stop.set()
@@ -975,6 +981,7 @@ def build_state(user: str) -> dict:
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = _mem_state(st["projects"])            # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
+    st["pools"] = {"enabled": True, "groups": pool_usage.groups_view(db)} if settings.pools else None
     st["usage"] = _usage_view()                           # the kv rate_limits record; a window it lacks comes from the account's last reading (usage.rate_limits_view)
     st["usage_refresh"] = usage_refresh.view(db)          # {running, last}: a /usage refresh in flight (Usage page button) and the newest one asked for
     st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
@@ -1597,6 +1604,16 @@ def api_account_problem_clear():
     return {"ok": True, "cleared": login_problem.clear(db)}
 
 
+@app.get("/api/pools/usage")
+def api_pool_usage():
+    if not settings.pools:
+        raise HTTPException(404, "pools are off")
+    try:
+        return {"groups": pool_usage.groups_view(db)}
+    except sqlite3.Error:
+        return _refuse(500, "pool database operation failed")
+
+
 @app.get("/api/pools/accounts")
 def api_pool_accounts():
     if not settings.pools:
@@ -1613,6 +1630,7 @@ def api_pool_migrate():
         raise HTTPException(404, "pools are off")
     try:
         results = profiles.migrate(db)
+        pool_usage.start(db)
     except sqlite3.Error:
         return _refuse(500, "pool database operation failed")
     except Exception as e:
@@ -4319,7 +4337,7 @@ def _register_stats_hook() -> None:
 _register_stats_hook()
 
 
-def _type_command(name: str, row: dict, spec, arg: str, by: str) -> str:
+def _type_command(name: str, row: dict, spec, arg: str, by: str, *, clear=True) -> str:
     """Type one allowlisted slash command into the pane (C-u to clear the composer, then the text and Enter), with flags.pending_cmd set
     first (the statusline that follows confirms it) and a BoardCommand event after. The guards are the caller's: POST /command and the
     usage refresh (POST /api/usage/refresh) both come here. Returns the text typed."""
@@ -4331,7 +4349,8 @@ def _type_command(name: str, row: dict, spec, arg: str, by: str) -> str:
         patch["last_cmd"] = {"cmd": prior.get("cmd"), "arg": prior.get("arg"), "at": prior.get("at"), "confirmed": False}
     db.update_flags(name, patch)                        # before typing: the statusline can answer within a few hundred ms
     try:
-        tmux.send_keys(name, ["C-u"])
+        if clear:
+            tmux.send_keys(name, ["C-u"])
         tmux.send_text(name, sent, enter=True)
     except Exception:
         db.update_flags(name, {"pending_cmd": None})
@@ -6600,7 +6619,10 @@ def _refresh_panes() -> list[dict]:
         viewers = tmux.viewers()
     except (tmux.TmuxError, tmux.TmuxDown):             # list-clients failed: every attached client counts as a full one
         viewers = None
-    return usage_refresh.panes(live, db.open_rows(), viewers)
+    panes = usage_refresh.panes(live, db.open_rows(), viewers)
+    if settings.pools:
+        panes = [p for p in panes if pool_usage.bound_attempt(db, p["name"]) is None]
+    return panes
 
 
 def _refresh_finish(name: str, at: str) -> None:

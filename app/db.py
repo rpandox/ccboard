@@ -140,6 +140,12 @@ CREATE INDEX IF NOT EXISTS runtime_attempt_open ON runtime_attempt(account_id) W
 #   * order matters inside this list: a statement may only use columns added above it.
 # New columns are deliberately not added to SCHEMA, so a fresh DB and an upgraded one take the identical path.
 MIGRATIONS = [
+    "CREATE TABLE IF NOT EXISTS quota_group (id INTEGER PRIMARY KEY, provider TEXT NOT NULL, subscription_key TEXT NOT NULL, plan TEXT, UNIQUE(provider, subscription_key))",
+    "CREATE TABLE IF NOT EXISTS usage_sample (id INTEGER PRIMARY KEY, quota_group_id INTEGER NOT NULL, sampled_at TEXT NOT NULL, window_5h_pct REAL, window_5h_reset_at TEXT, weekly_pct REAL, weekly_reset_at TEXT, source TEXT NOT NULL, confidence REAL NOT NULL, node_id TEXT)",
+    "CREATE INDEX IF NOT EXISTS usage_sample_group_at ON usage_sample(quota_group_id,sampled_at)",
+    "CREATE INDEX IF NOT EXISTS usage_sample_at ON usage_sample(sampled_at)",
+    "CREATE INDEX IF NOT EXISTS runtime_attempt_account_end ON runtime_attempt(account_id,ended_at)",
+    "ALTER TABLE pool_account ADD COLUMN quota_group_id INTEGER",
     """CREATE TABLE IF NOT EXISTS bare_sessions (
         id INTEGER PRIMARY KEY,
         host TEXT NOT NULL,
@@ -403,6 +409,12 @@ class DB:
         """Close the connection under the lock: a thread in the middle of a query finishes first, and a later call raises
         sqlite3.ProgrammingError. Closing while another thread uses the connection crashes the process (seen: a node hub
         worker reading kv while a test closed the database)."""
+        pool = getattr(self, '_pool_usage', None)
+        if pool:
+            pool.stop.set()
+            pool.wake.set()
+            if pool.thread and pool.thread is not threading.current_thread():
+                pool.thread.join(20)
         if not self.lock.acquire(timeout=self.CLOSE_WAIT):
             log.warning("the database was not closed: a query held the lock for %s s", self.CLOSE_WAIT)      # leaking the connection beats closing it under a running query
             return
