@@ -119,12 +119,113 @@ function sessionForm(p, r) {
   return form;
 }
 
+// Folder demo answers live with the Link form; core.js loads this bundle before dispatching them.
+function demoFolderPreflight(body) {
+  const value = String(body && body.path || '').trim().replace(/^~(?=\/)/, '/home/ccboard');
+  if (!value.startsWith('/')) return { ok: false, error: 'Give an absolute folder path.' };
+  const multi = /\/tools\/?$/.test(value);
+  return { ok: true, path: value, git: !multi, branch: multi ? null : 'main', remote: multi ? null : 'github.com/demo/mailgate', repos: multi ? ['mailgate', 'scripts'] : [], suggested_name: demoRepoName(value) };
+}
+function demoLinkFolder(project, name, link) {
+  const p = demoMade.projects.find((p) => p.name === project);
+  if (name !== null) {
+    Object.assign(p.repos.find((r) => r.name === name), { linked: true, target: link });
+    return;
+  }
+  Object.assign(p, { linked: true, target: link });
+  const r = { name: project, path: p.path, state: 'ok', branch: 'main', dirty: false, sessions: [], linked: true, target: link };
+  if (/\/tools\/?$/.test(link)) p.root = { ...r, name: 'root', root: true, state: 'project' }; else p.repos = [r];
+}
+
+// Shared by every project/repo entry point, including the onboarding wizard.
+const ADD_MODES = [['clone', 'Clone a git repo'], ['link', 'Link a folder on this computer'], ['import', 'Import from GitHub'], ['blank', 'Start a blank repo']];
+const LINK_OFF = 'Linking local folders is off on this board (CCBOARD_LINK_ROOTS)';
+function addModeChoices(change, selected = 'blank') {
+  const seg = lxSeg(ADD_MODES, change, 'What do you want to add?', 'add-modes');
+  seg.node.setAttribute('role', 'radiogroup');
+  const set = seg.set;
+  seg.set = (value) => {
+    set(value);
+    for (const [key] of ADD_MODES) {
+      const button = seg.btn(key);
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(key === value));
+      button.setAttribute('tabindex', key === value ? '0' : '-1');
+    }
+  };
+  seg.set(selected);
+  if (state?.links_enabled === false) seg.disable('link', true, LINK_OFF);
+  return seg;
+}
+function folderChips(host, res) {
+  host.textContent = '';
+  if (!res.ok) { host.append(el('span', { class: 'dim', text: res.error })); return; }
+  const labels = res.git ? ['git repo', res.branch, res.remote && res.remote.replace(/^\w+:\/\//, '').replace(/^git@/, '')] : [`folder with ${(res.repos || []).length} repos`, ...(res.repos || []).slice(0, 4)];
+  for (const text of labels.filter(Boolean)) host.append(el('span', { class: 'badge', text }));
+}
+function linkFolderForm(project, done) {
+  const path = el('input', { type: 'text', inputmode: 'text', placeholder: '~/Work/tools/mailgate', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const pf = field('Folder path', path, 'ccboard only adds a link. The folder is not moved or copied, and removing it from the board leaves it on disk.');
+  const name = el('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', maxlength: 64 });
+  const nf = field(project ? 'Repo name' : 'Project name', name);
+  const chips = el('div', { class: 'wiz-chips', role: 'status', 'aria-live': 'polite' });
+  let touched = false, timer, seq = 0, result = null;
+  name.addEventListener('input', () => { touched = true; fieldError(nf, ''); });
+  const probe = async () => {
+    clearTimeout(timer);
+    const mine = ++seq, value = path.value.trim();
+    result = null;
+    if (!value) { chips.textContent = ''; return null; }
+    chips.textContent = 'checking…';
+    try {
+      const res = await api('POST', '/api/preflight/folder', { path: value });
+      if (mine !== seq || value !== path.value.trim()) return null;
+      result = res;
+      folderChips(chips, res);
+      if (res.ok && !touched) name.value = res.suggested_name || '';
+      return res;
+    } catch (e) { if (mine === seq) folderChips(chips, { ok: false, error: e.message }); return null; }
+  };
+  path.addEventListener('input', () => { ++seq; result = null; clearTimeout(timer); timer = setTimeout(probe, 500); if (timer.unref) timer.unref(); });
+  path.addEventListener('blur', probe);
+  const go = el('button', { class: 'primary', type: 'submit', text: 'Link folder' });
+  go.disabled = state?.links_enabled === false;
+  const form = el('form', { class: 'form wiz-form', onsubmit: async (e) => {
+    e.preventDefault();
+    if (go.disabled || state?.links_enabled === false) return;
+    go.disabled = true;
+    try {
+      const res = result || await probe();
+      if (!res || !res.ok) return;
+      const body = { name: name.value.trim(), link: res.path };
+      if (!body.name) { fieldError(nf, 'Give the folder a name.', true); return; }
+      await api('POST', project ? `/api/projects/${encodeURIComponent(project)}/repos` : '/api/projects', body);
+      await poll(true);
+      if (done) done(body, res);
+    } catch (err) { fieldError(pf, err.message, true); }
+    finally { go.disabled = state?.links_enabled === false; }
+  } }, el('p', { class: 'dim field-hint', text: project ? `This folder will be added as a repo to ${project}.` : 'This folder will be linked as a new project.' }), pf, chips, nf, el('div', { class: 'submit' }, go));
+  return form;
+}
+
 function addRepoForm(p) {
+  const host = el('div', {});
+  const choices = addModeChoices((mode) => {
+    choices.set(mode);
+    host.textContent = '';
+    host.append(mode === 'link' ? linkFolderForm(p.name, () => { ui.openForm = null; renderProjects(); }) : mode === 'import' ? importForm({ project: p.name, onDone: () => { ui.openForm = null; renderProjects(); } }) : addRepoBasicForm(p, mode));
+  });
+  host.append(addRepoBasicForm(p));
+  return el('div', {}, el('h3', { text: 'What do you want to add?' }), choices.node, state?.links_enabled === false ? el('p', { class: 'dim', text: LINK_OFF }) : null, host);
+}
+
+function addRepoBasicForm(p, mode = 'blank') {
   const name = el('input', { type: 'text', placeholder: 'repo name', maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
   const url = el('input', { type: 'text', placeholder: 'https://github.com/you/repo.git', autocomplete: 'off', autocapitalize: 'off' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
   const nameField = field('New repo', name, 'A blank repo: git init in a new folder.');
-  const urlField = field('Clone URL', url, 'Or clone an existing repo instead; the name defaults to the one in the URL.');
+  const urlField = field('Clone URL', url, 'Paste a URL. The name defaults to the one in the URL.');
+  urlField.classList.toggle('hidden', mode === 'blank');
   const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
     const body = {};
@@ -1217,6 +1318,7 @@ function importForm(opts) {
   filter.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });          // the filter is live: Enter must not re-fetch the list from GitHub
   const ownerField = field('GitHub owner', owner, 'Blank lists your own repos. Enter loads them.');
   const targetField = field('Into project', target, 'The project the repos are cloned into.');
+  if (o.project) { target.value = o.project; target.readOnly = true; }
   const load = async () => {
     formStatus(status, 'loading…');
     try {
@@ -1898,9 +2000,9 @@ function lxSeg(items, onPick, label, extra) {
     const b = el('button', { class: 'seg-btn' + (o && o.cls ? ' ' + o.cls : ''), type: 'button', 'aria-pressed': 'false', 'data-when': v, text, title: (o && o.title) || null,
       onclick: () => { if (b.hasAttribute('disabled')) return; onPick(v); },
       onkeydown: (e) => {
-        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        if (!['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) return;
         e.preventDefault();
-        const to = step(cur === null ? v : cur, e.key === 'ArrowRight' ? 1 : -1);
+        const to = step(cur === null ? v : cur, e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
         onPick(to);
         const nb = btns.get(to);
         if (nb && typeof nb.focus === 'function') nb.focus();

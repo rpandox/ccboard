@@ -9,6 +9,13 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 Upgrade: rerun `./install.sh` to remember `CCBOARD_POOLS` in the settings file. It defaults off; release handed-over accounts in Settings before turning it off.
 
+## v0.5.113 - 2026-10-26
+
+### Added
+- Linked folders in the UI (#319): choose Clone, Link, Import from GitHub or Blank when adding code. Folder checks show git details and suggested names before linking a project or repo. Linked badges identify folders that stay in place; Unlink confirmations explain that their files stay on disk. Demo mode includes linked folders and supports the Link flow.
+
+Upgrade: nothing to do.
+
 ## v0.5.112 - 2026-10-26
 
 ### Added

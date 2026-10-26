@@ -108,14 +108,10 @@
     {
       "name": "ccboard",
       "path": "/home/ccboard/projects/ccboard",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "ccboard",
           "path": "/home/ccboard/projects/ccboard/ccboard",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790452080,
@@ -260,171 +256,171 @@
           "branch": "main",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": true,
+          "target": "/home/ccboard/work/shared"
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/ccboard",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "HarnessAgents",
       "path": "/home/ccboard/projects/HarnessAgents",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "hive",
           "path": "/home/ccboard/projects/HarnessAgents/hive",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/HarnessAgents",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "internalSystem",
       "path": "/home/ccboard/projects/internalSystem",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "server",
           "path": "/home/ccboard/projects/internalSystem/server",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/internalSystem",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "mailgate",
       "path": "/home/ccboard/projects/mailgate",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "mailgate",
           "path": "/home/ccboard/projects/mailgate/mailgate",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/mailgate",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "My_Brain",
       "path": "/home/ccboard/projects/My_Brain",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "vault",
           "path": "/home/ccboard/projects/My_Brain/vault",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/My_Brain",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "petroit",
       "path": "/home/ccboard/projects/petroit",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "api",
           "path": "/home/ccboard/projects/petroit/api",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790832240,
@@ -623,35 +619,35 @@
           "branch": "feature/devices-pagination",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/petroit",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "phasezero",
       "path": "/home/ccboard/projects/phasezero",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "NestJs-Ecommerce-Backend",
           "path": "/home/ccboard/projects/phasezero/NestJs-Ecommerce-Backend",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790633520,
@@ -724,13 +720,13 @@
           "branch": "develop",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         },
         {
           "name": "website",
           "path": "/home/ccboard/projects/phasezero/website",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790771760,
@@ -803,14 +799,14 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/phasezero",
-        "linked": false,
-        "target": null,
         "sessions": [
           {
             "created": 1790236080,
@@ -879,77 +875,81 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "reporting_system",
       "path": "/home/ccboard/projects/reporting_system",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "web",
           "path": "/home/ccboard/projects/reporting_system/web",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/reporting_system",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "research",
       "path": "/home/ccboard/projects/research",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "notebooks",
           "path": "/home/ccboard/projects/research/notebooks",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/research",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": true,
+      "target": "/home/ccboard/work/research"
     }
   ],
   "user": "demo@example.com",
@@ -2406,7 +2406,6 @@
     "cores": 8,
     "at": 1790996400.0
   },
-  "links_enabled": true,
   "nodes_enabled": true,
   "nodes": {
     "value": [
@@ -2626,5 +2625,6 @@
       "1 permission is waiting for an answer and will be lost",
       "2 terminals are open; ttyd and tmux sessions keep running"
     ]
-  }
+  },
+  "links_enabled": true
 }

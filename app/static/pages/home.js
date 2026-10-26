@@ -853,7 +853,7 @@ function homeGroupNode(g, kind, getProject) {
   node.ccPatch = (g2) => {
     cur.g = g2;
     head.classList.toggle('hidden', !g2.showHead);
-    setTextIfChanged(name, g2.label);
+    patchLinkedName(name, g2.label, g2.repo);
     const r = g2.repo;
     setTextIfChanged(branch, r && r.state === 'ok' && r.branch ? r.branch : '');
     dot.classList.toggle('hidden', !(r && r.state === 'ok'));
@@ -896,7 +896,7 @@ function homeBlockNode(b) {
     setTextIfChanged(toggle, b2.collapsed ? '▸' : '▾');
     toggle.setAttribute('aria-expanded', b2.collapsed ? 'false' : 'true');
     toggle.setAttribute('aria-label', `${b2.collapsed ? 'expand' : 'collapse'} ${b2.name}`);
-    setTextIfChanged(name, b2.name);
+    patchLinkedName(name, b2.name, b2.project);
     setTextIfChanged(count, b2.count === b2.total || b2.kind !== 'project' ? `${b2.count} session${b2.count === 1 ? '' : 's'}` : `${b2.count} of ${b2.total} sessions`);
     const gr = b2.git;
     setTextIfChanged(git, gr && gr.state === 'ok' && gr.branch ? gr.branch : '');

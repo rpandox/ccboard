@@ -470,15 +470,21 @@
                 "name": "api",
                 "slug": "example/shop-api",
                 "branch": "main",
-                "dirty": false
+                "dirty": false,
+                "linked": false,
+                "target": null
               },
               {
                 "name": "web",
                 "slug": "example/shop-web",
                 "branch": "feat/cart",
-                "dirty": true
+                "dirty": true,
+                "linked": false,
+                "target": null
               }
-            ]
+            ],
+            "linked": false,
+            "target": null
           },
           {
             "name": "infra",
@@ -487,9 +493,13 @@
                 "name": "deploy",
                 "slug": null,
                 "branch": "main",
-                "dirty": false
+                "dirty": false,
+                "linked": false,
+                "target": null
               }
-            ]
+            ],
+            "linked": false,
+            "target": null
           }
         ],
         "sessions": [
@@ -607,7 +617,8 @@
           "free": 2
         },
         "login_problems": [],
-        "truncated": false
+        "truncated": false,
+        "links_enabled": true
       }
     },
     {
@@ -723,9 +734,13 @@
                 "name": "site",
                 "slug": "example/notes-site",
                 "branch": "main",
-                "dirty": true
+                "dirty": true,
+                "linked": false,
+                "target": null
               }
-            ]
+            ],
+            "linked": false,
+            "target": null
           }
         ],
         "sessions": [
@@ -795,7 +810,8 @@
           "free": 2
         },
         "login_problems": [],
-        "truncated": false
+        "truncated": false,
+        "links_enabled": true
       }
     },
     {
@@ -906,9 +922,13 @@
                 "name": "play",
                 "slug": null,
                 "branch": "main",
-                "dirty": false
+                "dirty": false,
+                "linked": false,
+                "target": null
               }
-            ]
+            ],
+            "linked": false,
+            "target": null
           }
         ],
         "sessions": [
@@ -946,7 +966,8 @@
           "free": 2
         },
         "login_problems": [],
-        "truncated": false
+        "truncated": false,
+        "links_enabled": true
       }
     }
   ],
