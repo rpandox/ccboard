@@ -61,6 +61,25 @@ A Codex started by a person in the same folder as a board row is not that row's 
 
 **Recovery limits.** Until the rollout Tailer of v0.5.12 binds conversation ids, a Codex session row has no id before you have trusted the hooks. After a reboot such a row comes back with `codex resume --last` only when it is the only open Codex row in its directory; with a second one (or a bound one) next to it, it starts a fresh `codex` instead (the earlier conversation is not resumed) and `last_recovery.notes` says so, and no `continue` is typed into it. Another program's Codex run in the same directory is invisible to the board, so even a lone row's `--last` is a best guess; trust the hooks once and the ids bind on the first event.
 
+### Task-lane trust and command approvals
+
+The `Folder access` / `Trust this folder?` screen with `1. Trust and continue` and `2. Quit` is a dialog, not an unknown session. Interactive sessions show Needs you: "Codex asks to trust this folder (it applies to the repository root)". An unattended task lane fails with that reason and instructions to accept trust in a Codex session and run the task again, following Claude's #247 rule. The task card offers Open. The board never accepts trust or types into that dialog (#330).
+
+**Exec hooks, checked from source (#331).** Codex 0.161.0 does support `PermissionRequest` for command approvals. [`ApprovalAction::permission_request_payload`](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/tools/approvals.rs#L167) maps `ExecCommand` to Bash; [`PermissionRequestPayload::bash`](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/tools/sandboxing.rs#L133) supplies `tool_input.command` and optional `description`. [`Session::request_approval`](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/tools/approvals.rs#L508) runs the hook before asking the reviewer. This is source evidence, not a live reproduction of the 2026-10-26 incident. The pools spike pins 0.162.1; this check uses the incident's exact `rust-v0.161.0` source archive.
+
+ccboard installs that hook as `bin/ccboard-permission`, which posts to `/api/permission`; it does not use the lifecycle adapter's `normalise_hook` mapping. The existing box fixtures capture lifecycle events, not this incident's exec approval. A synthetic source-shaped Bash payload now tests Allow and Deny in a task lane both before any earlier hook and after its thread has been bound. No lane-specific intake drop was reproduced.
+
+Folder trust does not imply hook trust: Codex's [hook discovery](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/hooks/src/engine/discovery.rs#L715) only installs enabled handlers that are trusted, managed or explicitly bypassed. Review ccboard's PermissionRequest entry with `/hooks`; the default `CCBOARD_CODEX_HOOK_TRUST=review` stays unchanged. A full terminal attachment, timeout or unavailable board can also yield to the TUI. The incident's exact cause still needs a live payload/absence check. Whenever the command menu is visible without a pending hook, the card says "Codex asks to run a command: answer in the terminal", shows the command (capped, then redacted like other screen text), and offers Open. A screen alone never creates Allow or Deny.
+
+**Git in linked worktrees.** With the lane default `-s workspace-write -a on-request`, the worktree's Git index lives in the repository's Git directory outside the writable sandbox, so every commit needs approval. Codex 0.161 supports [`sandbox_workspace_write.writable_roots`](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/config.schema.json#L4040). An owner who deliberately wants to allow Git writes can configure the exact absolute Git directory and common Git directory in their Codex config before starting a lane. For example, replacing these paths with the actual directories:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ["/workspace/project/.git", "/workspace/project/.git/worktrees/report"]
+```
+
+Use the actual Git worktree directory name, which need not equal the lane slug. Granting only a parent folder is insufficient: Codex [protects resolved linked-worktree Git directories unless there is an explicit entry for that path](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/protocol/src/permissions.rs#L1589). These roots permit shared repository metadata writes; other policy restrictions can still require approval. This option is confirmed in source, not tested with a live Codex here. ccboard never adds these roots or widens the sandbox by default.
+
 ### Headless Codex runs (schedules and batches)
 
 A schedule or a batch takes `agent: "claude" | "codex"` (`POST /api/projects/{p}/repos/{r}/jobs` and `POST /api/batch`; unset is Claude, so every old client works). A Codex job also takes `model` and `reasoning_effort` (or `opts: {model, reasoning_effort}`), stored in `jobs.opts` (an additive column). What a Codex run does:

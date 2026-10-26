@@ -32,8 +32,10 @@ ERROR_RE = re.compile(r"^\s*(error|fatal)\b[:\s].{3,}", re.I)
 
 NOTES = {
     "update": "Codex is asking whether to update itself; its default answer runs npm install -g. Answer it in the terminal (choose Skip).",
-    "trust": "Codex is asking whether to trust this folder. Answer it in the terminal.",
+    "trust": "Codex asks to trust this folder (it applies to the repository root)",
 }
+TRUST_FAILURE = NOTES["trust"] + ". An unattended task cannot answer this dialog: open a Codex session, accept trust, then run the task again."
+COMMAND_NOTE = "Codex asks to run a command: answer in the terminal"
 
 
 def shell_foreground(command) -> bool:
@@ -54,7 +56,20 @@ def _codex_drawn(line: str) -> bool:
 def dialog(text: str) -> str | None:
     """'update' or 'trust' while the screen shows that dialog, else None. The update dialog wins when both are on screen."""
     lines = _tail(text)
+    # 0.161 folder-access screen (#330), including panes that draw a frame around it.
+    plain = [ln.strip().strip("│┃").strip() for ln in lines]
+    start = next((i for i in range(len(plain) - 1, -1, -1) if plain[i] == "Folder access"), None)
+    folder_trust = False
+    if start is not None:
+        tail = plain[start + 1:]
+        choices = [re.sub(r"^[›>]\s*", "", ln) for ln in tail]
+        if all(s in choices for s in ("Trust this folder?", "1. Trust and continue", "2. Quit")):
+            end = start + 1 + choices.index("2. Quit")
+            if not any(_codex_drawn(ln) for ln in plain[end + 1:]):
+                folder_trust = True
     for kind, rx in (("update", UPDATE_RE), ("trust", TRUST_RE)):
+        if kind == "trust" and folder_trust:
+            return kind
         hit = next((i for i in range(len(lines) - 1, -1, -1) if rx.search(lines[i])), None)
         if hit is None:
             continue
@@ -95,7 +110,9 @@ def approval_dialog(text: str) -> dict | None:
     no = [c for c in choices if c["label"] == "No, and tell Codex what to do differently (esc)"]
     if len(yes) != 1 or len(no) != 1 or len({c["number"] for c in choices}) != len(choices):
         return None
-    return {"tool_name": "command", "summary": "command: " + " ".join(body), "choices": choices,
+    command_at = next((i for i, line in enumerate(body) if line.startswith("$ ")), None)
+    command = "\n".join(body[command_at:])[2:] if command_at is not None else ""
+    return {"tool_name": "command", "summary": "command: " + " ".join(body), "command": command[:2000], "choices": choices,
             "allow": yes[0]["number"], "deny": no[0]["number"], "enter": True}
 
 

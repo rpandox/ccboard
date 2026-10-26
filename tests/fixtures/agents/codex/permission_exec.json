@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "00000000-0000-4000-8000-000000000331",
+  "cwd": "/workspace/project/.ccboard/worktrees/report",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git add -- report.txt && git commit -m 'Update report'",
+    "description": "Git's worktree index is outside the writable sandbox."
+  }
+}

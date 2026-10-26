@@ -1239,7 +1239,7 @@ function startedCard(t, ctx) {
     : { id: 'pr', label: 'New PR…', title: 'push the branch and open a pull request', onClick: () => taskModal(t) }) : null;
   const mergeAct = t.pr_url && t.pr_number && t.pr_state !== 'MERGED' && t.pr_state !== 'CLOSED' ? { id: 'merge', label: 'Merge…', title: 'squash-merge the pull request and archive the task', onClick: () => taskModal(t) } : null;
   const reopenAct = finished && !live && t.pr_state !== 'MERGED' ? { id: 'reopen', label: 'Reopen', title: 'start it again in its worktree', onClick: () => taskReopen(t) } : null;
-  const termAct = live ? { id: 'terminal', label: 'Terminal', href: `/term/${enc}`, newTab: true, title: 'open the terminal in a new tab' } : null;
+  const termAct = live ? { id: 'terminal', label: s.pane_dialog ? 'Open' : 'Terminal', href: `/term/${enc}`, newTab: true, title: 'open the terminal in a new tab' } : null;
   const fixAct = ciFail ? { id: 'fixci', label: 'Fix CI', kind: 'warn', cls: 'tk-fixci', title: 'send the failing CI logs to the session', onClick: async () => {
     try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); toast(`CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`, { kind: 'ok', ttl: 8000 }); } catch (e) { setError(e.message); }
     await poll(true);
@@ -1279,7 +1279,8 @@ function startedCard(t, ctx) {
     taskEpicNode(t),
     pvOff ? taskPreviewOff(t, pvOff) : null,
     pending && live ? taskAutoCloseStrip(t, ac) : null,
-    s && s.last_message && !(finished && t.result) ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
+    s && s.pane_dialog ? el('div', { class: 'last' }, ...s.pane_dialog.split('\n').map((line) => el('div', { text: line })))
+      : s && s.last_message && !(finished && t.result) ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     finished ? taskResultNode(t) : null,
     taskIssueNode(t),
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),

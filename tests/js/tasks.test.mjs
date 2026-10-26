@@ -102,6 +102,27 @@ const PETROIT = '#/p/petroit?tab=tasks';
 
 // ---------------------------------------------------------------- the card
 
+for (const [phase, note] of [
+  ['failed', 'Codex asks to trust this folder (it applies to the repository root)'],
+  ['running', "Codex asks to run a command: answer in the terminal\ngit add -- report.txt && git commit -m 'Update report'"],
+]) {
+  test(`Codex ${phase} dialog card shows its full notice and Open, without invented Allow/Deny`, async () => {
+    const env = tasksWorld({ state: stateWith([row(20, {
+      agent: 'codex', phase, column: 'needs_you', tmux: 'petroit--api--s4',
+      result: phase === 'failed' ? 'An unattended task cannot answer trust; accept it in a session and retry.' : null,
+      session: { state: phase === 'failed' ? 'errored' : 'waiting', needs_attention: true, command: 'codex',
+        pane_dialog: note, last_message: note },
+    })]) });
+    await go(env, PETROIT);
+    const c = card(env, 20);
+    assert.equal(colOf(c), 'Needs you');
+    for (const line of note.split('\n')) assert.ok(textOf(c).includes(line));
+    const open = byText(c, 'a', /^Open$/);
+    assert.equal(open.getAttribute('href'), '/term/petroit--api--s4');
+    assert.equal(button(c, /^(Allow|Deny)$/), undefined);
+  });
+}
+
 test('a backlog card: title, the head of the prompt, the repo and its age; Start, Send to session, Edit, Delete; no terminal, no PR, no branch', async () => {
   const env = tasksWorld();
   await go(env, PETROIT);
