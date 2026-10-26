@@ -63,7 +63,7 @@ AUTH_TTL = 60.0
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
 LEVEL_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
-PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:@/-]{0,79}$")      # `codex resume <name>`; never starts with '-'
 VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -1075,9 +1075,9 @@ class CodexAgent(Agent):
             full["search"] = True
         profile = raw.get("profile")
         if profile is not None and profile != "":
-            if not isinstance(profile, str) or not PROFILE_RE.match(profile.strip()):
+            if not isinstance(profile, str) or not PROFILE_RE.fullmatch(profile):
                 raise projects.BadRequest("profile: use letters, digits, '.', '_' or '-'")
-            full["profile"] = profile.strip()
+            full["profile"] = profile
         if raw.get("no_alt_screen") is not None and raw.get("no_alt_screen") != "" and not _truthy(raw.get("no_alt_screen")):
             full["no_alt_screen"] = False                     # on by default: only the opt-out is stored
         clean = {k: v for k, v in full.items()
@@ -1131,6 +1131,12 @@ class CodexAgent(Agent):
             sandbox = full["sandbox"]
         if full.get("approval"):
             approval, approve_for_me = full["approval"], False
+        if full.get("profile") and (caps is None or caps.get("profile")):
+            # Profiles are opaque to the board. Explicit CLI permission overrides win
+            # over profile config; never inherit a profile's danger-full-access mode.
+            sandbox = sandbox or "workspace-write"
+            if not approve_for_me:
+                approval = approval or "on-request"
         return sandbox, approval, approve_for_me, approval_first
 
     @classmethod
@@ -1175,6 +1181,10 @@ class CodexAgent(Agent):
             out.append("--dangerously-bypass-hook-trust")
         if full.get("no_alt_screen", True) and caps.get("no_alt_screen"):
             out.append("--no-alt-screen")
+        if "profile" in full and caps.get("profile"):
+            if not caps.get("sandbox", True) or not caps.get("ask_for_approval", True):
+                raise projects.BadRequest("profile: this codex cannot enforce sandbox and approval overrides")
+            out += ["-p", full["profile"]]
         out += self._perm_args(full, caps, bypass=bypass)
         if "model" in full:
             out += ["-m", full["model"]]
@@ -1188,8 +1198,6 @@ class CodexAgent(Agent):
         if caps.get("add_dir"):
             for d in add_dirs or ():
                 out += ["--add-dir", str(d)]
-        if "profile" in full and caps.get("profile"):
-            out += ["-p", full["profile"]]
         return out + extra
 
     @staticmethod

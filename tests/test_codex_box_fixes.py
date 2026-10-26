@@ -238,7 +238,17 @@ OLD = "2020-01-01T00:00:00+00:00"
 
 
 def pane(name: str) -> str:
-    return (FIX / f"pane_{name}.txt").read_text()
+    text = (FIX / f"pane_{name}.txt").read_text()
+    if name.startswith("trust_"):
+        # Current folder-access structure; retain the older fixtures below as negative evidence.
+        old = (FIX / "pane_trust_dialog.txt").read_text()
+        current = (FIX.parent / "agents/codex/folder_trust.txt").read_text()
+        return text.replace(old, current, 1)
+    return text
+
+
+def test_a_legacy_question_without_folder_access_is_not_trust_evidence():
+    assert codex_pane.dialog((FIX / "pane_trust_dialog.txt").read_text()) is None
 
 
 def test_the_pane_rules_on_the_reconstructed_screens():
@@ -267,7 +277,7 @@ def test_an_answered_trust_dialog_is_not_the_current_screen_even_when_it_is_stil
     assert codex_pane.dialog(pane("trust_answered_working")) is None, "header box, prompt, reply and footer after the dialog"
     assert len(pane("trust_answered_working").splitlines()) < codex_pane.TAIL_LINES, "the dialog is inside the tail: no scrolling out"
     # the dialog's own numbered options and the selector arrow are not Codex's running screen
-    selected = pane("trust_dialog").replace("  1. Yes, continue", "\u203a 1. Yes, continue")
+    selected = pane("trust_dialog").replace("› 1. Trust and continue", "> 1. Trust and continue")
     assert codex_pane.dialog(selected) == "trust"
     # a NEW dialog drawn after a working session counts again
     assert codex_pane.dialog(pane("trust_answered_working") + "\n" + pane("update_dialog")) == "update"

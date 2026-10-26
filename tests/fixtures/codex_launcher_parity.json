@@ -1,0 +1,449 @@
+{
+  "_doc": "Issue #329: all 15 cases from the #92 recheck on Codex 0.162.1. Shared by pytest and node:test; profile moved before board permission flags. Captured preview tokens are the expected argv, never the mismatching server results.",
+  "ctx": {
+    "caps": {
+      "fork": true,
+      "no_daemon": true,
+      "approve_for_me": true,
+      "worktree": true,
+      "yolo": false,
+      "bypass_approvals": true,
+      "hook_trust_flag": true,
+      "no_alt_screen": true,
+      "search": true,
+      "add_dir": true,
+      "cd": true,
+      "profile": true,
+      "config": true,
+      "model": true,
+      "sandbox": true,
+      "ask_for_approval": true,
+      "approval_on_failure": false,
+      "approval_untrusted": false,
+      "device_auth": false,
+      "hook_trust_bypass": false
+    }
+  },
+  "cases": [
+    {
+      "id": "Default model",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "default",
+        "permission_mode": "default"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "Explicit model + high",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "model": "gpt-6.1-sol",
+        "reasoning": "high"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "model": "gpt-6.1-sol",
+        "reasoning": "high",
+        "reasoning_effort": "high",
+        "mode": "default",
+        "permission_mode": "default"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        "-m",
+        "gpt-6.1-sol",
+        "-c",
+        "model_reasoning_effort=\"high\""
+      ]
+    },
+    {
+      "id": "Mode auto",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "auto"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "auto",
+        "permission_mode": "auto"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "--approve-for-me",
+        "-s",
+        "workspace-write"
+      ]
+    },
+    {
+      "id": "Mode read-only",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "read-only"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "read-only",
+        "permission_mode": "plan"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "read-only",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "read-only / on-request",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "custom",
+        "sandbox": "read-only",
+        "approval": "on-request"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "custom",
+        "sandbox": "read-only",
+        "approval": "on-request"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "read-only",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "read-only / never",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "custom",
+        "sandbox": "read-only",
+        "approval": "never"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "custom",
+        "sandbox": "read-only",
+        "approval": "never"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "read-only",
+        "-a",
+        "never"
+      ]
+    },
+    {
+      "id": "workspace-write / on-request",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "custom",
+        "sandbox": "workspace-write",
+        "approval": "on-request"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "custom",
+        "sandbox": "workspace-write",
+        "approval": "on-request"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "workspace-write / never",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "custom",
+        "sandbox": "workspace-write",
+        "approval": "never"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "custom",
+        "sandbox": "workspace-write",
+        "approval": "never"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "never"
+      ]
+    },
+    {
+      "id": "Named worktree",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "worktree": true,
+        "worktree_name": "issue-92"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "default",
+        "permission_mode": "default",
+        "worktree": true,
+        "worktree_name": "issue-92"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "Quoted first prompt",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "prompt": "Fix \"quoted\" text, it's $HOME now"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "prompt": "Fix \"quoted\" text, it's $HOME now",
+        "mode": "default",
+        "permission_mode": "default"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        "--",
+        "Fix \"quoted\" text, it's $HOME now"
+      ]
+    },
+    {
+      "id": "Resume thread",
+      "v": {
+        "agent": "codex",
+        "launch": "resume",
+        "cx_mode": "default",
+        "resume_id": "11111111-2222-4333-8444-555555555555"
+      },
+      "body": {
+        "launcher": "resume",
+        "agent": "codex",
+        "resume_id": "11111111-2222-4333-8444-555555555555",
+        "mode": "default",
+        "permission_mode": "default"
+      },
+      "tokens": [
+        "codex",
+        "resume",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        "11111111-2222-4333-8444-555555555555"
+      ]
+    },
+    {
+      "id": "Fork thread",
+      "v": {
+        "agent": "codex",
+        "launch": "fork",
+        "cx_mode": "default",
+        "resume_id": "11111111-2222-4333-8444-555555555555"
+      },
+      "body": {
+        "launcher": "fork",
+        "agent": "codex",
+        "resume_id": "11111111-2222-4333-8444-555555555555",
+        "mode": "default",
+        "permission_mode": "default"
+      },
+      "tokens": [
+        "codex",
+        "fork",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        "11111111-2222-4333-8444-555555555555"
+      ]
+    },
+    {
+      "id": "Profile",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "profile": "review"
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "default",
+        "permission_mode": "default",
+        "profile": "review"
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-p",
+        "review",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request"
+      ]
+    },
+    {
+      "id": "Extra args",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "args": "--image \"/tmp/ccb92/example image.png\""
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "default",
+        "permission_mode": "default",
+        "args": "--image \"/tmp/ccb92/example image.png\""
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "--no-alt-screen",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        "--image",
+        "/tmp/ccb92/example image.png"
+      ]
+    },
+    {
+      "id": "Scrollback opt-out",
+      "v": {
+        "agent": "codex",
+        "launch": "new",
+        "cx_mode": "default",
+        "no_scrollback": true
+      },
+      "body": {
+        "launcher": "claude",
+        "agent": "codex",
+        "mode": "default",
+        "permission_mode": "default",
+        "no_alt_screen": false
+      },
+      "tokens": [
+        "codex",
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request"
+      ]
+    }
+  ]
+}

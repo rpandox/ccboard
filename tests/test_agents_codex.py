@@ -333,11 +333,11 @@ def test_option_order_and_quoting(ag):
     opts = {"model": " gpt-5.6-sol ", "reasoning_effort": "high", "permission_mode": "acceptEdits", "search": True, "profile": "work",
             "extra": "--oss"}
     p = plan(ag, opts=opts, add_dirs=["/p/shop/web", "/p/shop/docs"], prompt="go")
-    assert p.argv == ["codex", "--no-alt-screen", "-s", "workspace-write", "-a", "on-request", "-m", "gpt-5.6-sol",
+    assert p.argv == ["codex", "--no-alt-screen", "-p", "work", "-s", "workspace-write", "-a", "on-request", "-m", "gpt-5.6-sol",
                       "-c", 'model_reasoning_effort="high"', "--search", "--add-dir", "/p/shop/web", "--add-dir", "/p/shop/docs",
-                      "-p", "work", "--oss", "--", "go"]
-    assert p.cmd_line == ("codex --no-alt-screen -s workspace-write -a on-request -m gpt-5.6-sol -c 'model_reasoning_effort=\"high\"' "
-                          "--search --add-dir /p/shop/web --add-dir /p/shop/docs -p work --oss -- go")
+                      "--oss", "--", "go"]
+    assert p.cmd_line == ("codex --no-alt-screen -p work -s workspace-write -a on-request -m gpt-5.6-sol -c 'model_reasoning_effort=\"high\"' "
+                          "--search --add-dir /p/shop/web --add-dir /p/shop/docs --oss -- go")
     assert p.opts_clean == {"model": "gpt-5.6-sol", "reasoning_effort": "high", "permission_mode": "acceptEdits", "search": True,
                             "profile": "work"}                   # extra is a one-off: never stored
     again = plan(ag, opts=p.opts_clean, add_dirs=["/p/shop/web", "/p/shop/docs"], prompt="go").argv      # what a resume re-passes
@@ -534,7 +534,7 @@ def test_reasoning_levels_are_checked_against_the_models_catalogue(ag, fake, clo
 
 def test_profiles_are_checked_leniently(ag, _codex_sandbox):
     home = _codex_sandbox
-    assert plan(ag, opts={"profile": "work"}).argv[-2:] == ["-p", "work"]         # unknown profile: still launches
+    assert plan(ag, opts={"profile": "work"}).argv[2:] == ["-p", "work", "-s", "workspace-write", "-a", "on-request"]         # unknown profile: still launches
     assert "work" in ag.opt_warnings({"profile": "work"})[0]
     assert ag.opt_warnings({}) == [] and ag.opt_warnings({"profile": ""}) == [] and ag.opt_warnings(None) == []
     home.mkdir(parents=True)

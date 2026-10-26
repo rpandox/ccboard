@@ -494,3 +494,29 @@ def test_close_after_a_state_change_callback_that_writes_through_the_database_do
     t0 = time.monotonic()
     d.close()
     assert time.monotonic() - t0 < 1.0
+
+
+@pytest.mark.parametrize("indent", ["", "  "])
+@pytest.mark.parametrize("border", ["", "│", "┃"])
+def test_measured_width_redacts_indented_command_fragments_before_prefix_removal(monkeypatch, indent, border):
+    from app import hooks
+    token = "a1b2c3d4" * 4 + "e5f60789" * 4
+    monkeypatch.setattr(hooks, "_token", token)
+    text = "unwrapped heading longer than the actual command pane width" + "\n  $ echo " + token[:32] + "\n" + indent + token[32:] + " && xxx"
+    left, right = (border + " ", " " + border) if border else ("", "")
+    text = "\n".join(left + line + right for line in text.splitlines())
+    lines = nr.screen_lines(text, 40, width=45 if border else 41)
+    assert lines[1] == left + "  $ echo [redacted]" + right
+    assert lines[2] == left + indent + "[redacted] && xxx" + right
+    assert token[:32] not in "\n".join(lines) and token[32:] not in "\n".join(lines)
+
+
+@pytest.mark.parametrize("boundary", ["padding", "frame_edge"])
+def test_frame_padding_and_edges_are_not_wraps(monkeypatch, boundary):
+    from app.agents import codex_pane
+    monkeypatch.setattr(nr, "known_secrets", lambda: ["ordinarywords"])
+    lines = (["│ ordinary  │", "│ words     │"] if boundary == "padding" else
+             ["│ ordinary │", "╰──────────╯", "│ words    │"])
+    width = len(lines[0])
+    assert nr.screen_lines_from(lines, width=width) == lines
+    assert codex_pane._screen_lines("\n".join(lines), width, redact=True) == ["ordinary", "words"]

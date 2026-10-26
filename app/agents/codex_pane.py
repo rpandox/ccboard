@@ -21,7 +21,6 @@ SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"})
 TAIL_LINES = 40                    # the dialog is the bottom of the screen; older scrollback may hold one that was answered
 
 UPDATE_RE = re.compile(r"update available|update now|skip until next version|npm install -g\s@openai/codex", re.I)   # \s: the repo-wide scan forbids the literal install line
-TRUST_RE = re.compile(r"trust this folder|do you trust the contents of this directory|continue only if you trust these files", re.I)
 COMPOSER_RE = re.compile(r"context left|for shortcuts|esc to interrupt|reply wit", re.I)     # Codex's own footer once it is at its prompt
 # Codex 0.161's footer in a narrow pane has none of those words: "GPT-6.1-Sol default · <path> · Reply wit…" (model and mode, the folder, a
 # hint, cut at the pane width). Two " · " separators on one line, which no dialog line has.
@@ -32,8 +31,10 @@ ERROR_RE = re.compile(r"^\s*(error|fatal)\b[:\s].{3,}", re.I)
 
 NOTES = {
     "update": "Codex is asking whether to update itself; its default answer runs npm install -g. Answer it in the terminal (choose Skip).",
-    "trust": "Codex is asking whether to trust this folder. Answer it in the terminal.",
+    "trust": "Codex asks to trust this folder (it applies to the repository root)",
 }
+TRUST_FAILURE = NOTES["trust"] + ". An unattended task cannot answer this dialog: open a Codex session, accept trust, then run the task again."
+COMMAND_NOTE = "Codex asks to run a command: answer in the terminal"
 
 
 def shell_foreground(command) -> bool:
@@ -51,16 +52,50 @@ def _codex_drawn(line: str) -> bool:
     return bool(COMPOSER_RE.search(line) or FOOTER_RE.match(line) or SESSION_RE.match(line))
 
 
-def dialog(text: str) -> str | None:
-    """'update' or 'trust' while the screen shows that dialog, else None. The update dialog wins when both are on screen."""
-    lines = _tail(text)
-    for kind, rx in (("update", UPDATE_RE), ("trust", TRUST_RE)):
-        hit = next((i for i in range(len(lines) - 1, -1, -1) if rx.search(lines[i])), None)
-        if hit is None:
+def _screen_lines(text: str, width: int | None = None, *, redact: bool = False) -> list[str]:
+    """Logical lines in the bottom screen, unwrapped using original physical widths (before redaction or prefix removal)."""
+    from .. import nodes_relay
+    raw = nodes_relay.tail_lines(text or "", TAIL_LINES)
+    safe = nodes_relay.screen_lines(text, TAIL_LINES, width=width) if redact else raw
+    out, continuing = [], False
+    for original, line in zip(raw, safe):
+        layout = nodes_relay.screen_line_layout(original, width)
+        if layout is None:
+            # A frame edge is a real line boundary, not a full-width text continuation.
+            continuing = False
             continue
-        if any(_codex_drawn(ln) for ln in lines[hit + 1:]):
-            continue                                    # Codex drew its own screen after it: answered
-        return kind
+        _, offset, wrapped = layout
+        if offset:
+            line = line[offset:-offset]
+        if continuing:
+            out[-1] += line
+        else:
+            out.append(line)
+        continuing = wrapped
+    return [ln.strip() for ln in out if ln.strip()]
+
+
+def dialog(text: str, width: int | None = None) -> str | None:
+    """A current update or structurally complete folder-access dialog. Quoted questions are never trust evidence."""
+    lines = _screen_lines(text, width)
+    hit = next((i for i in range(len(lines) - 1, -1, -1) if UPDATE_RE.search(lines[i])), None)
+    if hit is not None and not any(_codex_drawn(ln) for ln in lines[hit + 1:]):
+        return "update"
+    # An approval menu can quote any of the trust text; it must never fail the task as a trust dialog.
+    if approval_dialog(text, width):
+        return None
+    start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i] == "Folder access"), None)
+    if start is None:
+        return None
+    tail = [re.sub(r"^[›>]\s*", "", ln) for ln in lines[start + 1:]]
+    # The question immediately follows the heading. Only the repository-root note may precede the numbered choices.
+    if not tail or tail[0] != "Trust this folder?":
+        return None
+    rest = tail[1:]
+    if rest and rest[0].startswith("Note: "):
+        rest = rest[1:]
+    if rest == ["1. Trust and continue", "2. Quit"]:
+        return "trust"
     return None
 
 
@@ -73,9 +108,9 @@ def exit_reason(text: str) -> str:
     return "codex is not running in this pane: its login shell is (the launch exited before it started)"
 
 
-def approval_dialog(text: str) -> dict | None:
+def approval_dialog(text: str, width: int | None = None) -> dict | None:
     """Codex's command permission menu, with exact one-time labels only."""
-    lines = _tail(text)
+    lines = _screen_lines(text, width, redact=True)
     if not lines or lines[-1].strip().lower() != "press enter to confirm or esc to cancel":
         return None
     start = next((i for i in range(len(lines) - 1, -1, -1)
@@ -95,7 +130,9 @@ def approval_dialog(text: str) -> dict | None:
     no = [c for c in choices if c["label"] == "No, and tell Codex what to do differently (esc)"]
     if len(yes) != 1 or len(no) != 1 or len({c["number"] for c in choices}) != len(choices):
         return None
-    return {"tool_name": "command", "summary": "command: " + " ".join(body), "choices": choices,
+    command_at = next((i for i, line in enumerate(body) if line.startswith("$ ")), None)
+    command = "\n".join(body[command_at:])[2:] if command_at is not None else ""
+    return {"tool_name": "command", "summary": "command: " + " ".join(body), "command": command[:2000], "choices": choices,
             "allow": yes[0]["number"], "deny": no[0]["number"], "enter": True}
 
 

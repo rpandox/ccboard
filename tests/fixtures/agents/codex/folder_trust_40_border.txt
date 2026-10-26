@@ -1,0 +1,16 @@
+╭──────────────────────────────────────╮
+│                           Folder acc │
+│ ess                                  │
+│                                      │
+│                           Trust this │
+│  folder?                             │
+│                                      │
+│                           Note: You' │
+│ re in a subdirectory of a Git projec │
+│ t. Trusting will apply to the reposi │
+│ tory root                            │
+│                                      │
+│                           › 1. Trust │
+│  and continue                        │
+│                             2. Quit  │
+╰──────────────────────────────────────╯

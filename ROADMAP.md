@@ -142,7 +142,7 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 - [x] v0.5.28 Auto-continue opt-out and the power-cut continue (#84), chart keyboard access (#45), registry source decided (#27)
 - [x] v0.5.29 Per-route loading and recorded Lighthouse scores (#103)
 - [x] v0.5.30 Codex: tuning by restart (#2), dead-login signal (#35, #68), box-check fixes (#63, #70, #86, #92)
-  - verified on the box 2026-10-10: V-perm, V-task (PR and Merge excepted), V-foreign (#63)
+  - verified on the box: V-perm, V-foreign (2026-10-10), V-task with PR and Merge (2026-10-26) (#63)
 - [x] v0.5.31 Box-check fixes: queued tasks (#64), task close and reopen (#88), headless runs (#107), pricing (#94), memory, backup runbook and docs (#12, #111, #104, #26, #62)
 - [x] v0.5.32 Nodes P1: node identity and card (#133), one naming scheme (#137)
 - [x] v0.5.33 Nodes P2: discovery on the tailnet (#134)

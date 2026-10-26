@@ -1,0 +1,14 @@
+                              Folder acc
+ess
+
+                              Trust this
+ folder?
+
+                              Note: You'
+re in a subdirectory of a Git project. T
+rusting will apply to the repository roo
+t
+
+                              › 1. Trust
+ and continue
+                                2. Quit

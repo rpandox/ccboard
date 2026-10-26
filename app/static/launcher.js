@@ -1386,7 +1386,7 @@ const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green
 const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['custom', 'custom']];      // no bypass for Codex: it never runs in the devcontainer (owner decision, #104)
 const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
 const LX_SANDBOXES = ['read-only', 'workspace-write'];
-const LX_PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;              // codex.py PROFILE_RE
+const LX_PROFILE_RE = /^[A-Za-z0-9_.-]{1,64}$/;                       // codex.py PROFILE_RE
 const LX_APPROVALS = ['on-request', 'never'];                                 // codex 0.160's -a; untrusted is retired, on-failure deprecated (the box's own list comes from GET /api/agents)
 /* The Codex models before GET /api/agents answers: codex.py FALLBACK_MODELS (the current family, in the order the TUI's /model picker lists them), the same
    slugs as termkit.js TK_CODEX_MODELS (tests/test_static_codex.py compares all three). ultra only where the fallback lists it (gpt-6.1-sol). */
@@ -1781,8 +1781,14 @@ function commandPreview(v, ctx) {
     if (caps.no_daemon) flags.push('--no-daemon', '-c', 'check_for_update_on_startup=false');   // the adapter's first flags (the second skips 0.161's update dialog) when this codex has it (0.157+; the box's 0.161): the preview must say it too (box check #92)
     if (caps.hook_trust_bypass) flags.push('--dangerously-bypass-hook-trust');            // only with CCBOARD_CODEX_HOOK_TRUST=bypass on the box (the adapter's second flag)
     if (caps.no_alt_screen && !v.no_scrollback) flags.push('--no-alt-screen');            // on by default: only the opt-out (Keep scrollback unchecked) drops it
+    const profile = caps.profile !== false ? String(v.profile || '').trim() : '';
+    if (profile) flags.push('-p', profile);                                           // board permission flags follow the opaque profile
     const cx = lxCx(v), md = cx.mode;                                                                   // a bypass is never a Codex line (#104): it reads as the default
-    if (md === 'custom') { if (cx.sandbox) flags.push('-s', cx.sandbox); if (v.approval) flags.push('-a', v.approval); }
+    if (md === 'custom') {
+      const sandbox = cx.sandbox || (profile ? 'workspace-write' : '');
+      const approval = v.approval || (profile ? 'on-request' : '');
+      if (sandbox) flags.push('-s', sandbox); if (approval) flags.push('-a', approval);
+    }
     else if (md === 'read-only') flags.push('-s', 'read-only', '-a', 'on-request');
     else if (md === 'auto') { if (caps.approve_for_me) flags.push('--approve-for-me', '-s', 'workspace-write'); else flags.push('-s', 'workspace-write', '-a', 'on-request'); }
     else flags.push('-s', 'workspace-write', '-a', 'on-request');
@@ -1792,7 +1798,6 @@ function commandPreview(v, ctx) {
     for (const line of String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean)) flags.push('-c', line);
     if (v.search && caps.search) flags.push('--search');
     if (caps.add_dir) for (const d of dirs) flags.push('--add-dir', d);
-    if (String(v.profile || '').trim() && caps.profile !== false) flags.push('-p', String(v.profile).trim());
     flags.push(...lxSplit(v.args));
     const kind = lane ? 'new' : v.launch;
     const target = String(v.resume_id || '').trim();

@@ -20,6 +20,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from weakref import WeakKeyDictionary
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -756,23 +757,26 @@ def _hooks_missing(row: dict) -> str | None:
         return None
 
 
-def _agent_launch_view(name: str, row: dict, command: str | None, view: dict) -> None:
-    """An agent row that has sent no hook yet (Codex's first hook comes with its first turn) is either still starting, waiting behind a
+def _agent_launch_view(name: str, row: dict, command: str | None, view: dict, width: int | None = None) -> None:
+    """An agent row may be still starting, waiting behind a
     dialog nobody answered (update, trust: view.pane_dialog, shown as needing a person, never answered by the board), or gone back to its
     login shell (LAUNCH_GRACE s after the row was made: the row becomes errored with the reason, once). Never raises into the 3 s poll."""
     try:
         made = _parse_at(row.get("created_at"))
         if made is not None and (datetime.now(timezone.utc) - made).total_seconds() < LAUNCH_GRACE:
             return
-        block = _pane_block(name, row, command, invalidate=False, claude_trust=True)
+        check_shell = not row.get("state") or bool(settings.pools and (row.get("opts") or {}).get("account_id"))
+        block = _pane_block(name, row, command, shell=check_shell, invalidate=False, claude_trust=True, width=width)
         if block is None:
             return
         if block[0] == "agent_exited":
             fresh = db.open_row(name) or {}
             view.update(state=fresh.get("state") or "errored", state_at=fresh.get("state_at"), last_event=fresh.get("last_event"),
                         last_message=fresh.get("last_message"), needs_attention=True)
+            if block[1] == codex_pane.TRUST_FAILURE:
+                view["pane_dialog"] = codex_pane.NOTES["trust"]
         else:
-            view.update(pane_dialog=block[1], needs_attention=True, last_message=block[1])
+            view.update(state="waiting", wait_kind="dialog", pane_dialog=block[1], needs_attention=True, last_message=block[1])
     except Exception as e:
         log.debug("agent launch check failed for %s: %s", name, e.__class__.__name__)
 
@@ -813,10 +817,23 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     try:
         live = tmux.list_sessions()
     except tmux.TmuxDown:
+        with _codex_trust_lock:
+            _codex_trust_seen.pop(db, None)
         return {}, True
+    except (tmux.TmuxError, OSError):
+        with _codex_trust_lock:
+            _codex_trust_seen.pop(db, None)
+        raise
     assert db is not None
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
+    with _codex_trust_lock:
+        seen = _codex_trust_seen.get(db, {})
+        for name, identity in list(seen.items()):
+            row = rows.get(name, {})
+            if (name not in live or row.get("launcher") != "task"
+                    or identity != (row.get("row_id"), row.get("created_at"))):
+                seen.pop(name, None)
     if _esc_dismissed_permissions(live, rows):
         rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
@@ -858,9 +875,9 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
             out[name]["wait_kind"] = waits[name]
         if ((settings.pools and (row.get("opts") or {}).get("account_id"))
-                or (not row.get("state") and ((row.get("agent") == "claude" and row.get("launcher") == "task")
-                                              or (rich and row.get("agent") == "codex")))):
-            _agent_launch_view(name, row, s["command"], out[name])
+                or row.get("agent") == "codex"
+                or (not row.get("state") and row.get("agent") == "claude" and row.get("launcher") == "task")):
+            _agent_launch_view(name, row, s["command"], out[name], s.get("window_width"))
     if rich and out:
         try:                                         # #71: a session parked on a rate limit says when it continues (display only; never breaks the poll)
             for name, p in autoresume.parked_view(db, {n: rows.get(n, {}) for n in out}, time.time()).items():
@@ -2135,6 +2152,9 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
     has_work = any(t.get("issue_number") for t in rows) and nodes_work.has_records(db)          # one read of one key, and only when a task has an issue: a board that never ran epic work reads nothing more
     out = []
     for t in rows:
+        # A launch scan can fail an unattended task on its trust dialog during this same request.
+        if (sessions.get(t.get("tmux_name")) or {}).get("last_message") == codex_pane.TRUST_FAILURE:
+            t = db.task_get(t["id"]) or t
         if t.get("session_row") is not None:
             s = by_row.get(t["session_row"])          # authoritative: tmux names are reused, session rows are not
         else:
@@ -2185,7 +2205,8 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
             "prompt": (t.get("prompt") or "")[:TASK_PROMPT_HEAD] if (t.get("phase") or "running") in ("backlog", "queued") else None,
             "prompt_len": len(t.get("prompt") or ""),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
-                        "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
+                        "needs_attention": s["needs_attention"], "command": s["command"],
+                        **({"pane_dialog": s["pane_dialog"]} if s.get("pane_dialog") else {})} if s else None,
         })
         ew = nodes_work.task_work(db, t) if has_work and t.get("issue_number") else None          # a task an epic started (issue #149) says so: its phase, branch and the settings it runs with; no other task has the key
         if ew is not None:
@@ -3812,6 +3833,8 @@ class SessionIn(LaunchOpts):
     sandbox: str | None = None         # Codex -s (mode custom); `opts` carries the same and wins
     approval: str | None = None        # Codex -a (mode custom)
     search: bool | None = None         # Codex --search
+    profile: object = None            # Codex -p; adapter validates the name with a 400
+    no_alt_screen: StrictBool | None = None  # Codex: false opts out of scrollback
 
 
 def _resolve_add_dirs(ids: list[str] | None, own: Path) -> list[str]:
@@ -4033,6 +4056,10 @@ def _codex_session_opts(body, extra: list[str]) -> dict:
         v = getattr(body, k)
         if v not in (None, "", [], False):
             own[k] = v
+    if body.no_alt_screen is not None:
+        own["no_alt_screen"] = body.no_alt_screen  # false is the meaningful opt-out
+    if body.profile is not None:
+        own["profile"] = body.profile
     flat = _agent_opts("codex", body)
     if own.get("reasoning"):
         flat["reasoning_effort"] = own.pop("reasoning")
@@ -4329,18 +4356,27 @@ def _agent_row(name: str) -> tuple[dict | None, object | None, JSONResponse | No
 
 
 _agent_exit_lock = threading.Lock()
+_codex_trust_seen = WeakKeyDictionary()     # per database and session incarnation; only monitor polls contribute
+_codex_trust_lock = threading.Lock()
 LAUNCH_GRACE = 20                                # s after a session row is made in which a login shell in its pane is the launch line being typed
 
 
 def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True,
-                claude_trust: bool = False) -> tuple[str, str] | None:
+                claude_trust: bool = False, width: int | None = None) -> tuple[str, str] | None:
     """(code, message) when the board must not type into a Claude approval or Codex dialog, or a Claude task was refused for workspace
     trust, else None. `agent_exited`: the pane's foreground process is the login shell (codex quit; a prompt typed now would run as a
     shell command); the row is marked errored with the reason. `dialog`: the screen shows Claude's approval dialog, Codex's update dialog
     (its default, Update now, runs npm install -g) or its trust dialog; the board never answers one. Box checks 86 and 92. A tmux hiccup
     is no evidence: None. `invalidate` is off inside the state builder, which holds the scan lock. Claude trust detection is opt-in for
-    launch polling only; typing callers never act on it."""
+    launch polling only; typing callers never act on it. Codex task failure requires a complete trust dialog on two consecutive
+    polls; any intervening non-trust screen or failed capture clears the first sighting."""
     agent = (row or {}).get("agent") or "claude"
+    poll_trust = bool(agent == "codex" and row and row.get("launcher") == "task" and claude_trust)
+    previous_trust = False
+    identity = (row.get("row_id"), row.get("created_at")) if row else None
+    if poll_trust:
+        with _codex_trust_lock:
+            previous_trust = _codex_trust_seen.setdefault(db, {}).pop(name, None) == identity
     if row and agent == "claude":
         try:
             if claude_pane.approval_dialog(tmux.capture(name, lines=0)):
@@ -4367,7 +4403,9 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
                 or not db.active_tasks_by_session(("running",)).get(row.get("row_id"))):
             return None
     try:
-        cmd = command if command is not None else tmux.pane_info(name).get("cmd")
+        info = tmux.pane_info(name) if command is None or not width else {}
+        cmd = command if command is not None else info.get("cmd")
+        width = width or info.get("cols")
         if agent == "claude":
             if shell and codex_pane.shell_foreground(cmd):
                 lines = tmux.capture(name, lines=claude_pane.TAIL_LINES).splitlines()
@@ -4380,13 +4418,29 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
             reason = codex_pane.exit_reason(tmux.capture(name, lines=codex_pane.TAIL_LINES))
             _mark_exited(name, row, reason, invalidate)
             return "agent_exited", reason
-        kind = codex_pane.dialog(tmux.capture(name, lines=codex_pane.TAIL_LINES))
+        screen = tmux.capture(name, lines=0)
+        kind = codex_pane.dialog(screen, width)
+        if kind == "trust" and poll_trust:
+            with _codex_trust_lock:
+                _codex_trust_seen.setdefault(db, {})[name] = identity
+            if previous_trust and db.active_tasks_by_session(("running",)).get(row.get("row_id")):
+                _mark_exited(name, row, codex_pane.TRUST_FAILURE, invalidate, fail_task=True)
+                return "agent_exited", codex_pane.TRUST_FAILURE
+            if row.get("last_message") == codex_pane.TRUST_FAILURE:
+                return "agent_exited", codex_pane.TRUST_FAILURE
+        if not kind:
+            approval = codex_pane.approval_dialog(screen, width)
+            if approval:
+                command = " ".join(approval["command"].splitlines())
+                # Joining can reconstruct a secret; redact it whole before the card's display cap.
+                command = nodes_relay.redact(command, nodes_relay.known_secrets())[:300]
+                return "dialog", codex_pane.COMMAND_NOTE + ("\n" + command if command else "")
     except (tmux.TmuxError, tmux.TmuxDown, OSError):
         return None
     return ("dialog", codex_pane.NOTES[kind]) if kind else None
 
 
-def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> None:
+def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True, *, fail_task: bool = False) -> None:
     """An agent that failed to start becomes errored, once, with the reason (and a notice)."""
     try:
         with _agent_exit_lock:
@@ -4398,7 +4452,7 @@ def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> 
                 return
             db.set_state(name, "errored", "AgentExited", message=reason, attention=True)
             db.add_event(name, "AgentExited", None, reason, {}, agent=row.get("agent") or "claude")
-        if (row.get("agent") or "claude") == "claude":
+        if fail_task or (row.get("agent") or "claude") == "claude":
             _taskflow().on_turn_end(name, row, None, failed=True, message=reason)
         notify.notify_session(name, "errored", reason, "agent_exited")
     except Exception as e:

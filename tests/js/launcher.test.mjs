@@ -232,6 +232,17 @@ test('the preview is one nowrap span per token (a flag is never cut after its --
   assert.deepEqual(written, [plainLine]);
 });
 
+const codexParity = JSON.parse(readFileSync(new URL('../fixtures/codex_launcher_parity.json', import.meta.url), 'utf8'));
+for (const c of codexParity.cases) {
+  test(`#329 Codex preview/server parity: ${c.id}`, () => {
+    assert.equal(codexParity.cases.length, 15);
+    const w = lWorld();
+    assert.deepEqual(pay(w, c.v, codexParity.ctx), c.body);
+    const line = prev(w, c.v, codexParity.ctx).split('\n')[0];
+    assert.deepEqual(plain(w.run(`lxSplit(${JSON.stringify(line)})`)), c.tokens);
+  });
+}
+
 test('the sheet\'s command line and body for every case of tests/fixtures/launcher_cases.json (the same file tests/test_launcher_api.py posts to the real route): launcherPayload(v) is the body, the preview splits into the route\'s tokens', () => {
   const { cases } = JSON.parse(readFileSync(new URL('../fixtures/launcher_cases.json', import.meta.url), 'utf8'));
   assert.ok(cases.length >= 15);
@@ -1613,16 +1624,16 @@ test('gotchas strip in the launcher: markup in a gotcha title is shown as text',
 
 // ---------------------------------------------------------------- v0.5.21: Codex Profile and Keep scrollback (#33)
 
-test('commandPreview, Codex: -p <profile> only when set (after --add-dir, before the extra args), --no-alt-screen goes only when Keep scrollback is unchecked', () => {
+test('commandPreview, Codex: -p <profile> only when set (before board permission flags), --no-alt-screen goes only when Keep scrollback is unchecked', () => {
   const w = lWorld();
-  assert.equal(prev(w, CODEX({ profile: 'ci' })), 'codex --no-alt-screen -s workspace-write -a on-request -p ci');
-  assert.equal(prev(w, CODEX({ profile: ' ci ', args: '--foo' })), 'codex --no-alt-screen -s workspace-write -a on-request -p ci --foo', 'trimmed, and before the extra args');
+  assert.equal(prev(w, CODEX({ profile: 'ci' })), 'codex --no-alt-screen -p ci -s workspace-write -a on-request');
+  assert.equal(prev(w, CODEX({ profile: ' ci ', args: '--foo' })), 'codex --no-alt-screen -p ci -s workspace-write -a on-request --foo', 'trimmed, and before the extra args');
   assert.equal(prev(w, CODEX({ profile: '' })), 'codex --no-alt-screen -s workspace-write -a on-request');
   assert.equal(prev(w, CODEX({ no_scrollback: true })), 'codex -s workspace-write -a on-request', 'the opt-out drops the flag');
-  assert.equal(prev(w, CODEX({ no_scrollback: true, profile: 'ci' })), 'codex -s workspace-write -a on-request -p ci');
+  assert.equal(prev(w, CODEX({ no_scrollback: true, profile: 'ci' })), 'codex -p ci -s workspace-write -a on-request');
   assert.equal(prev(w, CODEX({ profile: 'ci' }), { caps: { profile: false } }), 'codex --no-alt-screen -s workspace-write -a on-request', 'a box whose codex lacks -p does not show it');
   assert.equal(prev(w, CODEX({ no_scrollback: true }), { caps: { no_alt_screen: false } }), 'codex -s workspace-write -a on-request');
-  assert.equal(prev(w, CODEX({ launch: 'resume', resume_id: 'abc', profile: 'ci' })), 'codex resume --no-alt-screen -s workspace-write -a on-request -p ci abc');
+  assert.equal(prev(w, CODEX({ launch: 'resume', resume_id: 'abc', profile: 'ci' })), 'codex resume --no-alt-screen -p ci -s workspace-write -a on-request abc');
 });
 
 test('launcherPayload, Codex: profile is sent when set, no_alt_screen:false only for the opt-out, neither when the schema lacks the option; a task carries them in opts', () => {
@@ -1638,6 +1649,16 @@ test('launcherPayload, Codex: profile is sent when set, no_alt_screen:false only
   const opts = plain(w.run(`launcherTaskOpts(${JSON.stringify({ ...CODEX({ profile: 'ci', no_scrollback: true }) })})`));
   assert.deepEqual(opts.opts, { profile: 'ci', no_alt_screen: false });
   assert.equal('opts' in plain(w.run(`launcherTaskOpts(${JSON.stringify(CODEX({}))})`)), false);
+});
+
+test('#329 profiles cannot supply missing custom permissions in the preview', () => {
+  const w = lWorld();
+  assert.equal(prev(w, CODEX({ profile: 'ci', cx_mode: 'custom', sandbox: '', approval: 'never' })),
+    'codex --no-alt-screen -p ci -s workspace-write -a never');
+  assert.equal(prev(w, CODEX({ profile: 'ci', cx_mode: 'custom', sandbox: 'read-only', approval: '' })),
+    'codex --no-alt-screen -p ci -s read-only -a on-request');
+  assert.equal(prev(w, CODEX({ profile: 'ci', cx_mode: 'auto' }), { caps: { approve_for_me: true } }),
+    'codex --no-alt-screen -p ci --approve-for-me -s workspace-write');
 });
 
 test('the Codex sheet draws Profile and Keep scrollback (on) in Advanced above the command; typing and unticking change the preview; a bad profile blocks Start with the server\'s words', async () => {

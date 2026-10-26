@@ -55,7 +55,8 @@ def path(name, verb):
     ('claude', (FIXTURES / 'agents/claude/pane_waiting.txt').read_text(), 'waiting'),
     ('codex', (FIXTURES / 'codex_0161/pane_trust_answered_working.txt').read_text(), 'waiting'),
     ('codex', (FIXTURES / 'codex_0161/pane_trust_answered_footer.txt').read_text(), 'waiting'),
-    ('codex', (FIXTURES / 'codex_0161/pane_trust_dialog.txt').read_text(), 'dialog'),
+    ('codex', (FIXTURES / 'codex_0161/pane_trust_dialog.txt').read_text(), 'unknown'),
+    ('codex', (FIXTURES / 'agents/codex/folder_trust.txt').read_text(), 'dialog'),
 ])
 def test_screen_states(lite_client, bare_runner, device, agent, screen, state):
     names = seed(agent)
