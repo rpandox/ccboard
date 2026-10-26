@@ -459,29 +459,50 @@ def _serialized(fn):
     return call
 
 
-@_serialized
-def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, provider_session_id=None, resumed_from=None):
+def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, provider_session_id=None, resumed_from=None,
+                  account_mode='legacy', pinned_account_id=None, pool_id=None, on_limit_policy=None, selection=None):
     require_account(db, provider, account_id)
+    path = str(profile_dir(provider, account_id))
+    aid = _record_attempt(db, provider, account_id, path=path, task_id=task_id, session_row=session_row,
+                          provider_session_id=provider_session_id, resumed_from=resumed_from, account_mode=account_mode,
+                          pinned_account_id=pinned_account_id, pool_id=pool_id, on_limit_policy=on_limit_policy, selection=selection)
+    from . import pool_usage
+    pool_usage.attempt_started(db, account_id)
+    return aid
+
+
+@_serialized
+def _record_attempt(db, provider, account_id, *, path, task_id, session_row, provider_session_id, resumed_from,
+                    account_mode, pinned_account_id, pool_id, on_limit_policy, selection):
+    # Only database work under the account/migration locks. The profile path was
+    # validated outside; recheck the row here so Release cannot race the INSERT.
+    require_enabled()
     with db.lock:
-        row = db.conn.execute("SELECT state FROM pool_account WHERE id=?", (account_id,)).fetchone()
-        if row and row[0] == "releasing":
+        row = db.conn.execute("SELECT provider,state FROM pool_account WHERE id=?", (account_id,)).fetchone()
+        if row is None or row['provider'] != provider:
+            raise projects.BadRequest("no such account profile")
+        if row['state'] == "releasing":
             raise projects.BadRequest("release is incomplete; retry Release")
     from datetime import datetime, timezone
     started_at = datetime.now(timezone.utc).isoformat()
-    with db.lock:
-        n = 1
-        if task_id is not None:
-            n = db.conn.execute("SELECT COALESCE(MAX(n),0)+1 FROM runtime_attempt WHERE task_id=?", (str(task_id),)).fetchone()[0]
-        elif resumed_from is not None:
-            previous = db.conn.execute("SELECT n FROM runtime_attempt WHERE id=?", (resumed_from,)).fetchone()
-            n = previous[0] + 1 if previous else 1
-        cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id) VALUES (?,?,?,?,?,?,?,?)",
-                              (str(task_id) if task_id is not None else None, n, account_id, provider, str(profile_dir(provider, account_id)), started_at, provider_session_id, resumed_from))
-        aid = cur.lastrowid
+    from . import pools
+    from .config import POOL_POLICIES
+    with pools.checked_assignment(db, account_id, selection) as assignment:
+        policy = on_limit_policy
+        if policy is None and account_mode != 'legacy':
+            policy = pools._pool(db, pool_id)['on_limit_policy'] if pool_id else POOL_POLICIES[account_mode]
+        with db.lock:
+            n = 1
+            if task_id is not None:
+                n = db.conn.execute("SELECT COALESCE(MAX(n),0)+1 FROM runtime_attempt WHERE task_id=?", (str(task_id),)).fetchone()[0]
+            elif resumed_from is not None:
+                previous = db.conn.execute("SELECT n FROM runtime_attempt WHERE id=?", (resumed_from,)).fetchone()
+                n = previous[0] + 1 if previous else 1
+            cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id,account_mode,pinned_account_id,pool_id,on_limit_policy,assignment) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (str(task_id) if task_id is not None else None, n, account_id, provider, path, started_at, provider_session_id, resumed_from, account_mode, pinned_account_id, pool_id, policy, json.dumps(assignment) if assignment else None))
+            aid = cur.lastrowid
     if session_row is not None:
         db.kv_set(f"runtime_session:{session_row}", {"attempt": aid})
-    from . import pool_usage
-    pool_usage.attempt_started(db, account_id)
     return aid
 
 

@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictBool, StrictInt, model_validator
 
-from . import pool_usage, account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, links, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import pools, pool_usage, account_store, accounts, agents, autoresume, backup, bare, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, links, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_whois, nodes_work, nodes_worker, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -634,6 +634,8 @@ async def auth_middleware(request: Request, call_next):
         if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
             return JSONResponse({"error": "bad hook token"}, status_code=403)
         return await call_next(request)
+    if (request.url.path == '/api/launch/dry-run' or request.url.path == '/api/pools' or request.url.path.startswith('/api/pools/')) and request.headers.get(hooks.TOKEN_HEADER):
+        return JSONResponse({'error': 'this action requires a signed-in person'}, status_code=403)
     if request.url.path.startswith("/api/") and request.headers.get(hooks.TOKEN_HEADER):
         # Local automation (the MCP shim, scripts on the box) proves itself with the 0600 token file.
         if not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
@@ -981,7 +983,7 @@ def build_state(user: str) -> dict:
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = _mem_state(st["projects"])            # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
-    st["pools"] = {"enabled": True, "groups": pool_usage.groups_view(db)} if settings.pools else None
+    st["pools"] = {"enabled": True, "groups": pool_usage.groups_view(db), "pools": pools.list_pools(db, compact=True)} if settings.pools else None
     st["usage"] = _usage_view()                           # the kv rate_limits record; a window it lacks comes from the account's last reading (usage.rate_limits_view)
     st["usage_refresh"] = usage_refresh.view(db)          # {running, last}: a /usage refresh in flight (Usage page button) and the newest one asked for
     st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
@@ -1604,6 +1606,107 @@ def api_account_problem_clear():
     return {"ok": True, "cleared": login_problem.clear(db)}
 
 
+def _pools_person(request, *, enabled=True):
+    _epic_person(request, 'pool management requires a signed-in person')
+    if enabled and not settings.pools:
+        raise HTTPException(404, 'pools are off')
+
+
+@app.get('/api/pools')
+def api_pools(request: Request):
+    _pools_person(request)
+    return {'pools': pools.list_pools(db)}
+
+
+@app.post('/api/pools', status_code=201)
+def api_pool_create(request: Request, body: dict):
+    _pools_person(request)
+    return pools.save_pool(db, body)
+
+
+@app.patch('/api/pools/{pool_id}')
+def api_pool_update(pool_id: str, request: Request, body: dict):
+    _pools_person(request)
+    return pools.save_pool(db, body, pool_id)
+
+
+@app.delete('/api/pools/{pool_id}')
+def api_pool_delete(pool_id: str, request: Request):
+    _pools_person(request)
+    return pools.delete_pool(db, pool_id)
+
+
+@app.put('/api/pools/{pool_id}/members/{account_id}')
+def api_pool_member(pool_id: str, account_id: str, request: Request, body: dict):
+    _pools_person(request)
+    return pools.member(db, pool_id, account_id, body)
+
+
+@app.delete('/api/pools/{pool_id}/members/{account_id}')
+def api_pool_member_delete(pool_id: str, account_id: str, request: Request):
+    _pools_person(request)
+    return pools.member(db, pool_id, account_id)
+
+
+@app.post('/api/launch/dry-run')
+def api_launch_dry_run(request: Request, body: dict):
+    _pools_person(request, enabled=False)
+    empty = {'will_start_as': None, 'refused_reason': None, 'candidates': []}
+    if not settings.pools:
+        return empty
+    # Validate the request without launch_plan, executable/version probes, tmux,
+    # profile preparation or the ordinary create path (which creates worktrees).
+    try:
+        binding = pools.binding(body)
+        if not binding:
+            return empty
+        is_session = 'launcher' in body
+        parsed = SessionIn(**body) if is_session else TaskCreateIn(**body)
+        provider = _launch_kind(parsed)[0] if is_session else _task_agent(parsed.agent)
+        if provider not in ('claude', 'codex'):
+            raise projects.BadRequest('pool accounts require claude or codex')
+        project, repo = body.get('project'), body.get('repo')
+        if not isinstance(project, str) or not isinstance(repo, str) or not project or not repo:
+            raise projects.BadRequest('project and repo are required')
+        rpath = projects.repo_path(project, repo)
+        if not rpath.is_dir():
+            raise projects.BadRequest('repo not found')
+        if not is_session:
+            _task_text(parsed.title, parsed.prompt)
+            if repo != projects.ROOT and not projects.is_repo(rpath):
+                raise projects.BadRequest('repo is not a git repo')
+        extra = shlex.split(parsed.args or '')
+        if len(parsed.args or '') > MAX_ARGS:
+            raise projects.BadRequest('extra args too long')
+        raw = (_codex_session_opts(parsed, extra) if provider == 'codex' else _claude_session_opts(parsed, extra)) if is_session else _agent_opts(provider, parsed)
+        if (body.get('devcontainer') or body.get('bypass') or body.get('mode') in ('bypass', 'bypassPermissions')
+                or _task_danger(body.get('opts') or {}) or _task_danger(raw) or _bypass_requested(extra)
+                or _override_requested(extra) or agents.get(provider).forbidden_extra(extra, interactive=True, task=not is_session)):
+            raise projects.BadRequest('profiles require a local launch without bypass')
+        _resolve_add_dirs(parsed.add_dirs, rpath)
+        if is_session:
+            _session_cwd(rpath, parsed.cwd_rel)
+            kind = _launch_kind(parsed)[2]
+            if parsed.account_mode == 'pool' and kind != 'new':
+                raise projects.BadRequest('pool continuation comes in P4')
+            if provider == 'codex' and kind != 'new' and (kind == 'continue' or not parsed.resume_id or not UUID_RE.fullmatch(parsed.resume_id)):
+                raise projects.BadRequest('profile resumes require a thread UUID')
+        if parsed.account_mode == 'legacy':
+            # P1 account_id is the original explicit binding; preview it as pinned.
+            binding = {'account_mode': 'pinned', 'pinned_account_id': parsed.account_id}
+        result = pools.choose(db, **pools.selection(binding, provider, str(rpath), pools.requested_model(raw, extra)))
+        if result.get('refused'):
+            return {**empty, 'refused_reason': result['reason'], 'candidates': result['candidates']}
+        selected = next(c for c in result['candidates'] if c['account_id'] == result['account_id'])
+        return {**empty, 'will_start_as': {'provider': provider, 'account_id': result['account_id'],
+                'account_label': selected['label'], 'node': result['node'], 'reason': result['reason']}, 'candidates': result['candidates']}
+    except ValueError:
+        return {**empty, 'refused_reason': 'invalid launch request'}
+    except (projects.BadRequest, projects.NotFound) as exc:
+        # Validation messages can contain submitted text; keep this public surface bounded and redacted.
+        return {**empty, 'refused_reason': pools.safe_label(str(exc), 'invalid launch request')}
+
+
 @app.get("/api/pools/usage")
 def api_pool_usage():
     if not settings.pools:
@@ -2083,15 +2186,37 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
 
 class ProfileBinding(BaseModel):
     account_id: str | None = None
+    account_mode: str = 'legacy'
+    pinned_account_id: str | None = None
+    pool_id: str | None = None
+    on_limit_policy: str | None = None
+    node: str | None = None
 
     @model_validator(mode="before")
     @classmethod
     def check_binding(cls, values):
-        if isinstance(values, dict) and "account_id" in values and values["account_id"] is not None:
-            if not settings.pools:
-                raise HTTPException(400, "pools are off")
-            profiles.validate_account_id(values["account_id"])
+        if isinstance(values, dict):
+            pools.binding(values)
         return values
+
+
+def _binding_opts(body):
+    return pools.binding(body.model_dump())
+
+
+def _assignment_preview(body, provider, repo, opts=None, extra=None):
+    binding = _binding_opts(body)
+    if body.account_mode == 'legacy':
+        return None
+    raw = opts or _agent_opts(provider, body)
+    if (getattr(body, 'devcontainer', False) or getattr(body, 'bypass', False)
+            or getattr(body, 'mode', None) in ('bypass', 'bypassPermissions')
+            or _task_danger(getattr(body, 'opts', None) or {}) or _task_danger(raw) or _bypass_requested(extra or []) or _override_requested(extra or [])):
+        raise projects.BadRequest('profiles require a local launch without bypass')
+    result = pools.choose(db, **pools.selection(binding, provider, repo, pools.requested_model(raw, extra)))
+    if result.get('refused'):
+        raise projects.BadRequest(result['reason'])
+    return result
 
 
 class LaunchOpts(ProfileBinding):
@@ -2115,7 +2240,8 @@ def _agent_opts(agent: str, body) -> dict:
     `effort` read as `reasoning_effort` when none is given, then `opts` on top. Empty values are dropped."""
     flat = {k: v for k, v in body.model_dump(include=set(LaunchOpts.model_fields)).items() if v not in (None, "")}
     own = flat.pop("opts", None)
-    flat.pop("account_id", None)
+    for key in pools.BINDING_FIELDS:
+        flat.pop(key, None)
     if agent == "claude":
         flat.pop("reasoning_effort", None)
         return flat
@@ -2144,6 +2270,16 @@ TASK_SPEC_KEYS = (*LaunchOpts.model_fields, "args", "add_dirs")     # what a bac
 _task_lock = threading.RLock()     # one launch or dispatch at a time: a double-tapped Start must not start two sessions
 
 
+def _task_spec_values(body, agent=None):
+    spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, '', [])
+            and not (k == 'account_mode' and v == 'legacy')}
+    if body.account_mode != 'legacy':
+        for key in pools.BINDING_FIELDS:
+            spec.pop(key, None)
+        spec.update(pools.validate_target(db, _task_agent(agent or getattr(body, 'agent', None)), body.model_dump()))
+    return spec
+
+
 def _task_text(title: str | None, prompt: str | None) -> tuple[str, str]:
     """A task's title (whitespace collapsed, cut at 120) and prompt (stripped, at most 20000), both required."""
     title = " ".join((title or "").split())[:TASK_TITLE_MAX]
@@ -2170,8 +2306,11 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             raise projects.NotFound(f"project {project} not found")
         inplace = True      # the whole project folder, not a git repo: the task runs in place (mode 'attached'), no worktree or branch
     title, prompt = _task_text(body.title, body.prompt)
+    if body.account_mode != 'legacy' and _task_danger(body.opts or {}):
+        raise projects.BadRequest('profiles require a local launch without bypass')
     agent = _task_agent(getattr(body, "agent", None))
     profiles.require_account(db, agent, body.account_id)
+    pools.validate_target(db, agent, body.model_dump())
     if launching and not (settings.claude_bin() if agent == "claude" else agents.get(agent).bin()):
         raise projects.BadRequest(f"{agent} is not installed on this box")
     extra: list[str] = []
@@ -2199,19 +2338,21 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             raw["permission_mode"] = "default"
         raw["extra"] = extra
         opts_clean = agents.get(agent).validate_opts(raw, interactive=True, tasks_or_headless=True)
-        if body.account_id is not None:
-            opts_clean["account_id"] = body.account_id
+        opts_clean.update(_binding_opts(body))
+        if launching:
+            _assignment_preview(body, agent, str(rpath), opts_clean, extra)
         return {"rpath": rpath, "title": title, "prompt": prompt, "extra": [], "opts_clean": opts_clean,
                 "add_dirs": _resolve_add_dirs(body.add_dirs, rpath), "inplace": inplace, "agent": agent, "raw_opts": raw}
     bad = _override_requested(extra) or _bypass_requested(extra)
     if bad or body.permission_mode == "bypassPermissions":
         raise projects.BadRequest(f"{bad or 'bypassPermissions'}: {refusal}")
     extra = _launch_args(body) + extra
-    opts_clean = agents.get("claude").validate_opts(body.model_dump(include=set(LaunchOpts.model_fields)), interactive=True,
+    opts_clean = agents.get("claude").validate_opts(_agent_opts("claude", body), interactive=True,
                                                     tasks_or_headless=True)
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
-    if body.account_id is not None:
-        opts_clean["account_id"] = body.account_id
+    opts_clean.update(_binding_opts(body))
+    if launching:
+        _assignment_preview(body, agent, str(rpath), opts_clean, extra)
     return {"rpath": rpath, "title": title, "prompt": prompt, "extra": extra, "opts_clean": opts_clean, "add_dirs": add_dirs, "inplace": inplace,
             "agent": "claude"}
 
@@ -2269,7 +2410,7 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None, o
         else:
             branch, worktree, base, mode = f"worktree-{slug}", wt_path, tasks.default_branch(rpath), "worktree"
         if task_id is None:
-            spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, "", [])}      # Reopen starts with the same choices
+            spec = _task_spec_values(body, agent)      # Reopen starts with the same choices
             if getattr(body, "auto_close", None) is False:
                 spec["auto_close"] = False
             tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
@@ -2280,6 +2421,11 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None, o
             tid = task_id
             db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
                            session_row=row_id, agent=agent, mode=mode, phase="running", assigned_at=db_now())
+        if body.account_mode != 'legacy':
+            meta = _binding_opts(body)
+            policy = meta.get('on_limit_policy') or (pools._pool(db, body.pool_id)['on_limit_policy'] if body.pool_id else pools.POOL_POLICIES['pinned'])
+            db.task_update(
+                tid, **{**{k: meta.get(k) for k in pools.FIELDS}, 'on_limit_policy': policy})
         profiles.attach_task(db, row_id, tid)
         _invalidate_scan()
         return {"id": tid, "slug": slug, "tmux": real, "branch": branch, "attach_url": f"/term/{real}"}
@@ -2306,7 +2452,7 @@ def _launch_managed_task(c: dict, project: str, repo: str, session: str, name: s
                                         prompt=c["prompt"], bypass=False, task=True))
         real, row_id = _start_session_row(name, project, repo, session, "task", cwd, cmd_line=plan.cmd_line,
                                           claude_session_id=plan.agent_session_id, add_dirs=c["add_dirs"], agent=agent,
-                                          opts={**(plan.opts_clean or c["opts_clean"]), **({"account_id": c["opts_clean"]["account_id"]} if c["opts_clean"].get("account_id") else {})}, task_id=task_id)
+                                          opts={**(plan.opts_clean or c["opts_clean"]), **{k: c["opts_clean"][k] for k in pools.BINDING_FIELDS if k in c["opts_clean"]}}, task_id=task_id)
     except Exception:
         if wt is not None:
             tasks.discard_managed_worktree(rpath, slug, wt)
@@ -2412,7 +2558,7 @@ def _tasks_create(body: TaskCreateIn, origin: dict | None = None):
                 agent = _task_agent(parent.get("agent"))
         c = _task_check(project, repo, body.model_copy(update={"agent": agent}), launching=False)    # a card for a repo that cannot run it, or with bypass, is refused now
         slug = tasks.unique_slug(c["rpath"], tasks.slugify(c["title"]), db.task_slugs(project, repo))
-        spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, "", [])}
+        spec = _task_spec_values(body, agent)
         if body.auto_close is False:
             spec["auto_close"] = False   # an explicit 'off' that a later lane dispatch's default (on) must not override
         chain_id = None
@@ -2529,7 +2675,7 @@ def _dispatch_lane(t: dict, body: DispatchIn, prompt: str | None = None):
     `prompt` replaces the stored one for this launch (a chain step: the template with its parent's result in it) and is stored on the
     row once the session is up. auto_close follows _effective_auto_close (on by default for a lane)."""
     merged = {k: v for k, v in _task_spec(t).items() if k in TASK_SPEC_KEYS}
-    merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None})
+    merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None and (k != "account_mode" or k in body.model_fields_set)})
     try:
         launch = TaskIn(title=t["title"], prompt=t["prompt"] if prompt is None else prompt, agent=_task_agent(body.agent or t.get("agent")), **merged)
     except ValueError as e:
@@ -2613,7 +2759,7 @@ def _task_dispatch(tid: int, body: DispatchIn | None = None, origin: dict | None
     paired node that asked; a card that has no origin yet keeps it."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or DispatchIn()
-    if body.account_id is not None:
+    if body.account_id is not None or body.account_mode != "legacy":
         profiles.require_enabled()
         if body.session:
             raise projects.BadRequest("account binding requires a new process")
@@ -2639,6 +2785,8 @@ def _task_dispatch(tid: int, body: DispatchIn | None = None, origin: dict | None
             prompt = taskflow.compose_prompt(t["prompt"], parent)
         elif phase != "backlog":
             raise projects.Conflict("already dispatched")
+        if body.session and (t.get('account_mode', 'legacy') != 'legacy' or _task_spec(t).get('account_id')):
+            raise projects.BadRequest('account binding requires a new process')
         res = _dispatch_session(t, body, prompt) if body.session else _dispatch_lane(t, body, prompt)
         if origin and isinstance(res, dict) and not t.get("origin"):
             db.task_update(tid, origin=origin)
@@ -2758,7 +2906,7 @@ def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, st
                                                        add_dirs=c["add_dirs"], bypass=False, task=True))
         sid = plan.agent_session_id or old_sid
         real, row_id = _start_session_row(name, project, repo, session, "task", str(wt), cmd_line=plan.cmd_line, claude_session_id=sid,
-                                          add_dirs=c["add_dirs"], agent=agent, opts={**(plan.opts_clean or c["opts_clean"]), **({"account_id": c["opts_clean"]["account_id"]} if c["opts_clean"].get("account_id") else {})}, task_id=t["id"])
+                                          add_dirs=c["add_dirs"], agent=agent, opts={**(plan.opts_clean or c["opts_clean"]), **{k: c["opts_clean"][k] for k in pools.BINDING_FIELDS if k in c["opts_clean"]}}, task_id=t["id"])
         db.task_update(t["id"], tmux_name=real, claude_session_id=sid, session_row=row_id, phase="running", assigned_at=db_now())
         db.update_flags(real, {recover.CONTINUE_FLAG: {"reason": "reopen", "at": time.time(), "task": t["id"]}})
         return real, row_id, sid
@@ -2772,7 +2920,7 @@ def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, st
                                                        add_dirs=c["add_dirs"], prompt=prompt, bypass=False, task=True))
         sid = plan.agent_session_id
         real, row_id = _start_session_row(name, project, repo, session, "task", str(wt), cmd_line=plan.cmd_line, claude_session_id=sid,
-                                          add_dirs=c["add_dirs"], agent=agent, opts={**(plan.opts_clean or c["opts_clean"]), **({"account_id": c["opts_clean"]["account_id"]} if c["opts_clean"].get("account_id") else {})}, task_id=t["id"])
+                                          add_dirs=c["add_dirs"], agent=agent, opts={**(plan.opts_clean or c["opts_clean"]), **{k: c["opts_clean"][k] for k in pools.BINDING_FIELDS if k in c["opts_clean"]}}, task_id=t["id"])
     db.task_update(t["id"], tmux_name=real, claude_session_id=sid, session_row=row_id, phase="running", assigned_at=db_now())
     return real, row_id, sid
 
@@ -2797,7 +2945,7 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
         if old and tmux.has_session(old):
             return _conflict_body("the session is still open; open it, or close it first", tmux=old)
         merged = {k: v for k, v in _task_spec(t).items() if k in TASK_SPEC_KEYS}
-        merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None})
+        merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None and (k != "account_mode" or k in body.model_fields_set)})
         try:
             launch = TaskIn(title=t["title"], prompt=body.prompt or t["prompt"], agent=_task_agent(t.get("agent")), **merged)
         except ValueError as e:
@@ -3319,6 +3467,9 @@ def _validate_job(body) -> dict:
     job ({} for Claude; Codex: model and reasoning_effort, validated by the adapter, whose wording refuses max_turns / max_budget_usd)."""
     agent = _job_agent(body.agent)
     profiles.require_account(db, agent, body.account_id)
+    pools.validate_target(db, agent, body.model_dump())
+    if body.account_mode != 'legacy' and _task_danger(body.opts or {}):
+        raise projects.BadRequest('profiles require a local launch without bypass')
     if not body.name.strip() or not body.prompt.strip():
         raise projects.BadRequest("name and prompt are required")
     if body.cron and not scheduler.valid_cron(body.cron.strip()):
@@ -3334,6 +3485,9 @@ def _validate_job(body) -> dict:
     except ValueError as e:
         raise projects.BadRequest(str(e))
     if agent == "claude":
+        if body.account_mode != 'legacy' and body.model:
+            clean = agents.get(agent).validate_opts({'model': body.model}, interactive=False, tasks_or_headless=True)
+            return {**_claude_job_opts(body, ['--model', clean['model'], *parts]), 'model': clean['model']}
         return _claude_job_opts(body, parts)
     flat = {k: v for k, v in (("model", body.model), ("reasoning_effort", body.reasoning_effort),
                               ("max_turns", body.max_turns), ("max_budget_usd", body.max_budget_usd)) if v not in (None, "")}
@@ -3348,8 +3502,7 @@ def api_create_job(project: str, repo: str, body: JobIn):
     if not projects.is_repo(rpath):
         raise projects.NotFound("not a git repo")
     opts = _validate_job(body)
-    if body.account_id is not None:
-        opts["account_id"] = body.account_id
+    opts.update(pools.validate_target(db, _job_agent(body.agent), body.model_dump()))
     agent = _job_agent(body.agent)
     _job_installed(agent)
     cron = body.cron.strip() if body.cron else None
@@ -3390,9 +3543,8 @@ def api_batch(body: BatchIn):
     opts = _validate_job(JobIn(name=body.name or "batch", prompt=body.prompt, permission_mode=body.permission_mode,
                                max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args, agent=agent,
                                model=body.model, reasoning_effort=body.reasoning_effort, opts=body.opts,
-                               allowed_tools=body.allowed_tools, acknowledge_fable=body.acknowledge_fable, account_id=body.account_id))
-    if body.account_id is not None:
-        opts["account_id"] = body.account_id
+                               allowed_tools=body.allowed_tools, acknowledge_fable=body.acknowledge_fable, **{k: getattr(body, k) for k in pools.BINDING_FIELDS}))
+    opts.update(pools.validate_target(db, _job_agent(body.agent), body.model_dump()))
     _job_installed(agent)
     targets = []
     for ident in body.repos:
@@ -3434,6 +3586,8 @@ def api_job_acknowledge_fable(jid: int, body: FableAckIn):
         parts = shlex.split(j.get("args") or "")
     except ValueError:
         parts = []
+    if scheduler.job_opts(j).get('account_mode', 'legacy') != 'legacy' and scheduler.job_opts(j).get('model'):
+        parts = ['--model', scheduler.job_opts(j)['model'], *parts]
     models = claude_adapter.fable_models(parts, os.environ)
     if not models:
         raise projects.BadRequest("this job does not resolve to Fable: nothing to acknowledge")
@@ -3657,27 +3811,35 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     bound = (opts or {}).get("account_id")
+    selected = (opts or {}).get('account_mode', 'legacy') != 'legacy'
     attempt = None
     previous = None
     launch_started = time.time()
-    if bound is not None:
-        profiles.require_account(db, agent, bound)
-        previous = profiles.previous_attempt(db, name, task_id)
-        if not cmd_line:
-            raise projects.BadRequest("a profile requires an agent command")
-        if (opts or {}).get("devcontainer") or _task_danger(opts or {}):
-            raise projects.BadRequest("profiles require a local launch without bypass")
-        words = shlex.split(cmd_line)
-        if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
-            raise projects.BadRequest("profile resumes require a thread UUID")
-        cmd_line = profiles.wrap_command(cmd_line, agent, bound)
-    if bound is not None:
-        # Reserve under release's lock before tmux exists. Release sees the reservation even before its session binding.
-        transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
-        attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
-                                         provider_session_id=claude_session_id, resumed_from=previous)
     real = None
     try:
+        if bound is not None or selected:
+            if not cmd_line:
+                raise projects.BadRequest("a profile requires an agent command")
+            words = shlex.split(cmd_line)
+            option_words = words[:words.index("--")] if "--" in words else words
+            if ((opts or {}).get("devcontainer") or _task_danger(opts or {})
+                    or _bypass_requested(option_words) or _override_requested(option_words)):
+                raise projects.BadRequest("profiles require a local launch without bypass")
+            if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
+                raise projects.BadRequest("profile resumes require a thread UUID")
+            previous = profiles.previous_attempt(db, name, task_id)
+            transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
+            if selected:
+                attempt, assignment = pools.reserve(db, agent, opts, repo=f'{project}/{repo}',
+                    requested_model=pools.requested_model(opts, words), task_id=task_id,
+                    provider_session_id=claude_session_id, resumed_from=previous)
+                bound = assignment['account_id']
+                opts = {**opts, 'account_id': bound}
+            else:
+                profiles.require_account(db, agent, bound)
+                attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
+                    provider_session_id=claude_session_id, resumed_from=previous)
+            cmd_line = profiles.wrap_command(cmd_line, agent, bound)
         real = tmux.new_session(name, cwd, env=env)
         try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
             account = bound or (accounts.current(db) if agent == "claude" else None)
@@ -3839,7 +4001,7 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     agent, launcher, kind = _launch_kind(body)
     profiles.require_account(db, agent, body.account_id)
-    if body.account_id is not None:
+    if body.account_id is not None or body.account_mode != "legacy":
         if body.devcontainer or body.bypass:
             raise projects.BadRequest("profiles require a local launch without bypass")
         if agent == "codex" and kind != "new" and (kind == "continue" or not body.resume_id or not UUID_RE.fullmatch(body.resume_id)):
@@ -3905,6 +4067,9 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
     # bypassPermissions is an explicit choice (the permission control, the bypass flag, or the arg) and only in the devcontainer (the adapter
     # refuses it anywhere else too); Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
     managed: tuple[str, Path] | None = None
+    if body.account_mode == 'pool' and kind != 'new':
+        raise projects.BadRequest('pool continuation comes in P4')
+    _assignment_preview(body, agent, str(rpath), _codex_session_opts(body, extra) if agent == 'codex' else _claude_session_opts(body, extra), extra)
     if agent == "claude":
         exe = settings.claude_bin()
         if not exe and not body.devcontainer:
@@ -3950,8 +4115,8 @@ def _session_create(project: str, repo: str, body: SessionIn, origin: dict | Non
         cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
                     + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--", "bash", "-l"]))
 
-    if body.account_id is not None:
-        opts_clean = {**(opts_clean or {}), "account_id": body.account_id}
+    if body.account_id is not None or body.account_mode != "legacy":
+        opts_clean = {**(opts_clean or {}), **_binding_opts(body)}
     try:
         real = _start_session(name, project, repo, session, launcher, str(cwd), cmd_line=cmd_line,
                               claude_session_id=agent_session_id, add_dirs=add_dirs, agent=agent, opts=opts_clean)

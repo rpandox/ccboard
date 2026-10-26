@@ -432,7 +432,7 @@ def test_off_state_keys_and_unbound_on_launch(lite_client, fake_tmux, projects_d
     enabled = lite_client.get("/api/state", headers=HEADERS).json()
     assert set(enabled) == set(before)
     assert "pool_accounts" not in enabled
-    assert enabled["pools"] == {"enabled": True, "groups": []}
+    assert enabled["pools"] == {"enabled": True, "groups": [], "pools": []}
     monkeypatch.setattr(settings, "pools", False)
     after = lite_client.get("/api/state", headers=HEADERS).json()
     assert set(after) == set(before)

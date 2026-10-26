@@ -15,7 +15,7 @@ from pathlib import Path
 
 from croniter import croniter
 
-from . import agents, claude_auth, devguard, notify, projects, tasks
+from . import pools, agents, claude_auth, devguard, notify, projects, tasks
 from . import platform as plat
 from .agents import codex as codex_agent
 from .agents.claude import BARE_REFUSAL, FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
@@ -211,6 +211,8 @@ def fable_hold(job: dict, env=None) -> str | None:
         parts = shlex.split(job.get("args") or "")
     except ValueError:
         return None
+    if job_opts(job).get('account_mode', 'legacy') != 'legacy' and job_opts(job).get('model'):
+        parts = ['--model', job_opts(job)['model'], *parts]
     models = fable_models(parts, os.environ if env is None else env)
     if not models:
         return None
@@ -336,7 +338,12 @@ def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, s
                        result_at=stamp, done_at=stamp)
     bound = job.get("account_id") or job_opts(job).get("account_id")
     if bound is not None and task_id is not None:
-        db.task_update(task_id, spec={"account_id": bound})
+        spec = {k: v for k, v in job_opts(job).items() if k in pools.BINDING_FIELDS}
+        if spec.get('account_mode', 'legacy') != 'legacy':
+            spec.pop('account_id', None)
+        else:
+            spec['account_id'] = bound
+        db.task_update(task_id, spec=spec)
         binding = db.kv_get(f"runtime_run:{run_id}")
         if binding:
             with db.lock:
@@ -364,14 +371,32 @@ def headless_mode(job: dict) -> str:
 
 
 def run_job(db, job: dict, run_id: int) -> dict:
-    from . import profiles
-    bound = job.get("account_id") or job_opts(job).get("account_id")
-    if bound is None:
+    from . import profiles, recover
+    opts = {**job_opts(job), **{k: job[k] for k in pools.BINDING_FIELDS if job.get(k) is not None}}
+    bound = opts.get('account_id')
+    selected = opts.get('account_mode', 'legacy') != 'legacy'
+    if bound is None and not selected:
         return _run_job(db, job, run_id)
-    profiles.require_account(db, job.get("agent") or "claude", bound)
+    pools.binding(opts)
+    provider = job.get('agent') or 'claude'
     context = {"account_id": bound, "attempt": None, "db": db, "run_id": run_id}
     summary = {}
     try:
+        if selected:
+            if (job.get('permission_mode') not in (None, *MODES)
+                    or any(recover._is_bypass(k, v) for k, v in opts.items())):
+                raise projects.BadRequest('profiles require a local launch without bypass')
+            extra = check_extra_args(job.get('args'), provider)
+            rpath = projects.repo_path(job['project'], job['repo'])
+            context['attempt'], result = pools.reserve(db, provider, opts, repo=str(rpath),
+                requested_model=pools.requested_model(opts, extra), task_id=f'run:{run_id}')
+            context['account_id'] = bound = result['account_id']
+            with db.lock:
+                policy = db.conn.execute('SELECT on_limit_policy FROM runtime_attempt WHERE id=?', (context['attempt'],)).fetchone()[0]
+            opts = {**opts, 'account_id': bound, 'on_limit_policy': policy}
+            job = {**job, 'opts': opts}
+        else:
+            profiles.require_account(db, provider, bound)
         summary = _run_job(db, job, run_id, binding=context)
         return summary
     finally:
@@ -382,7 +407,8 @@ def _bound_run(cmd, *, binding, provider, **kwargs):
     from . import profiles
     kwargs["env"] = profiles.child_env(provider, binding["account_id"], kwargs.get("env"))
     snapshot = profiles.transcript_snapshot(provider, kwargs["cwd"])
-    binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}")
+    if binding.get("attempt") is None:
+        binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}")
     binding["db"].kv_set(f"runtime_run:{binding['run_id']}", {"attempt": binding["attempt"]})
     profiles.discover_attempt(binding["db"], binding["attempt"], kwargs["cwd"], provider, time.time(), None, snapshot)
     return _run_agent(cmd, **kwargs)
@@ -401,6 +427,8 @@ def _run_job(db, job: dict, run_id: int, binding=None) -> dict:
         extra = check_extra_args(job.get("args"), agent)
     except (ValueError, KeyError):
         extra = []
+    if agent == 'claude' and job_opts(job).get('account_mode', 'legacy') != 'legacy' and job_opts(job).get('model'):
+        extra = ['--model', job_opts(job)['model'], *extra]
     summary: dict = {"status": "error", "error": None}
     timeout = int(job.get("timeout_s") or RUN_TIMEOUT)
     if not devguard.launch_ok():              # issue #100: a dev board that could reach the real home starts no agent, not even a headless run
@@ -505,7 +533,7 @@ class Worker(threading.Thread):
                 except KeyError:
                     gates[agent] = f"unknown agent {agent!r}"
             return gates[agent]
-        for agent in sorted({j.get("agent") or "claude" for j in due}):
+        for agent in sorted({j.get("agent") or "claude" for j in due if job_opts(j).get("account_mode", "legacy") == "legacy"}):
             self._login_alert(blocked_for(agent), sum(1 for j in due if (j.get("agent") or "claude") == agent), agent)
         started = []
         for job in due:
@@ -513,7 +541,16 @@ class Worker(threading.Thread):
             if held:                       # not run, not retried every tick: a cron job waits for its next fire, a one-off stays parked until acknowledged
                 self.db.job_update(job["id"], next_run_at=next_fire(job["cron"]) if job.get("cron") else None, last_status=held)
                 continue
-            blocked = blocked_for(job.get("agent") or "claude")
+            opts = job_opts(job)
+            if opts.get('account_mode', 'legacy') != 'legacy':
+                try:
+                    choice = pools.choose(self.db, **pools.selection(opts, job.get('agent') or 'claude',
+                        requested_model=pools.requested_model(opts, check_extra_args(job.get('args'), job.get('agent') or 'claude'))))
+                    blocked = choice['reason'] if choice.get('refused') else None
+                except (projects.BadRequest, ValueError) as exc:
+                    blocked = str(exc)
+            else:
+                blocked = blocked_for(job.get("agent") or "claude")
             if blocked:
                 self.db.job_update(job["id"], next_run_at=(datetime.now(timezone.utc) + timedelta(minutes=DEFER_MINUTES)).isoformat(timespec="seconds"),
                                    last_status=f"deferred: {blocked}")

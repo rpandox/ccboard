@@ -140,6 +140,20 @@ CREATE INDEX IF NOT EXISTS runtime_attempt_open ON runtime_attempt(account_id) W
 #   * order matters inside this list: a statement may only use columns added above it.
 # New columns are deliberately not added to SCHEMA, so a fresh DB and an upgraded one take the identical path.
 MIGRATIONS = [
+    "CREATE TABLE IF NOT EXISTS pool (id TEXT PRIMARY KEY, provider TEXT NOT NULL, name TEXT NOT NULL, soft_pct_5h REAL, soft_pct_weekly REAL, hard_pct_5h REAL, hard_pct_weekly REAL, on_limit_policy TEXT NOT NULL, concurrency INTEGER, created_at TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS pool_member (pool_id TEXT NOT NULL, account_id TEXT NOT NULL, soft_pct_5h REAL, soft_pct_weekly REAL, concurrency INTEGER, PRIMARY KEY(pool_id,account_id))",
+    "ALTER TABLE pool_account ADD COLUMN billing_class TEXT NOT NULL DEFAULT 'subscription'",
+    "ALTER TABLE pool_account ADD COLUMN allowed_models TEXT",
+    "ALTER TABLE tasks ADD COLUMN account_mode TEXT NOT NULL DEFAULT 'legacy'",
+    "ALTER TABLE tasks ADD COLUMN pinned_account_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN pool_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN on_limit_policy TEXT",
+    "ALTER TABLE runtime_attempt ADD COLUMN account_mode TEXT NOT NULL DEFAULT 'legacy'",
+    "ALTER TABLE runtime_attempt ADD COLUMN pinned_account_id TEXT",
+    "ALTER TABLE runtime_attempt ADD COLUMN pool_id TEXT",
+    "ALTER TABLE runtime_attempt ADD COLUMN on_limit_policy TEXT",
+    "ALTER TABLE runtime_attempt ADD COLUMN assignment TEXT",
+
     "CREATE TABLE IF NOT EXISTS quota_group (id INTEGER PRIMARY KEY, provider TEXT NOT NULL, subscription_key TEXT NOT NULL, plan TEXT, UNIQUE(provider, subscription_key))",
     "CREATE TABLE IF NOT EXISTS usage_sample (id INTEGER PRIMARY KEY, quota_group_id INTEGER NOT NULL, sampled_at TEXT NOT NULL, window_5h_pct REAL, window_5h_reset_at TEXT, weekly_pct REAL, weekly_reset_at TEXT, source TEXT NOT NULL, confidence REAL NOT NULL, node_id TEXT)",
     "CREATE INDEX IF NOT EXISTS usage_sample_group_at ON usage_sample(quota_group_id,sampled_at)",
@@ -281,7 +295,7 @@ RESULT_MAX = 20000
 
 # Columns a caller may name in task_add / job_add (the column names are interpolated into SQL, so this is an allowlist;
 # an unknown key is a programming error and raises TypeError instead of being silently dropped).
-TASK_COLS = ("project", "repo", "slug", "title", "prompt", "branch", "base", "worktree", "tmux_name", "claude_session_id",
+TASK_COLS = ("account_mode", "pinned_account_id", "pool_id", "on_limit_policy", "project", "repo", "slug", "title", "prompt", "branch", "base", "worktree", "tmux_name", "claude_session_id",
              "status", "pr_number", "pr_url", "pr_state", "pr_json", "ci", "cost_usd", "overlap", "archived_at",
              "preview_port", "preview_https",
              "agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
@@ -345,6 +359,10 @@ def _insert(conn, table: str, vals: dict) -> int:
 def _task_fields(fields: dict) -> dict:
     """Normalise the JSON/size-bounded task columns (shared by task_add and task_update)."""
     out = dict(fields)
+    if isinstance(out.get("spec"), dict):
+        for key in ("account_mode", "pinned_account_id", "pool_id", "on_limit_policy"):
+            if out["spec"].get(key) is not None:
+                out.setdefault(key, out["spec"][key])
     if "spec" in out:
         out["spec"] = _json(out["spec"])
     if "origin" in out:

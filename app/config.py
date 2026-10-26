@@ -15,6 +15,11 @@ from pathlib import Path
 from . import platform as plat
 from .options import EXTRAS, registry
 
+# Assignment defaults; pool/member rows override these without new environment options.
+POOL_DEFAULTS = {"soft_pct_5h": 70.0, "soft_pct_weekly": 80.0,
+                 "hard_pct_5h": 85.0, "hard_pct_weekly": 92.0, "concurrency": 2}
+POOL_POLICIES = {"pool": "auto", "pinned": "wait"}
+
 log = logging.getLogger("ccboard")
 
 

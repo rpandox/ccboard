@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.116 - 2026-10-26
+
+### Added
+- Pool assignment backend (P3a, #222): local pool and pinned launches, soft-threshold eligibility, deterministic headroom ranking, conservative unknown usage, and atomic per-account slot reservations with explanations on runtime attempts. Provider, requested model, repository access, permissions, sandbox and subscription billing constraints remain fixed.
+- Person-only pool and member CRUD, side-effect-free `POST /api/launch/dry-run`, and a compact pool list inside `state.pools`. Tasks, sessions and scheduled jobs accept the new assignment fields. Launcher controls come in this version's second half; this entry will be completed then. Rotation and continuation wait for P4; other nodes wait for P5 account grants.
+
+Upgrade: nothing to do. Nothing new runs unless `CCBOARD_POOLS=1`; additive migrations create `pool` and `pool_member`, add assignment columns to tasks and runtime attempts, and add subscription billing / optional model metadata to pool accounts.
+
 ## v0.5.115 - 2026-10-26
 
 ### Added

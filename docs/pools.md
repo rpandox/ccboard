@@ -4,7 +4,7 @@ For the owner enabling isolated Claude and Codex accounts on one node. In this p
 
 [Back to the documentation index](README.md)
 
-`CCBOARD_POOLS` is off by default. Set it to `1`, `true` or `on` and restart the board to enable account isolation on the box. With it off, launches and Settings behave as before; the database migration only creates two empty tables, `pool_account` and `runtime_attempt`.
+`CCBOARD_POOLS` is off by default. Set it to `1`, `true` or `on` and restart the board to enable account isolation on the box. With it off, launches and Settings behave as before; the additive database migrations create empty pool metadata tables and default legacy columns; they never migrate credentials at startup.
 
 Migration runs only when the owner chooses **Migrate saved logins** in Settings > Accounts (`POST /api/pools/migrate`). Startup never migrates. The live legacy login is skipped: switch the legacy login to another account first. Each other saved slot hands over its credential files as opaque bytes into `<data dir>/profiles/<provider>/<account_id>`. Each file is written atomically and fsynced before the slot file is removed. The slot retains only a marker naming its pool account. A rerun repairs interrupted moves and missing database rows; conflicting or missing credentials are reported per slot without guessing.
 
@@ -57,3 +57,27 @@ Free local reads run every 60 seconds for a group with an open attempt, every fi
 `GET /api/pools/usage` returns groups with account ids, both windows and resets, age, source, confidence and nodes. `/api/state` always includes `pools`: null when off, otherwise `{enabled: true, groups: [...]}`. There is no pool account grant model in P2, so pool groups and their hashes/headroom are neither sent to nor accepted from peers. The hub shows only the node's own groups until P5. Nothing sums across groups or providers.
 
 With pools off, no collector starts, no usage rows are written and no active request runs. With pools on but no accounts, no collector starts either. Pool migration starts collection when it creates the first account.
+
+## Assignment (P3)
+
+The v0.5.116 backend adds local account assignment. Launcher controls arrive in the same version's second half. All of this remains behind `CCBOARD_POOLS`; `state.pools` stays null when off, and gains only a compact `pools: [{id, provider, name}]` list when on.
+
+Task, session and scheduled-job requests accept `account_mode`: `legacy` (the default, today's behavior), `pinned` with `pinned_account_id`, or `pool` with `pool_id`. P1's explicit `account_id` still works. Pool launches pick an account once and reserve its runtime attempt before starting a process. The assignment explanation is stored on that attempt. A failed preparation or launch closes the reservation. Selection and reservation share P1's account serialization with Release; the assignment lock covers only database selection and insertion, never process, tmux, or usage-probe I/O.
+
+Eligibility is checked in this order:
+
+1. The account and pool must match the requested provider.
+2. The account must be `ready`; `needs_login`, releasing and missing accounts cannot run.
+3. The target must be this node (`node: "local"`, or omitted). Other targets are refused with “pool accounts run on this node until account grants (P5)”. Profiles are local private directories; being paired with a node does not grant it an account. Peer launch bodies still refuse every account field.
+4. Both known usage windows must be below their soft thresholds. P2's `account_headroom` supplies the readings; stale or incomplete readings count as unknown, never as zero. Known percentages above soft still refuse even in a partially unknown reading.
+5. Open attempts on this account must be below its concurrency cap. Accounts sharing a quota group share usage, but have separate concurrency caps.
+6. A requested model must satisfy any explicit account `allowed_models` metadata. The repo has global model catalogs but no authoritative per-plan entitlements: absent account metadata, the reason says “model availability unknown (known restrictions only)”. No model is substituted.
+7. A subscription launch must use a subscription account. The additive `pool_account.billing_class` defaults to `subscription`; any other class is excluded. Neither this field nor `allowed_models` contains credential material or appears on the new public surfaces. They are internal metadata seams for future provisioners, not credentials inferred from profile files.
+
+Among known eligible accounts, ranking is lowest `max(5 h percentage, weekly percentage)`, then earliest next reset, then least recently assigned (`runtime_attempt.started_at`), then account id. Unknown accounts are considered only when no known account passes all eligibility checks; they rank by least recently assigned and id, and say “usage unknown”. Refusals name every candidate, both percentages, its exclusion reason, and reset times, with the earliest reset first. Times in explanations are UTC.
+
+Defaults live together in `app/config.py`: soft **70% / 80%**, hard **85% / 92%** (5 hours / weekly), and **2 open attempts per account**. Pools override all thresholds and concurrency; members override soft thresholds and concurrency. Soft cannot exceed hard. `on_limit_policy` is `auto` in pool mode and `wait` in pinned mode, with an explicit request overriding the pool policy. Both policies are recorded now; automatic continuation, rotation and hard-limit handling wait for P4. Exceeding soft refuses a new launch in this phase, even when every candidate is above soft. Pool resumes also wait for P4. No new environment variables or Settings registry entries are needed.
+
+Person-only CRUD (CSRF on writes): `GET /api/pools`, `POST /api/pools`, `PATCH /api/pools/{id}`, `DELETE /api/pools/{id}`, and `PUT` / `DELETE /api/pools/{id}/members/{account_id}`. A pool is created with `id`, `provider`, and an optional `name`; thresholds are optional. The member PUT body contains optional soft thresholds and concurrency. Membership is a `pool_member` join row, never a JSON array. IDs use P1's validator. Cross-provider membership is refused with both providers named. Deleting a pool returns 409 while an open attempt, or its task, references it. These routes return 404 with pools off.
+
+`POST /api/launch/dry-run` accepts the task or session create body, with `project` and `repo` in the body (session bodies include `launcher`). It returns `will_start_as` (provider, account id and label, node and reason), `refused_reason`, and sanitized `candidates` (account id, label, both percentages, resets, state, eligibility and exclusion reason). It performs no write, executable/version probe, credential read, profile preparation or tmux call. It checks assignment and local request constraints, not live CLI availability. A launch rechecks and reserves against current state, so intervening launches may change the answer. With pools off it always returns 200 and `{will_start_as: null, refused_reason: null, candidates: []}`. Pool selection and dry-run never enable bypass, change repository access, model, sandbox, permission mode or billing class.

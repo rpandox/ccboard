@@ -679,9 +679,9 @@ def test_runtime_profiles_add_empty_tables_to_old_db(tmp_path):
     make_old_db(path)
     db = DB(path)
     try:
-        assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at", "quota_group_id"}
+        assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at", "quota_group_id", "billing_class", "allowed_models"}
         assert set(columns(db.conn, "runtime_attempt")) == {"id", "task_id", "n", "account_id", "provider", "node_id", "provider_session_id",
-                                                            "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id"}
+                                                            "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id", "account_mode", "pinned_account_id", "pool_id", "on_limit_policy", "assignment"}
         for table in ("pool_account", "runtime_attempt"):
             assert db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         before = dump(db)
@@ -705,4 +705,28 @@ def test_pool_usage_migration_is_empty_and_idempotent(tmp_path):
     db.close()
     db = DB(path)
     assert db.conn.execute('SELECT quota_group_id FROM pool_account').fetchone()[0] is None
+    db.close()
+
+
+def test_pool_assignment_migration_preserves_legacy_and_is_idempotent(tmp_path):
+    path = tmp_path / 'assignment-old.db'
+    make_old_db(path)
+    db = DB(path)
+    for table in ('pool', 'pool_member'):
+        assert db.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0] == 0
+    for table in ('tasks', 'runtime_attempt'):
+        assert columns(db.conn, table)['account_mode'] == ('TEXT', 1, "'legacy'")
+        for field in ('pinned_account_id', 'pool_id', 'on_limit_policy'):
+            assert columns(db.conn, table)[field] == ('TEXT', 0, None)
+    assert columns(db.conn, 'runtime_attempt')['assignment'] == ('TEXT', 0, None)
+    # Old image INSERT shapes continue to work after upgrading or rolling back.
+    tid = db.task_add(project='p', repo='r', slug='old', title='Old', prompt='Do it')
+    db.conn.execute("INSERT INTO runtime_attempt(task_id,n,account_id,provider,profile_dir,started_at) VALUES (?,?,?,?,?,?)",
+                    (str(tid), 1, 'account-a', 'claude', 'fixture-profile', '2026-01-01'))
+    assert db.task_get(tid)['account_mode'] == 'legacy'
+    assert db.conn.execute('SELECT account_mode FROM runtime_attempt').fetchone()[0] == 'legacy'
+    before = dump(db)
+    db.close()
+    db = DB(path)
+    assert dump(db) == before
     db.close()
