@@ -381,9 +381,10 @@ def run_job(db, job: dict, run_id: int) -> dict:
 def _bound_run(cmd, *, binding, provider, **kwargs):
     from . import profiles
     kwargs["env"] = profiles.child_env(provider, binding["account_id"], kwargs.get("env"))
+    snapshot = profiles.transcript_snapshot(provider, kwargs["cwd"])
     binding["attempt"] = profiles.start_attempt(binding["db"], provider, binding["account_id"], task_id=f"run:{binding['run_id']}")
     binding["db"].kv_set(f"runtime_run:{binding['run_id']}", {"attempt": binding["attempt"]})
-    profiles.discover_attempt(binding["db"], binding["attempt"], kwargs["cwd"], provider, time.time())
+    profiles.discover_attempt(binding["db"], binding["attempt"], kwargs["cwd"], provider, time.time(), None, snapshot)
     return _run_agent(cmd, **kwargs)
 
 

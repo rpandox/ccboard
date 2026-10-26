@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import ctypes
-import struct
 from functools import wraps
 import json
 import os
@@ -509,33 +507,27 @@ def transcript_directory(provider, cwd):
     return Path(settings.codex_home) / "sessions" / datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
 
-def _created_at(path, st):
-    """Use birth time, never ctime (editing an old transcript changes ctime)."""
-    if hasattr(st, "st_birthtime"):
-        return st.st_birthtime
-    if sys.platform == "linux":
-        # Linux's statx ABI exposes birth time even where Python's stat does not.
-        # struct statx is 256 bytes; stx_mask is at 0, stx_btime at 80.
-        libc = ctypes.CDLL(None, use_errno=True)
-        statx = getattr(libc, "statx", None)
-        if statx is not None:
-            buf = ctypes.create_string_buffer(256)
-            if statx(-100, os.fsencode(path), 0x100, 0x800, ctypes.byref(buf)) == 0:
-                mask = struct.unpack_from("=I", buf.raw)[0]
-                if mask & 0x800:
-                    seconds, nanos = struct.unpack_from("=qI", buf.raw, 80)
-                    return seconds + nanos / 1e9
-    # A filesystem without birth times cannot prove that this is a new file.
-    return None
-
-
-def newest_transcript(provider, cwd, started):
-    matches = []
+def transcript_snapshot(provider, cwd):
+    """Capture names, inodes and sizes before launching, without relying on birth time."""
+    snapshot = set()
     for path in transcript_directory(provider, cwd).glob("*.jsonl"):
         try:
             st = path.stat()
-            created = _created_at(path, st)
-            if created is None or created <= started:
+            snapshot.add((path.name, st.st_ino, st.st_size))
+        except FileNotFoundError:
+            continue
+    return frozenset(snapshot)
+
+
+def newest_transcript(provider, cwd, started, snapshot=()):
+    matches = []
+    # An append or rewrite of an existing inode is still the old transcript,
+    # even if its size and mtime have changed since the snapshot.
+    existing = {(name, inode) for name, inode, size in snapshot}
+    for path in transcript_directory(provider, cwd).glob("*.jsonl"):
+        try:
+            st = path.stat()
+            if (path.name, st.st_ino) in existing or st.st_mtime < started:
                 continue
             with path.open() as f:
                 for line in f:
@@ -552,7 +544,7 @@ def newest_transcript(provider, cwd, started):
     return matches[0] if len(matches) == 1 else None
 
 
-def discover_attempt(db, attempt_id, cwd, provider, started, name=None):
+def discover_attempt(db, attempt_id, cwd, provider, started, name=None, snapshot=()):
     """A ten-second fallback only for a bound process that has not learned an id yet."""
     def discover():
         deadline = time.monotonic() + 10
@@ -562,7 +554,7 @@ def discover_attempt(db, attempt_id, cwd, provider, started, name=None):
                     row = db.conn.execute("SELECT ended_at,provider_session_id FROM runtime_attempt WHERE id=?", (attempt_id,)).fetchone()
                 if not row or row["ended_at"] or row["provider_session_id"]:
                     return
-                sid = newest_transcript(provider, cwd, started)
+                sid = newest_transcript(provider, cwd, started, snapshot)
                 if sid:
                     with db.lock:
                         session = db.conn.execute("SELECT claude_session_id FROM sessions WHERE tmux_name=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (name,)).fetchone() if name else None

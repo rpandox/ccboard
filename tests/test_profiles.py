@@ -337,23 +337,78 @@ def test_bound_scheduler_scrubs_and_closes_attempt(box, monkeypatch, tmp_path, p
     assert result["error"] == "timed out" and rows(box)[0]["ended_at"]
 
 
+@pytest.fixture
+def no_birthtime(monkeypatch):
+    """Exercise the portable stat fields even on macOS."""
+    from types import SimpleNamespace
+    original = Path.stat
+    def stat(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        return SimpleNamespace(**{key: getattr(result, key) for key in dir(result)
+                                  if key.startswith("st_") and not key.startswith("st_birthtime")})
+    monkeypatch.setattr(Path, "stat", stat)
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_fallback_finds_only_fresh_matching_project(box, tmp_path, provider):
+def test_fallback_finds_only_fresh_matching_project(box, tmp_path, provider, no_birthtime):
     account(box, provider)
-    aid = profiles.start_attempt(box, provider, "account-a")
     root = profiles.transcript_directory(provider, tmp_path)
     root.mkdir(parents=True)
-    started = time.time() - 1
     def transcript(path, cwd, sid):
         data = {"cwd": str(cwd), "sessionId": sid} if provider == "claude" else {"type": "session_meta", "payload": {"cwd": str(cwd), "id": sid}}
         path.write_text(json.dumps(data) + "\n")
+    old = root / "old.jsonl"
+    transcript(old, tmp_path, "33333333-3333-4333-8333-333333333333")
+    snapshot = profiles.transcript_snapshot(provider, tmp_path)
+    assert snapshot == {(old.name, old.stat().st_ino, old.stat().st_size)}
+    assert not hasattr(old.stat(), "st_birthtime")
+    aid = profiles.start_attempt(box, provider, "account-a")
+    started = time.time()
+    # Recent edits to a preexisting transcript must not make discovery ambiguous.
+    with old.open("a") as f:
+        f.write('{}\n')
     transcript(root / "good.jsonl", tmp_path, SID)
     transcript(root / "wrong-project.jsonl", tmp_path / "elsewhere", "22222222-2222-4222-8222-222222222222")
+    stale = root / "stale.jsonl"
+    transcript(stale, tmp_path, "44444444-4444-4444-8444-444444444444")
+    os.utime(stale, (started - 10, started - 10))
 
-    worker = profiles.discover_attempt(box, aid, str(tmp_path), provider, started)
+    worker = profiles.discover_attempt(box, aid, str(tmp_path), provider, started, None, snapshot)
     worker.join(timeout=1)
     assert not worker.is_alive()
     assert rows(box)[0]["provider_session_id"] == SID
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("launch", ["tmux", "headless"])
+def test_launch_passes_snapshot_taken_before_agent_starts(box, tmp_path, monkeypatch, fake_tmux, provider, launch, no_birthtime):
+    from app import main
+    account(box, provider)
+    root = profiles.transcript_directory(provider, tmp_path)
+    root.mkdir(parents=True)
+    old = root / "old.jsonl"
+    old.write_text('{}\n')
+    expected = {(old.name, old.stat().st_ino, old.stat().st_size)}
+    discoveries = []
+    monkeypatch.setattr(profiles, "discover_attempt", lambda *args: discoveries.append(args))
+    def run(*args, **kwargs):
+        meta = {"cwd": str(tmp_path), "sessionId": SID} if provider == "claude" else {"type": "session_meta", "payload": {"cwd": str(tmp_path), "id": SID}}
+        (root / "new.jsonl").write_text(json.dumps(meta) + '\n')
+        return subprocess.CompletedProcess([], 0, '', '')
+    if launch == "tmux":
+        monkeypatch.setattr(main, "db", box)
+        monkeypatch.setattr(main, "require_real_launch_ok", lambda: None)
+        monkeypatch.setattr(main.tmux, "send_line", run)
+        main._start_session_row("p--r--s", "p", "r", "s", "claude", str(tmp_path),
+                                cmd_line=provider, agent=provider, opts={"account_id": "account-a"})
+    else:
+        monkeypatch.setattr(scheduler, "_run_agent", run)
+        scheduler._bound_run([provider], binding={"db": box, "account_id": "account-a", "run_id": 1}, provider=provider, cwd=str(tmp_path))
+    assert len(discoveries) == 1
+    _, aid, cwd, found_provider, started, _, snapshot = discoveries[0]
+    assert aid == rows(box)[0]["id"] and cwd == str(tmp_path) and found_provider == provider
+    assert snapshot == expected
+    assert profiles.newest_transcript(provider, cwd, started, snapshot) == SID
 
 
 def test_off_state_keys_and_unbound_on_launch(lite_client, fake_tmux, projects_dir, monkeypatch):
@@ -833,14 +888,30 @@ def test_move_crash_after_fsync_before_unlink_converges(box, monkeypatch):
     assert not source.exists() and len(profiles.accounts_view(box)) == 1
 
 
-def test_transcript_creation_time_does_not_use_recent_modification(box, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    root = profiles.transcript_directory('claude', tmp_path)
-    root.mkdir()
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+@pytest.mark.parametrize('change', ['touch', 'append', 'rewrite', 'replace'])
+def test_transcript_snapshot_excludes_existing_files(box, tmp_path, provider, change, no_birthtime):
+    root = profiles.transcript_directory(provider, tmp_path)
+    root.mkdir(parents=True)
     path = root / 'old.jsonl'
-    path.write_text(json.dumps({'sessionId': SID, 'cwd': str(tmp_path)}) + '\n')
-    monkeypatch.setattr(profiles, '_created_at', lambda *a: 1)
-    assert profiles.newest_transcript('claude', tmp_path, 2) is None
+    meta = {'sessionId': SID, 'cwd': str(tmp_path)} if provider == 'claude' else {'type': 'session_meta', 'payload': {'id': SID, 'cwd': str(tmp_path)}}
+    data = json.dumps(meta) + '\n'
+    path.write_text(data)
+    snapshot = profiles.transcript_snapshot(provider, tmp_path)
+    started = time.time()
+    if change == 'append':
+        with path.open('a') as f:
+            f.write('{}\n')
+    elif change == 'rewrite':
+        path.write_text(data + '{}\n')
+    elif change == 'replace':
+        replacement = root / 'replacement.tmp'
+        replacement.write_text(data)
+        replacement.replace(path)
+    # Include the equality boundary, and give even the old file a fresh mtime.
+    os.utime(path, (started, started))
+    expected = SID if change == 'replace' else None
+    assert profiles.newest_transcript(provider, tmp_path, started, snapshot) == expected
 
 
 @pytest.mark.parametrize('provider', ['claude', 'codex'])

@@ -32,7 +32,8 @@ H = {**ID, "X-CCBoard": "1"}
 UUID = "0b0e7c4c-1a2b-4c3d-8e9f-0123456789ab"
 PEER = "p_0123456789abcdef"
 FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
-        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": PEER, "owner": "o", "n": "1", "issue": "1", "session": "bare-session"}
+        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": PEER, "owner": "o", "n": "1", "issue": "1", "session": "bare-session",
+        "account_id": "account-a"}
 NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 CLOSED = "this node token does not open that route"
@@ -135,6 +136,30 @@ def test_every_scoped_row_refuses_a_pair_without_that_scope(board, method, path)
     r = c.request(method, path, headers=bearer(tok))
     assert r.status_code == 403 and f"{need} scope" in r.json()["error"], (method, path)
     assert any(x["action"] == "scope_refused" and x["target"] == f"{method} {path}" and x["status"] == "refused" for x in rows(db))
+
+
+@pytest.mark.parametrize("signed", [False, True])
+@pytest.mark.parametrize("path,body", [
+    ("/api/node/tasks", {"project": "p", "repo": "r", "title": "Task", "prompt": "Do it"}),
+    ("/api/node/tasks/1/dispatch", {"mode": "lane"}),
+    ("/api/node/sessions", {"project": "p", "repo": "r"}),
+])
+def test_node_launches_refuse_account_binding(board, fake_tmux, monkeypatch, signed, path, body):
+    from app import main
+    c, db = board
+    monkeypatch.setattr(main.settings, "pools", True)
+    pair, tok = mint(db, nodes.SCOPES)
+    headers = bearer(tok, **{"X-CCBoard-Acting-User": "alice", "Content-Type": "application/json"})
+    content = json.dumps({**body, "account_id": "account-a"}).encode()
+    if signed:
+        db.node_pair_update(pair["peer_id"], peer_pubkey=nodes.node_keys.public(), peer_node_id=nodes.node_id(), peer_key_source="pairing")
+        headers["X-CCBoard-Node"] = nodes.node_id()
+        headers.update(nodes.node_keys.sign_headers("POST", path, content, recipient_id=nodes.node_id(), token=tok, acting_user="alice"))
+    response = c.post(path, content=content, headers=headers)
+    assert response.status_code == 422, response.text
+    assert "account_id" in response.text
+    assert not fake_tmux["created"]
+    assert db.conn.execute("SELECT COUNT(*) FROM runtime_attempt").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("signed", [False, True])

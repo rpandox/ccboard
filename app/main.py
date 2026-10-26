@@ -3571,6 +3571,7 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
         cmd_line = profiles.wrap_command(cmd_line, agent, bound)
     if bound is not None:
         # Reserve under release's lock before tmux exists. Release sees the reservation even before its session binding.
+        transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
         attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
                                          provider_session_id=claude_session_id, resumed_from=previous)
     real = None
@@ -3607,7 +3608,7 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
                 profiles.finish_attempt(db, attempt, "launch_failed")
         raise
     if attempt is not None and claude_session_id is None:
-        profiles.discover_attempt(db, attempt, cwd, agent, launch_started, real)
+        profiles.discover_attempt(db, attempt, cwd, agent, launch_started, real, transcript_snapshot)
     if task_id is not None:                                   # only once the command is really typed: a failed launch leaves the task unbound
         db.task_update(task_id, session_row=row_id)
     return real, row_id
