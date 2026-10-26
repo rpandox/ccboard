@@ -494,3 +494,15 @@ def test_close_after_a_state_change_callback_that_writes_through_the_database_do
     t0 = time.monotonic()
     d.close()
     assert time.monotonic() - t0 < 1.0
+
+
+@pytest.mark.parametrize("indent", ["", "  "])
+def test_measured_width_redacts_indented_command_fragments_before_prefix_removal(monkeypatch, indent):
+    from app import hooks
+    token = "a1b2c3d4" * 4 + "e5f60789" * 4
+    monkeypatch.setattr(hooks, "_token", token)
+    text = "unwrapped heading longer than the actual command pane width" + "\n  $ echo " + token[:32] + "\n" + indent + token[32:] + " && xxx"
+    lines = nr.screen_lines(text, 40, width=41)
+    assert lines[1] == "  $ echo [redacted]"
+    assert lines[2] == indent + "[redacted] && xxx"
+    assert token[:32] not in "\n".join(lines) and token[32:] not in "\n".join(lines)

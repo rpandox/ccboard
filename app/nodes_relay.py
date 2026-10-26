@@ -2401,47 +2401,53 @@ def _is_ref(v) -> bool:
     return r is not None and r.handle is not None and redact(r.rest, known_secrets()) == r.rest
 
 
-def _hide_wrapped(lines: list[str], known) -> list[str]:
-    """A secret that tmux wrapped over two or more lines: look for the known values and the token shapes in the lines joined end to end, and hide every part of a
-    match that crosses a line break (each fragment becomes `[redacted]`). tmux wraps at the pane's width, so only a line as long as the longest line of the screen
-    is joined to the next one; every other break is a real one and no match crosses it."""
+def _hide_wrapped(lines: list[str], known, width: int | None = None) -> list[str]:
+    """Hide every fragment of a secret crossing a full-width line. Preserve screen coordinates until after matching.
+
+    Use the measured pane width when available, otherwise the longest captured line. Also check continuations with their
+    display indentation removed: command menus indent wrapped commands, although that indentation is not part of the token.
+    """
     if len(lines) < 2:
         return lines
-    width = max(len(x) for x in lines)
-    parts, starts, bounds, pos = [], [], [], 0
-    for i, x in enumerate(lines):
-        starts.append(pos)
-        parts.append(x)
-        pos += len(x)
-        if i < len(lines) - 1:
-            if len(x) >= width:
-                bounds.append(pos)                      # a wrapped line: the next one continues it
-            else:
-                parts.append("\x00")                    # a real line break: nothing matches across it
-                pos += 1
-    if not bounds:
-        return lines
-    joined = "".join(parts)
-    spans: list[tuple[int, int]] = []
-    for k in known:
-        if isinstance(k, str) and len(k) >= 8:
-            i = joined.find(k)
-            n = 0
-            while i >= 0 and n < 20:
-                spans.append((i, i + len(k)))
-                i, n = joined.find(k, i + 1), n + 1
-    for rx in _WRAP_SHAPES:
-        spans.extend(m.span() for m in rx.finditer(joined))
-    hidden = bytearray(len(joined))
-    for a, b in spans:
-        if any(a < x < b for x in bounds):
-            hidden[a:b] = b"\x01" * (b - a)
-    if not any(hidden):
-        return lines
+    width = width or max(len(x) for x in lines)
+    masks = [bytearray(len(x)) for x in lines]
+    for trim_indent in (False, True):
+        parts, starts, bounds, pos = [], [], [], 0
+        for i, x in enumerate(lines):
+            skip = len(x) - len(x.lstrip()) if trim_indent and i and len(lines[i - 1]) == width else 0
+            starts.append((pos, skip))
+            parts.append(x[skip:])
+            pos += len(x) - skip
+            if i < len(lines) - 1:
+                if len(x) == width:
+                    bounds.append(pos)
+                else:
+                    parts.append("\x00")
+                    pos += 1
+        if not bounds:
+            continue
+        joined = "".join(parts)
+        spans: list[tuple[int, int]] = []
+        for k in known:
+            if isinstance(k, str) and len(k) >= 8:
+                i = joined.find(k)
+                n = 0
+                while i >= 0 and n < 20:
+                    spans.append((i, i + len(k)))
+                    i, n = joined.find(k, i + 1), n + 1
+        for rx in _WRAP_SHAPES:
+            spans.extend(m.span() for m in rx.finditer(joined))
+        hidden = bytearray(len(joined))
+        for a, b in spans:
+            if any(a < x < b for x in bounds):
+                hidden[a:b] = b"\x01" * (b - a)
+        for x, (off, skip), mask in zip(lines, starts, masks):
+            for col, h in enumerate(hidden[off:off + len(x) - skip], skip):
+                mask[col] |= h
     out = []
-    for x, off in zip(lines, starts):
-        seg, buf, run = hidden[off:off + len(x)], [], False
-        for ch, h in zip(x, seg):
+    for x, mask in zip(lines, masks):
+        buf, run = [], False
+        for ch, h in zip(x, mask):
             if h:
                 if not run:
                     buf.append(REDACTED)
@@ -2458,20 +2464,20 @@ def _clean_screen_line(x: str) -> str:
     return "".join(c for c in x if unicodedata.category(c) not in ("Cc", "Cf"))[:LINE_IN]      # control, format (zero-width, soft hyphen, bidi) characters
 
 
-def screen_lines_from(lines, n: int = PANE_LINES) -> list[str]:
+def screen_lines_from(lines, n: int = PANE_LINES, *, width: int | None = None) -> list[str]:
     """Screen lines as a peer may send them. The caps come FIRST (the last n <= 40 lines, each cut to LINE_IN characters), then the invisible characters go (so a
     secret cannot hide behind one), then the redaction, then the wrapped-secret pass, then the final cut of each line to PANE_LINE_MAX."""
     n = max(1, min(int(n), PANE_LINES))
     keep = [_clean_screen_line(x) for x in list(lines)[-n:] if isinstance(x, str)]
     known = known_secrets()
-    keep = _hide_wrapped(keep, known)                   # first: the per-line pass would redact one fragment and leave the rest of a wrapped token looking like a word
+    keep = _hide_wrapped(keep, known, width)                   # first: the per-line pass would redact one fragment and leave the rest of a wrapped token looking like a word
     return [clean_line(x) for x in redact("\n".join(keep), known).split("\n")][-n:]
 
 
-def screen_lines(text: str, n: int) -> list[str]:
+def screen_lines(text: str, n: int, *, width: int | None = None) -> list[str]:
     """The last `n` lines of a captured screen: tail_lines first (no regex), then screen_lines_from."""
     t = str(text or "")[-262144:].replace(chr(0x2028), "\n").replace(chr(0x2029), "\n")
-    return screen_lines_from(tail_lines(t, n), n)
+    return screen_lines_from(tail_lines(t, n), n, width=width)
 
 
 def tail_lines(text: str, n: int) -> list[str]:

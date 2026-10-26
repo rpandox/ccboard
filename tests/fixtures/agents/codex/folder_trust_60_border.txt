@@ -1,0 +1,15 @@
+╭──────────────────────────────────────────────────────────╮
+│                                               Folder acc │
+│ ess                                                      │
+│                                                          │
+│                                               Trust this │
+│  folder?                                                 │
+│                                                          │
+│                                               Note: You' │
+│ re in a subdirectory of a Git project. Trusting will app │
+│ ly to the repository root                                │
+│                                                          │
+│                                               › 1. Trust │
+│  and continue                                            │
+│                                                 2. Quit  │
+╰──────────────────────────────────────────────────────────╯

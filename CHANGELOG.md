@@ -6,8 +6,8 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 ### Fixed
 - Codex sessions now honor the launcher's profile and scrollback opt-out, with all 15 #92 recheck cases pinned to the preview. Profile names are validated, and explicit board permission flags override profile settings (#329).
-- Codex folder-access dialogs now put interactive sessions and their task cards in Needs you with Open and the repository-root trust notice. Unattended task lanes fail with a recovery reason, following Claude's #247 rule; the board never answers trust (#330).
-- Codex command approvals visible only in the terminal now say "answer in the terminal", show a capped, redacted command and offer Open. Fixture tests verify that exec PermissionRequest hooks already provide Allow/Deny in task lanes, even before another hook arrives; missing hooks never create approval buttons (#331).
+- Codex folder-access dialogs now put interactive sessions and their task cards in Needs you with Open and the repository-root trust notice. Unattended task lanes fail with a recovery reason after two consecutive polls confirm the complete dialog, including in narrow panes; quoted trust questions remain command approvals. Following Claude's #247 rule, the board never answers trust (#330).
+- Codex command approvals visible only in the terminal now say "answer in the terminal", redact the full captured screen before extracting and capping the command, including secrets wrapped across lines, and offer Open. Fixture tests verify that exec PermissionRequest hooks already provide Allow/Deny in task lanes, even before another hook arrives; missing hooks never create approval buttons (#331).
 
 ### Changed
 - Document Codex 0.161's exec-approval hook path, the remaining uncertainty about the box incident, and linked-worktree Git approvals with an explicit writable-roots option. Record #63's PR and Merge verification in the roadmap.

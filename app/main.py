@@ -20,6 +20,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from weakref import WeakKeyDictionary
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -756,7 +757,7 @@ def _hooks_missing(row: dict) -> str | None:
         return None
 
 
-def _agent_launch_view(name: str, row: dict, command: str | None, view: dict) -> None:
+def _agent_launch_view(name: str, row: dict, command: str | None, view: dict, width: int | None = None) -> None:
     """An agent row may be still starting, waiting behind a
     dialog nobody answered (update, trust: view.pane_dialog, shown as needing a person, never answered by the board), or gone back to its
     login shell (LAUNCH_GRACE s after the row was made: the row becomes errored with the reason, once). Never raises into the 3 s poll."""
@@ -765,7 +766,7 @@ def _agent_launch_view(name: str, row: dict, command: str | None, view: dict) ->
         if made is not None and (datetime.now(timezone.utc) - made).total_seconds() < LAUNCH_GRACE:
             return
         check_shell = not row.get("state") or bool(settings.pools and (row.get("opts") or {}).get("account_id"))
-        block = _pane_block(name, row, command, shell=check_shell, invalidate=False, claude_trust=True)
+        block = _pane_block(name, row, command, shell=check_shell, invalidate=False, claude_trust=True, width=width)
         if block is None:
             return
         if block[0] == "agent_exited":
@@ -816,10 +817,23 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     try:
         live = tmux.list_sessions()
     except tmux.TmuxDown:
+        with _codex_trust_lock:
+            _codex_trust_seen.pop(db, None)
         return {}, True
+    except (tmux.TmuxError, OSError):
+        with _codex_trust_lock:
+            _codex_trust_seen.pop(db, None)
+        raise
     assert db is not None
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
+    with _codex_trust_lock:
+        seen = _codex_trust_seen.get(db, {})
+        for name, identity in list(seen.items()):
+            row = rows.get(name, {})
+            if (name not in live or row.get("launcher") != "task"
+                    or identity != (row.get("row_id"), row.get("created_at"))):
+                seen.pop(name, None)
     if _esc_dismissed_permissions(live, rows):
         rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
@@ -863,7 +877,7 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
         if ((settings.pools and (row.get("opts") or {}).get("account_id"))
                 or row.get("agent") == "codex"
                 or (not row.get("state") and row.get("agent") == "claude" and row.get("launcher") == "task")):
-            _agent_launch_view(name, row, s["command"], out[name])
+            _agent_launch_view(name, row, s["command"], out[name], s.get("window_width"))
     if rich and out:
         try:                                         # #71: a session parked on a rate limit says when it continues (display only; never breaks the poll)
             for name, p in autoresume.parked_view(db, {n: rows.get(n, {}) for n in out}, time.time()).items():
@@ -4342,18 +4356,27 @@ def _agent_row(name: str) -> tuple[dict | None, object | None, JSONResponse | No
 
 
 _agent_exit_lock = threading.Lock()
+_codex_trust_seen = WeakKeyDictionary()     # per database and session incarnation; only monitor polls contribute
+_codex_trust_lock = threading.Lock()
 LAUNCH_GRACE = 20                                # s after a session row is made in which a login shell in its pane is the launch line being typed
 
 
 def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True,
-                claude_trust: bool = False) -> tuple[str, str] | None:
+                claude_trust: bool = False, width: int | None = None) -> tuple[str, str] | None:
     """(code, message) when the board must not type into a Claude approval or Codex dialog, or a Claude task was refused for workspace
     trust, else None. `agent_exited`: the pane's foreground process is the login shell (codex quit; a prompt typed now would run as a
     shell command); the row is marked errored with the reason. `dialog`: the screen shows Claude's approval dialog, Codex's update dialog
     (its default, Update now, runs npm install -g) or its trust dialog; the board never answers one. Box checks 86 and 92. A tmux hiccup
     is no evidence: None. `invalidate` is off inside the state builder, which holds the scan lock. Claude trust detection is opt-in for
-    launch polling only; typing callers never act on it."""
+    launch polling only; typing callers never act on it. Codex task failure requires a complete trust dialog on two consecutive
+    polls; any intervening non-trust screen or failed capture clears the first sighting."""
     agent = (row or {}).get("agent") or "claude"
+    poll_trust = bool(agent == "codex" and row and row.get("launcher") == "task" and claude_trust)
+    previous_trust = False
+    identity = (row.get("row_id"), row.get("created_at")) if row else None
+    if poll_trust:
+        with _codex_trust_lock:
+            previous_trust = _codex_trust_seen.setdefault(db, {}).pop(name, None) == identity
     if row and agent == "claude":
         try:
             if claude_pane.approval_dialog(tmux.capture(name, lines=0)):
@@ -4380,7 +4403,9 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
                 or not db.active_tasks_by_session(("running",)).get(row.get("row_id"))):
             return None
     try:
-        cmd = command if command is not None else tmux.pane_info(name).get("cmd")
+        info = tmux.pane_info(name) if command is None or not width else {}
+        cmd = command if command is not None else info.get("cmd")
+        width = width or info.get("cols")
         if agent == "claude":
             if shell and codex_pane.shell_foreground(cmd):
                 lines = tmux.capture(name, lines=claude_pane.TAIL_LINES).splitlines()
@@ -4394,17 +4419,19 @@ def _pane_block(name: str, row: dict | None, command: str | None = None, *, shel
             _mark_exited(name, row, reason, invalidate)
             return "agent_exited", reason
         screen = tmux.capture(name, lines=0)
-        kind = codex_pane.dialog(screen)
-        if kind == "trust" and claude_trust and row.get("launcher") == "task":
-            if db.active_tasks_by_session(("running",)).get(row.get("row_id")):
+        kind = codex_pane.dialog(screen, width)
+        if kind == "trust" and poll_trust:
+            with _codex_trust_lock:
+                _codex_trust_seen.setdefault(db, {})[name] = identity
+            if previous_trust and db.active_tasks_by_session(("running",)).get(row.get("row_id")):
                 _mark_exited(name, row, codex_pane.TRUST_FAILURE, invalidate, fail_task=True)
                 return "agent_exited", codex_pane.TRUST_FAILURE
             if row.get("last_message") == codex_pane.TRUST_FAILURE:
                 return "agent_exited", codex_pane.TRUST_FAILURE
         if not kind:
-            approval = codex_pane.approval_dialog(screen)
+            approval = codex_pane.approval_dialog(screen, width)
             if approval:
-                command = " ".join(nodes_relay.screen_lines(approval["command"], codex_pane.TAIL_LINES))[:300]
+                command = " ".join(approval["command"].splitlines())[:300]
                 return "dialog", codex_pane.COMMAND_NOTE + ("\n" + command if command else "")
     except (tmux.TmuxError, tmux.TmuxDown, OSError):
         return None
