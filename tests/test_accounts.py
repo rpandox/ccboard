@@ -920,7 +920,7 @@ def test_view_lists_the_current_account_first_with_its_windows(env):
     assert v["current"] == UUID_B and [a["key"] for a in v["list"]] == [UUID_B, UUID_A]
     b, a = v["list"]
     assert b == {"key": UUID_B, "email": "b@example.com", "name": "Bob", "label": None, "plan": "max", "rl_5h": 20.0, "rl_7d": 60.0,
-                 "resets_5h": w.r5b, "resets_7d": w.r7b, "rl_5h_at": iso(T0 + 11), "rl_7d_at": iso(T0 + 11), "source": "statusline", "current": True}
+                 "resets_5h": w.r5b, "resets_7d": w.r7b, "rl_5h_at": iso(T0 + 11), "rl_7d_at": iso(T0 + 11), "source": "statusline", "current": True, "pool_account": None}
     assert a["rl_5h"] == 80.0 and a["rl_7d"] == 40.0 and a["current"] is False
     full = accounts.view(env.db, full=True)["list"][0]
     assert {"org", "org_id", "tier", "config_dir", "first_seen", "last_seen", "rl_5h_at", "rl_7d_at", "source"} <= set(full)
@@ -999,13 +999,16 @@ def test_state_accounts_and_the_api(env, lite_client):
 
 def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_client, monkeypatch):
     from app import main
-    # Keep relative query windows anchored to the fixed account event timestamp.
-    monkeypatch.setattr(main, "_utcnow", lambda: datetime.fromtimestamp(T0 + 60, tz=timezone.utc))
+    now = datetime.fromtimestamp(T0 + 1, tz=timezone.utc)
+    # Even an ISO since is clamped to 400 days before _utcnow; keep reads and writes on the fixture clock.
+    monkeypatch.setattr(main, "_utcnow", lambda: now)
+    monkeypatch.setattr(dbmod, "now", lambda: now.isoformat(timespec="seconds"))
     state_file(settings.claude_config_dir)
     accounts.observe(main.db, T0)
     statusline(main.db, "shop--api--s9", T0 + 3000, T0 + 200000, 33, 44)
     r = lite_client.get("/api/series", params={"series": "rl_5h", "key": f"acct:{UUID_A}", "since": "1h"}, headers=H)
     assert r.status_code == 200 and f"rl_5h:acct:{UUID_A}" in r.json()["series"]
+    assert [v for v in r.json()["series"][f"rl_5h:acct:{UUID_A}"] if v is not None] == [33.0]
     ev = lite_client.get("/api/series/events", params={"series": "acct", "since": "30d"}, headers=H).json()["events"]
     assert [(e["key"], e["m"]) for e in ev] == [(UUID_A, {"to": UUID_A})]
 

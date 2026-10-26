@@ -192,10 +192,12 @@ jobs:
   # The image also waits for test-macos and check-windows (#123). Those two are skipped for a docs-only change, and a skipped needed job would
   # skip this one under the default `success()`, so the condition names the results itself: test must have succeeded, the other two must have
   # succeeded or been skipped (never failed or cancelled). `!cancelled()` replaces the implicit success() that these checks make unnecessary.
+  # The image also needs `changes` and requires it to have succeeded: when the change detection itself fails, test-macos and check-windows are
+  # skipped, and a skip is accepted for them, so without this term a broken `changes` job would publish an image no macOS or Windows check ran for (#318).
   image:
-    needs: [test, test-macos, check-windows]
+    needs: [test, changes, test-macos, check-windows]
     if: >-
-      ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success'
+      ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success' && needs.changes.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.test-macos.result)
       && contains(fromJSON('["success","skipped"]'), needs.check-windows.result) }}
     runs-on: ubuntu-24.04

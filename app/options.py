@@ -71,6 +71,7 @@ class Option:
 def registry() -> tuple[Option, ...]:
     """Installer order, followed by the non-remembered options; resolve platform defaults without reading any settings file."""
     return (
+        Option("CCBOARD_POOLS", "agents", "Runtime profiles", "Isolate bound accounts in private runtime profiles. Restart required.", "bool", "0", "file", attr="pools"),
         Option("PROJECTS_DIR", "general", "Projects folder", "The folder containing this board's projects.", "path", str(plat.default_projects_dir()), "file", attr="projects_dir"),
         Option("CCBOARD_PORT", "general", "Board port", "The loopback port of the board.", "int", "8000", "installer", attr="port", bounds=(1, 65535)),
         Option("TTYD_PORT", "general", "Terminal port", "The loopback port of the terminal service.", "int", "7681", "installer", attr="ttyd_port", bounds=(1, 65535)),

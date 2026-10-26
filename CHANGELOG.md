@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.114 - 2026-10-26
+
+### Added
+- Runtime profiles (P1): set `CCBOARD_POOLS=1` to run bound Claude and Codex accounts side by side with private logins and shared conversation history. Saved logins hand over explicitly into profiles, Settings lists the pool accounts, and the legacy switcher waits while a profile session is running. Each bound process records its account and updates the credential fingerprint when it ends. Release returns credentials to the legacy slot for rollback; it serializes with launches and names active sessions when blocked. Codex profiles require their own one-time hook review under the default trust setting.
+
+Upgrade: rerun `./install.sh` to remember `CCBOARD_POOLS` in the settings file. It defaults off; release handed-over accounts in Settings before turning it off.
+
 ## v0.5.112 - 2026-10-26
 
 ### Added
@@ -11,6 +18,25 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Removing a linked folder only unlinks it; its real files stay on disk. A missing child link is forgotten during project or repo deletion; changed links are still refused. Recursive deletion refuses links and paths outside PROJECTS_DIR. Project and repo deletion now removes their task, job and run metadata without erasing session history.
 
 Upgrade: rerun `./install.sh` on Linux/WSL/Docker or `./scripts/install-macos.sh` on macOS to add CCBOARD_LINK_ROOTS with an empty default to the generated settings file; existing settings remain usable without rerunning.
+## v0.5.111 - 2026-10-19
+
+### Added
+- Pools P0: the spike notes and a one-command spike for two logins (refs #219). `docs/spikes/pools-p0.md` records, from the installed CLIs, the Codex source and the vendor docs, how a session resumes under a second Claude or Codex profile, where the usage numbers and the subscription id live, and which questions the owner's two-login run settles. `scripts/dev/pools_spike.py` builds scratch profiles, walks through the two logins, runs the resume test through each CLI's own commands and writes a results file and a comment for the issue; `--dry-run` prints every command and starts nothing. No change to the board.
+
+Upgrade: nothing to do.
+
+## v0.5.110 - 2026-10-19
+
+### Fixed
+- The image no longer publishes when the change detection itself failed (#318). A failed `changes` job skips the macOS and Windows checks, and a skip was accepted, so a run where the detection broke still built and pushed the image with neither check run. The image job now needs `changes` and requires it to have succeeded; `tests/test_ci_workflow.py` pins it for every combination.
+- Two Codex login false positives are gone (#318). The account-switch message ("...logged out or signed in to another account") no longer raises a login problem when Codex also tags the error `unauthorized`. And a failed look at a session's screen no longer forgets that a login problem was already raised, so a problem you dismissed does not come back with the same line still on screen.
+- Allow and Deny on the Epic page now read "allowing…" / "denying…" at once with both buttons off, so a second click cannot send a duplicate answer and a false "Allow was not sent". The keys `y` and `d` do nothing while an answer to that permission is still on its way: no second request, no false failure toast, and the opposite key can no longer win the race.
+- A refused "Add to backlog" for a task started from a GitHub issue no longer reopens the sheet without the issue: it says "not added to the backlog: <title>: <why>" instead, and you pick the issue again from the form. A task with no issue still reopens with what you typed.
+- The series endpoint checks in `tests/test_accounts.py` no longer depend on the real date: their clock stays anchored to the recorded account event.
+
+Closes #318.
+
+Upgrade: nothing to do.
 
 ## v0.5.109 - 2026-10-19
 

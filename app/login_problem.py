@@ -79,9 +79,11 @@ CODEX_NOT_A_DEAD_LOGIN_RE = re.compile(r"logged out or signed in to another acco
 def codex_auth_failure(*texts) -> bool:
     """Does a Codex error text (a `turn.failed` error, an exec `error` event, a rollout error item) or its error kind say the login is no good?
     AUTH_RE plus CODEX_AUTH_RE, case-insensitive; pure. False for a rate limit, a context overflow, a network error and the account-switch
-    mismatch message."""
-    return any(isinstance(t, str) and t and not CODEX_NOT_A_DEAD_LOGIN_RE.search(t) and (AUTH_RE.search(t) or CODEX_AUTH_RE.search(t))
-               for t in texts)
+    mismatch message. The exclusion is checked first, over every text (the message and its error kind arrive together): the mismatch message
+    with an `unauthorized` kind is still the board's own account switch (#318)."""
+    if any(isinstance(t, str) and CODEX_NOT_A_DEAD_LOGIN_RE.search(t) for t in texts):
+        return False
+    return any(isinstance(t, str) and t and (AUTH_RE.search(t) or CODEX_AUTH_RE.search(t)) for t in texts)
 
 
 # What an interactive Codex pane may raise the problem on (codex_pane.rejected_login): a STRICT subset of the patterns above, because a pane

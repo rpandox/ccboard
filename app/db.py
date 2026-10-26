@@ -117,6 +117,16 @@ CREATE TABLE IF NOT EXISTS samples (
 );
 CREATE INDEX IF NOT EXISTS samples_series_key_at ON samples(series, key, at);
 CREATE INDEX IF NOT EXISTS samples_at ON samples(at);
+CREATE TABLE IF NOT EXISTS pool_account (
+        id TEXT PRIMARY KEY, provider TEXT NOT NULL, label TEXT NOT NULL, state TEXT NOT NULL,
+        cred_version TEXT, created_at TEXT NOT NULL
+    );
+CREATE TABLE IF NOT EXISTS runtime_attempt (
+        id INTEGER PRIMARY KEY, task_id TEXT, n INTEGER NOT NULL, account_id TEXT NOT NULL,
+        provider TEXT NOT NULL, node_id TEXT, provider_session_id TEXT, profile_dir TEXT NOT NULL,
+        started_at TEXT NOT NULL, ended_at TEXT, end_reason TEXT, resumed_from_attempt_id INTEGER
+    );
+CREATE INDEX IF NOT EXISTS runtime_attempt_open ON runtime_attempt(account_id) WHERE ended_at IS NULL;
 """
 
 # Added after v0.1; applied with ALTER TABLE, "duplicate column" errors are ignored.
@@ -561,6 +571,8 @@ class DB:
                 return False
             self.conn.execute("UPDATE sessions SET claude_session_id=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND"
                               " ended_at IS NULL ORDER BY id DESC LIMIT 1)", (sid, name))
+        from . import profiles
+        profiles.sync_session(self, name)
         return True
 
     def open_row(self, tmux_name: str) -> dict | None:
@@ -604,6 +616,8 @@ class DB:
                            session_view({**before, "state": state, "state_at": ts, "last_event": event}))
         if changed:
             self._fire_state([changed])
+        from . import profiles
+        profiles.sync_session(self, tmux_name)
 
     TUI_WAIT_EVENTS = ("UserPromptSubmit", "Stop", "StopFailure", "SessionStart", "SessionEnd", "Interrupt", "PermissionRequest")
 
@@ -688,6 +702,11 @@ class DB:
         its statusline readings to it). Writes only when the value changes. Returns whether a row was updated."""
         if not account:
             return False
+        from .config import settings
+        if settings.pools:
+            row = self.open_row(tmux_name)
+            if row and self.kv_get(f"runtime_session:{row['id']}"):
+                return False
         with self.lock:
             cur = self.conn.execute(
                 "UPDATE sessions SET account=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND ended_at IS NULL"
@@ -1270,6 +1289,8 @@ class DB:
                 changed = (tmux_name, before["state"], "ended", reason, self._ended_view(before, ts, reason))
         if changed:
             self._fire_state([changed])
+        from . import profiles
+        profiles.sync_session(self, tmux_name, reason)
 
     @staticmethod
     def _ended_view(before: dict, ts: str, reason: str) -> dict:
@@ -1296,6 +1317,9 @@ class DB:
                     changes.append((name, prev["state"], "ended", "reconciled", self._ended_view(prev, ts, "reconciled")))
         if changes:
             self._fire_state(changes)
+        from . import profiles
+        for name in stale:
+            profiles.sync_session(self, name, "reconciled")
 
     # ---- samples (time series; the catalogue, throttles and retention live in samples.py)
     def _cache_put(self, series: str, key: str, at: str, value, meta) -> None:

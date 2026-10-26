@@ -18,6 +18,7 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 
 | Page | What it covers |
 |---|---|
+| [Runtime profiles (P1)](pools.md) | Opt-in account isolation, migration and the legacy switcher. |
 | [Configuration reference](configuration.md) | The few settings most people set, then one table per group, the options page, the advanced and test-only variables, and Restart board. |
 | [Upgrade](upgrade.md) | How to update each kind of install (Linux, Mac, WSL2, Docker), what the changelog's `Upgrade:` line means, backing up first, going back, and updating Claude Code. |
 | [Uninstall ccboard](uninstall.md) | Every command in order, with what it removes and what it keeps, for Linux, the container, a Mac and WSL2. |
@@ -71,6 +72,12 @@ For anyone who installs, runs or changes ccboard. Pick a page below, or start wi
 | [Developing ccboard](development.md) | Run the board locally, the tests, the lock files and demo mode. |
 | [Deploying](maintainers/deploying.md) | For the maintainer of a public deployment: updating the container, the outage per push, and what to do when GitHub Actions is down. Ordinary users do not need it. |
 | [Design notes](maintainers/design-notes.md) | Deviations from the original spec. |
+
+## Spikes
+
+| Page | What it covers |
+|---|---|
+| [Pools P0 spike notes](spikes/pools-p0.md) | What the Claude and Codex CLIs do when a session is resumed under a second login, where usage and the subscription id come from, how to run the two-login spike script, and the open questions its results settle. |
 
 ## Other files
 

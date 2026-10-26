@@ -2728,17 +2728,17 @@ function settingsAcctRow(a) {
   const newest = [w5, w7].filter((w) => w && w.at).sort((x, y) => y.at - x.at)[0];
   const usageTitle = !w5 && !w7 ? 'no reading yet' : [w5 && w5.rolled ? '5H: no usage recorded since the window reset' : '', w7 && w7.rolled ? '7D: no usage recorded since the window reset' : '',
     newest ? limitFreshness(newest.at, newest.source) : ''].filter(Boolean).join(' · ');
-  const kept = settingsSavedLine(a);
+  const kept = a.pool_account ? `belongs to pool account ${a.pool_account}` : settingsSavedLine(a);
   const acts = [];
-  if (store.supported && !a.current && a.saved) {
+  if (store.supported && !a.pool_account && !a.current && a.saved) {
     acts.push(el('button', { class: flagged ? '' : 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the account signed in on this box', onclick: () => accountSwitch(a), text: 'Switch' }));   // the flagged row's one lead action is Log in again (el() maps the classes at creation: not classList.add)
   }
-  if (store.supported) {                                              // every row: a dead login is a saved one, and the account in use is the one that needs it most
+  if (store.supported && !a.pool_account) {                                              // every row: a dead login is a saved one, and the account in use is the one that needs it most
     acts.push(el('button', { class: flagged ? 'primary tinted' : '', type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`,
       title: flagged ? 'Sign in with this account again: its saved login does not work any more' : 'Sign in with this account again to renew its saved login', onclick: () => settingsAddStart(a.email, name), text: 'Log in again' }));
   }
   acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a), text: 'Rename' }));
-  if (store.supported && !a.current && a.saved) {
+  if (store.supported && !a.pool_account && !a.current && a.saved) {
     acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
       : confirmButton(`acct-forget:${a.key}`, 'Forget login', () => settingsForgetLogin(a), false));
   }
@@ -3043,12 +3043,12 @@ function settingsCxRow(a) {
   const ago = (iso) => { const t = iso ? Date.parse(iso) / 1000 : 0; return t > 0 ? fmtAge(t) : ''; };
   const seen = ago(a.last_seen), added = ago(a.added_at);
   const dim = [added ? `added ${added} ago` : '', seen ? `seen ${seen} ago` : ''].filter(Boolean).join(' · ');
-  const kept = settingsSavedLine(a);
+  const kept = a.pool_account ? `belongs to pool account ${a.pool_account}` : settingsSavedLine(a);
   const acts = [];
-  if (store.supported && !a.current && a.saved) {
+  if (store.supported && !a.pool_account && !a.current && a.saved) {
     acts.push(el('button', { class: flagged ? '' : 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the Codex account in use on this box', onclick: () => cxSwitch(a), text: 'Switch' }));
   }
-  if (store.supported && store.add) {                                 // every row: the live account's login is replaced in place, a saved one's is renewed, a forgotten one's comes back
+  if (store.supported && !a.pool_account && store.add) {                                 // every row: the live account's login is replaced in place, a saved one's is renewed, a forgotten one's comes back
     acts.push(el('button', { class: flagged ? 'primary tinted' : '', type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`,
       title: 'Sign in with this account again: its saved login is replaced, the account stays one row', onclick: () => settingsCxAddStart(a), text: 'Log in again' }));
   }
@@ -3057,7 +3057,7 @@ function settingsCxRow(a) {
     acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Log out' })
       : confirmButton('cx-logout', 'Log out', () => cxLogout(), false));
   }
-  if (store.supported && !a.current && a.saved) {
+  if (store.supported && !a.pool_account && !a.current && a.saved) {
     acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
       : confirmButton(`cx-forget:${a.key}`, 'Forget login', () => settingsCxForget(a), false));
   }
@@ -3350,6 +3350,57 @@ function settingsCxAddStart(a) {
 }
 
 /* The panel's skeleton, built the first time the Accounts section is filled and kept: the error line, the rows' host, the recovery line, the switch choice and the add block. */
+const settingsPools = { rows: null, at: 0, busy: false, results: [], err: '' };
+function settingsPoolsLoad(force = false) {
+  if (typeof api !== 'function' || settingsPools.busy || (!force && Date.now() - settingsPools.at < 15000)) return;
+  settingsPools.at = Date.now();
+  settingsPools.busy = true;
+  const wasEnabled = Array.isArray(settingsPools.rows);
+  api('GET', '/api/pools/accounts').then((rows) => {
+    const enabled = Array.isArray(rows);
+    const changed = enabled !== Array.isArray(settingsPools.rows);
+    settingsPools.rows = enabled ? rows : null;
+    if (changed && settingsPage.refs) {
+      const p = settingsPage.refs.panels.accounts;
+      p.textContent = ''; p.ccAcct = null;
+    }
+  }).catch((e) => {
+    if (e.status === 404) {
+      settingsPools.rows = null;
+      if (wasEnabled && settingsPage.refs) { const p = settingsPage.refs.panels.accounts; p.textContent = ''; p.ccAcct = null; }
+    } else settingsPools.err = errorText(e);
+  })
+    .finally(() => { settingsPools.busy = false; if (settingsPage.refs && settingsPage.active === 'accounts') settingsFill('accounts', true); });
+}
+async function settingsPoolsAction(path) {
+  settingsPools.err = '';
+  try {
+    const result = await api('POST', path);
+    settingsPools.results = result.results || [];
+  } catch (e) {
+    settingsPools.results = (e.body || {}).results || [];
+    if (!settingsPools.results.length) settingsPools.err = errorText(e);
+  }
+  settingsPoolsLoad(true);
+  if (typeof poll === 'function') poll(true);
+}
+function settingsPoolRows(list) {
+  list.textContent = '';
+  for (const a of settingsPools.rows || []) {
+    const chips = el('span', { class: 'set-chips' },
+      el('span', { class: 'badge ' + (a.provider === 'codex' ? 'hue-teal' : 'hue-slate'), text: a.provider }),
+      el('span', { class: 'badge hue-slate', text: a.state }));
+    const row = settingsKv(a.label, chips, el('span', { class: 'dim mono set-pool-id', text: a.id }),
+      confirmButton(`pool-release:${a.id}`, 'Release', () => settingsPoolsAction(`/api/pools/accounts/${encodeURIComponent(a.id)}/release`), false));
+    row.classList.add('set-acct', 'set-pool-row');
+    list.append(row);
+  }
+  if (!(settingsPools.rows || []).length) list.append(el('div', { class: 'dim set-note', text: 'No pool accounts migrated yet.' }));
+  list.append(el('button', { type: 'button', text: 'Migrate saved logins', onclick: () => settingsPoolsAction('/api/pools/migrate') }));
+  for (const result of settingsPools.results) list.append(el('div', { class: 'dim set-note', text: `${result.slot}: ${result.moved ? 'moved to ' + result.moved : result.skipped ? 'skipped: ' + result.skipped : 'failed: ' + result.error}` }));
+  if (settingsPools.err) list.append(el('div', { class: 'bad set-note', role: 'alert', text: settingsPools.err }));
+}
+
 function settingsAcctSkeleton(p) {
   p.textContent = '';
   const err = el('div', { class: 'set-err bad hidden', role: 'alert' });
@@ -3375,8 +3426,10 @@ function settingsAcctSkeleton(p) {
       el('button', { class: 'primary tinted', type: 'button', title: 'Name the new Codex account', onclick: () => settingsCxSplitRename(), text: 'Rename' }),
       el('button', { type: 'button', title: 'Hide this notice', onclick: () => settingsCxSplitDismiss(), text: 'Dismiss' })));
   const cxSec = el('div', { class: 'cx-section hidden' }, settingsHead('Codex accounts'), cxErr, cxSplit, cxList, cxNote, cxWarn, settingsHead('Add a Codex account'), cx.root);
-  p.append(err, settingsHead('Subscription accounts'), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root, cxSec);
-  return { err, list, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cxSplit, cxSplitText, cx };
+  const pools = Array.isArray(settingsPools.rows) ? el('div', { class: 'set-pool-list' }) : null;
+  if (pools) p.append(settingsHead('Pool accounts'), el('div', { class: 'dim set-note', text: 'Each account runs in its own profile. Nothing switches machine-wide.' }), pools);
+  p.append(err, settingsHead(pools ? 'Legacy: subscription accounts' : 'Subscription accounts'), ...(pools ? [el('div', { class: 'dim set-note', text: 'The old machine-wide switch. It is refused while a pool session runs.' })] : []), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root, cxSec);
+  return { err, list, pools, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cxSplit, cxSplitText, cx };
 }
 
 /* Everything of the panel that is not the rows, repainted on every update: the error line, the switch choice, the add block, a Log in tapped elsewhere. */
@@ -3427,6 +3480,8 @@ function settingsAcctFocus(s) {
 
 function settingsAccounts(p) {
   const s = p.ccAcct || (p.ccAcct = settingsAcctSkeleton(p));
+  if (s.pools) settingsPoolRows(s.pools);
+  settingsPoolsLoad();
   const list = agentsAccounts(state);
   s.list.textContent = '';
   if (!list.length) s.list.append(el('div', { class: 'dim set-note', text: 'No Claude account seen yet. The board records the account a session is signed in with once one is running.' }));
@@ -3597,7 +3652,7 @@ function settingsSig(id, st) {
   if (id === 'team') return JSON.stringify([typeof Team !== 'undefined' ? Team.sig() : null, doctorSig()]);       // the data of team.js (it repaints this panel through its watch) and the Doctor rows it shows
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
     const forget = /^((acct|cx)-forget:|cx-logout)/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
-    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
+    return JSON.stringify([settingsPools.rows, settingsPools.results, settingsPools.err, ui.confirm && String(ui.confirm).startsWith('pool-release:') ? ui.confirm : null, st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
       cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null,
       (acctProblem(st) || {}).account || (acctProblem(st) ? '*' : null)]);                  // the amber chip and the lead action follow the problem at once
   }

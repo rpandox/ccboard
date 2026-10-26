@@ -40,6 +40,27 @@
   ],
   "options": [
     {
+      "key": "CCBOARD_POOLS",
+      "group": "agents",
+      "label": "Runtime profiles",
+      "help": "Isolate bound accounts in private runtime profiles. Restart required.",
+      "kind": "bool",
+      "default": "0",
+      "cls": "file",
+      "applies": "restart",
+      "secret": false,
+      "bounds": null,
+      "choices": null,
+      "value": false,
+      "set": false,
+      "line": "CCBOARD_POOLS=0",
+      "source": "default",
+      "problem": null,
+      "running": false,
+      "pending": false,
+      "edit_value": "False"
+    },
+    {
       "key": "PROJECTS_DIR",
       "group": "general",
       "label": "Projects folder",

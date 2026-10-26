@@ -1064,7 +1064,8 @@ function epClaimParts(c, nowIso) {
 function epRowSig(P, c) {
   const key = `${c.repo}#${c.number}`;
   const rt = epRoute(P.data);
-  return JSON.stringify([epPermission(c), c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
+  const perm = epPermission(c);
+  return JSON.stringify([perm, permMark(perm), c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
     rt ? [rt.can_run, rt.blocked && rt.blocked.code] : null, P.runon.has(key), P.rnotes.get(key) || null]);
 }
 

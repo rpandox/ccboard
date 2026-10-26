@@ -1208,6 +1208,12 @@ class CodexAgent(Agent):
         return cls._no_bypass(opts) if isinstance(opts, dict) else opts
 
     def launch_plan(self, req: LaunchReq) -> LaunchPlan:
+        if req.account_id is not None:
+            from .. import profiles
+            profiles.require_enabled()
+            profiles.profile_dir("codex", req.account_id)
+            if req.bypass or req.opts.get("devcontainer"):
+                raise projects.BadRequest("profiles require a local launch without bypass")
         if req.kind not in LAUNCH_KINDS:
             raise projects.BadRequest(f"launch kind must be one of {', '.join(LAUNCH_KINDS)}")
         full, clean, extra = self._validate(req.opts, interactive=True, tasks_or_headless=bool(req.task), bypass=bool(req.bypass))
@@ -1258,7 +1264,12 @@ class CodexAgent(Agent):
             else:
                 argv = ["codex", "resume", *flags, "--last"]
         # agent_sid stays None for a new session: Codex picks the thread id; the hook payload (or the v0.5.12 Tailer) binds it
-        return LaunchPlan(argv=argv, cmd_line=shlex.join(argv), agent_session_id=agent_sid, cwd=cwd, opts_clean=clean, worktree=worktree)
+        if req.account_id is not None and req.kind != "new" and (req.kind == "continue" or not req.resume_id or not UUID_RE.fullmatch(req.resume_id)):
+            raise projects.BadRequest("profile resumes require a thread UUID")
+        command = shlex.join(argv)
+        if req.account_id is not None:
+            command = profiles.wrap_command(command, "codex", req.account_id, prepare=False)
+        return LaunchPlan(argv=argv, cmd_line=command, agent_session_id=agent_sid, cwd=cwd, opts_clean=clean, worktree=worktree)
 
     def resume_argv(self, session_id: str | None = None, *, name: str | None = None, opts: dict | None = None, add_dirs=()) -> list[str]:
         if session_id and not UUID_RE.match(session_id):

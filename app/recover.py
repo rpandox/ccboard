@@ -131,6 +131,8 @@ def plan(rows: dict[str, dict], live: set[str], worktrees: dict[str, str] | None
             opts = {**opts, "permission_mode": "default"}
         sid = row.get("claude_session_id")
         fresh, note = False, None
+        if opts.get("account_id") and ag.name == "codex" and not sid:
+            fresh, note = True, "profile has no thread UUID: started a fresh session"
         if (ag.name == "codex" and not sid and row.get("launcher") != "task" and not wt
                 and not _lone_codex_row(name, _where(rpath), rows, worktrees)):
             # `codex resume --last` filters by directory only: with another Codex row here it could pick that row's thread

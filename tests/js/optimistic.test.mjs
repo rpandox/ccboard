@@ -353,3 +353,46 @@ test('the board\'s own answer wins: a /api/agents list without auto turns auto o
   w.run(`openLauncher({ project: 'ccboard', repo: 'ccboard', mode: 'task' })`);
   assert.equal(permSelect(form(w)).value, 'manual');
 });
+
+// #318: the retry sheet after a refusal is a fresh form with no issue picker state, so a task linked to a GitHub issue would be sent again unlinked. An issue-linked Later task is not reopened: the
+// board's words come as the toast that names the task (the other branch of the fix; carrying the link into the picker needs the picker to preselect an issue it has not listed yet).
+const ISSUE = { number: 47, title: 'Dispatch from issues', body: 'Make it so.', url: 'https://github.com/acme/board/issues/47', labels: [], author: 'acme', trusted: true };
+
+async function linkedLaterWorld() {
+  const { w, h } = await laterWorld();
+  w.run(`__answers['/api/projects/ccboard/repos/ccboard/issues'] = ({ path }) => (/issues\\/47$/.test(path) ? { ...${JSON.stringify(ISSUE)}, who: { claude: null, codex: null, default_agent: null, warnings: [] } } : { issues: [${JSON.stringify(ISSUE)}] })`);
+  const pick = form(w).querySelector('.lx-issue select');
+  pick.dispatchEvent({ type: 'focus' });
+  await tick(); await tick();
+  pick.value = '47';
+  pick.dispatchEvent({ type: 'change' });
+  await tick(); await tick();
+  return { w, h };
+}
+
+test('a refused Add to backlog for an issue-linked task is not reopened as an unlinked sheet: the toast names the task and says why', async () => {
+  const { w, h } = await linkedLaterWorld();
+  assert.match(form(w).querySelector('textarea.lx-prompt').value, /Closes #47/, 'the issue filled the form');
+  submit(form(w));
+  assert.equal(h.count(), 1);
+  const sent = calls(w).filter((c) => c.method === 'POST' && c.path === '/api/tasks');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].body.issue_number, 47, 'the request carries the link');
+  assert.equal(sent[0].body.issue_url, 'https://github.com/acme/board/issues/47');
+  await h.refuse('this repo is not a git repository', 400);
+  assert.equal(pendingCards(w).length, 0, 'the pending card is gone');
+  assert.equal(sheet(w).open, false, 'no sheet to retry from: a retry could not carry the issue');
+  assert.equal(calls(w).filter((c) => c.method === 'POST' && c.path === '/api/tasks').length, 1, 'nothing was sent again');
+  const t = toasts(w).pop();
+  assert.equal(t.kind, 'bad');
+  assert.match(t.text, /^not added to the backlog: #47 Dispatch from issues: this repo is not a git repository/);
+});
+
+test('a refused Add to backlog with no issue still opens the sheet again (the unlinked path is unchanged)', async () => {
+  const { w, h } = await laterWorld();
+  typeInto(form(w).querySelector('textarea.lx-prompt'), 'Fix the login redirect');
+  submit(form(w));
+  await h.refuse('this repo is not a git repository', 400);
+  assert.equal(sheet(w).open, true);
+  assert.equal(toasts(w).filter((t) => /not added to the backlog/.test(t.text)).length, 0);
+});
