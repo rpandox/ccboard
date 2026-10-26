@@ -258,3 +258,22 @@ def test_nested_mode_uses_provider_option_precedence(api, box, provider, kind):
         assert dry['will_start_as'] and response.status_code == 201, (dry, response.text)
     else:
         assert dry['refused_reason'] and response.status_code == 400, (dry, response.text)
+
+
+@pytest.mark.parametrize('mode', ['pool', 'pinned'])
+def test_remote_dry_run_refuses_p5_before_local_repo_lookup(api, box, monkeypatch, mode):
+    seed(box, (10, 20))
+    body = request_body()
+    if mode == 'pinned':
+        body.pop('pool_id', None)
+        body.update(account_mode='pinned', pinned_account_id='claude-a')
+    body.update(node='remote-box', project='only-on-peer', repo='peer-repo')
+    monkeypatch.setattr(projects, 'repo_path', lambda *args: pytest.fail('remote repository inspected locally'))
+    before = list(box.conn.iterdump())
+    response = api.post('/api/launch/dry-run', json=body, headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()
+    assert data['will_start_as'] is None
+    assert 'account grants (P5)' in data['refused_reason']
+    assert data['candidates'] and all(not c['eligible'] for c in data['candidates'])
+    assert list(box.conn.iterdump()) == before

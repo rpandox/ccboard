@@ -1,0 +1,109 @@
+{
+  "accounts": [
+    {
+      "id": "claude-a",
+      "label": "claude-a",
+      "provider": "claude",
+      "state": "ready"
+    },
+    {
+      "id": "claude-b",
+      "label": "claude-b",
+      "provider": "claude",
+      "state": "ready"
+    },
+    {
+      "id": "codex-a",
+      "label": "codex-a",
+      "provider": "codex",
+      "state": "ready"
+    }
+  ],
+  "pools": [
+    {
+      "id": "claude-work",
+      "name": "Claude work",
+      "provider": "claude",
+      "soft_pct_5h": 70,
+      "soft_pct_weekly": 80,
+      "hard_pct_5h": 85,
+      "hard_pct_weekly": 92,
+      "concurrency": 2,
+      "on_limit_policy": "auto",
+      "members": [
+        {
+          "account_id": "claude-a"
+        },
+        {
+          "account_id": "claude-b"
+        }
+      ]
+    },
+    {
+      "id": "codex-work",
+      "name": "Codex work",
+      "provider": "codex",
+      "soft_pct_5h": 70,
+      "soft_pct_weekly": 80,
+      "hard_pct_5h": 85,
+      "hard_pct_weekly": 92,
+      "concurrency": 2,
+      "on_limit_policy": "auto",
+      "members": [
+        {
+          "account_id": "codex-a"
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "provider": "claude",
+      "accounts": [
+        "claude-a"
+      ],
+      "account_labels": {
+        "claude-a": "claude-a"
+      },
+      "state": "ok",
+      "window_5h_pct": 88,
+      "weekly_pct": 88,
+      "window_5h_reset_at": "2026-10-26T14:20:00Z",
+      "weekly_reset_at": "2026-10-29T14:20:00Z",
+      "age_s": 15
+    },
+    {
+      "id": 2,
+      "provider": "claude",
+      "accounts": [
+        "claude-b"
+      ],
+      "account_labels": {
+        "claude-b": "claude-b"
+      },
+      "state": "ok",
+      "window_5h_pct": 12,
+      "weekly_pct": 12,
+      "window_5h_reset_at": "2026-10-26T14:20:00Z",
+      "weekly_reset_at": "2026-10-29T14:20:00Z",
+      "age_s": 15
+    },
+    {
+      "id": 3,
+      "provider": "codex",
+      "accounts": [
+        "codex-a"
+      ],
+      "account_labels": {
+        "codex-a": "codex-a"
+      },
+      "state": "ok",
+      "window_5h_pct": 30,
+      "weekly_pct": 30,
+      "window_5h_reset_at": "2026-10-26T14:20:00Z",
+      "weekly_reset_at": "2026-10-29T14:20:00Z",
+      "age_s": 15
+    }
+  ]
+}

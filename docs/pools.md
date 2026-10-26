@@ -12,7 +12,7 @@ A handed-over slot cannot be switched to, overwritten, forgotten, merged, restor
 
 To roll back: **turn pools on, release each account, then turn pools off**. The two-step **Release** button calls `POST /api/pools/accounts/{id}/release`. Release and launch reserve the account under the same lock. Release is refused with 409 while that account has an open attempt; the response names its tmux sessions. If tmux liveness cannot be checked, Release and legacy switching return JSON 503 and leave the attempts open. It moves the profile's current credential files back to the original slot, removes the marker and account row, and leaves the profile directory without credentials.
 
-`GET /api/pools/accounts` lists id, provider, label, state and a credential fingerprint. Settings shows the same accounts above “Legacy: subscription accounts”. Supply an `account_id` from that list to a task, session or scheduled job request to bind its process. An unbound launch is unchanged. There is no account picker in the launcher yet. When the switch is off, these routes return 404 and account bindings are refused with 400.
+`GET /api/pools/accounts` lists id, provider, label, state and a credential fingerprint. Settings shows the same accounts above “Legacy: subscription accounts”. Supply an `account_id` from that list to a task, session or scheduled job request to bind its process. An unbound launch is unchanged. The launcher Account control also offers pinned accounts and pools (see Assignment below). When the switch is off, these routes return 404 and account bindings are refused with 400.
 
 Each profile has private settings and credentials, with mode 0700 on its directories. Claude profiles reuse ccboard's hook template. Their `projects` links point through `_shared/claude/projects` to the configured global Claude projects folder. Codex profiles install the same ccboard hooks as the global home and pin the file credential store; their `sessions` links point through `_shared/codex/sessions` to the configured Codex sessions folder. Codex shares `CODEX_SQLITE_HOME` and resumes only by thread UUID. Transcript readers keep using the same directories. The global transcript root must already exist; a launch refuses a missing root instead of creating global directories. Validation alone creates nothing.
 
@@ -29,7 +29,7 @@ The agent command scrubs inherited authentication and profile variables after th
 
 On macOS, Claude file-login profiles are refused with “the Mac Keychain adapter comes in P5”. A separately provisioned setup-token profile may keep its opaque token in `.setup-token` as a regular file owned by the user with mode 0600 and nonempty UTF-8 content; the process wrapper reads it into its own environment without putting it in a command or API response. All Claude profile paths are canonical absolute paths. Codex file profiles work independently of the Mac Keychain.
 
-This phase covers local processes only. Profile launches in a devcontainer are refused because the host's private paths are not mounted there. Ranking, rotation, drain, grants, vaults, account selection UI and multi-node bindings come later. The owner's two-login spike is still needed to verify provider behavior with real accounts.
+This phase covers local processes only. Profile launches in a devcontainer are refused because the host's private paths are not mounted there. Assignment and its UI are covered below; rotation, drain, grants, vaults and multi-node bindings come later. The owner's two-login spike is still needed to verify provider behavior with real accounts.
 
 
 ## Usage (P2)
@@ -60,7 +60,7 @@ With pools off, no collector starts, no usage rows are written and no active req
 
 ## Assignment (P3)
 
-The v0.5.116 backend adds local account assignment. Launcher controls arrive in the same version's second half. All of this remains behind `CCBOARD_POOLS`; `state.pools` stays null when off, and gains only a compact `pools: [{id, provider, name}]` list when on.
+The v0.5.116 release adds local account assignment, launcher controls and pool management in Settings. All of this remains behind `CCBOARD_POOLS`; `state.pools` stays null when off, and gains only a compact `pools: [{id, provider, name}]` list when on.
 
 Task, session and scheduled-job requests accept `account_mode`: `legacy` (the default, today's behavior), `pinned` with `pinned_account_id`, or `pool` with `pool_id`. P1's explicit `account_id` keeps its original behavior, without selection thresholds or concurrency caps; dry-run reports that binding as pinned. Pool launches pick an account once and reserve its runtime attempt before starting a process. The assignment explanation is stored on that attempt. A failed preparation or launch closes the reservation. Each reservation records its creation time (`started_at`) and owner (`reservation_owner`: task, session or run). Startup reconciliation and launch selection close reservations older than two minutes with no session binding, run or task reference as `reservation_abandoned`. Dry-run ignores the same abandoned reservations without writing. Selection and reservation share P1's account serialization with Release; the assignment lock covers only database selection and insertion, never process, tmux, or usage-probe I/O.
 
@@ -83,3 +83,21 @@ Person-only CRUD (CSRF on writes): `GET /api/pools`, `POST /api/pools`, `PATCH /
 `POST /api/launch/dry-run` accepts the task or session create body, with `project` and `repo` in the body (session bodies include `launcher`). It returns `will_start_as` (provider, account id and label, node and reason), `refused_reason`, and sanitized `candidates` (account id, label, both percentages, resets, state, eligibility and exclusion reason). It performs no write, executable/version probe, credential read, profile preparation or tmux call. It checks assignment and local request constraints, not live CLI availability. A launch rechecks and reserves against current state, so intervening launches may change the answer. With pools off it always returns 200 and `{will_start_as: null, refused_reason: null, candidates: []}`. Pool selection and dry-run never enable bypass, change repository access, model, sandbox, permission mode or billing class.
 
 Scheduled jobs and batches also persist P1’s `account_id`: the pinned account ID, or `!pool-requires-p3` for a pool request. The v0.5.114/115 scheduler rejects that invalid ID before launching, so rollback cannot run a pool job on the global login. Only the new scheduler decodes this marker. Permission bypass checks share the adapter’s mode normalization between dry-run and launch; Codex’s supported `--dangerously-bypass-hook-trust` is allowed.
+
+### Launch with an account
+
+Open a session or task launcher. With pools enabled and at least one account or pool for the agent, **Account** offers **Default login**, **Pinned: account**, and **Pool: pool**. Default login is the starting choice and preserves the existing global login behavior. Changing Agent filters both lists; an incompatible choice resets to Default login with a note. Choices apply to this launch and are not saved as a new default.
+
+Pinned mode starts with **On limit: wait**; pool mode starts with **auto**. You can select auto, ask or wait. P3 stores this policy; limit handling begins in P4. Scheduled launches also carry the chosen assignment.
+
+After an edit, the launcher waits about 250 ms, then checks the current request. **Will start as** names the selected account and shows its usage and reset. Expand **Account candidates** for each candidate's five-hour and weekly percentages, reset times, and eligibility or exclusion reason. Unknown readings stay unknown. A refusal disables Start and shows the reason beside it. A failed check says **Could not check the account**; only Default login can proceed without a successful check. The server checks assignment again when launching.
+
+The node picker remains available. Choosing another node while an account or pool is selected shows the dry-run refusal that account grants come in P5. Choose This node to use the account locally, or Default login to use the target's existing login.
+
+### Manage pools in Settings
+
+With pools enabled, open **Settings > Accounts > Pools**, next to **Pool accounts**. Enter a pool name and provider, then choose **Create pool**. Expand **Edit** on a pool to add or remove members; only accounts of its provider are offered. The row lists members, soft and hard thresholds, and concurrency. Set the five-hour and weekly soft percentages and choose **Save thresholds**. Soft thresholds cannot exceed the pool's hard thresholds; server validation errors appear in the section.
+
+**Delete** uses the existing two-step confirmation. A pool in use stays in place and the server's 409 reason appears below the pool rows. Releasing an isolated account remains a separate action under Pool accounts.
+
+For a local visual demo, use `?demo=1&pools=1` and open the launcher or Settings > Accounts. The lazy pool fixture includes Claude and Codex pools, a low-usage candidate and an account above soft thresholds. Demo CRUD stays in the tab. Ordinary `?demo=1` retains the pools-off state shape.

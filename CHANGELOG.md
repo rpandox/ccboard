@@ -5,8 +5,13 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 ## v0.5.116 - 2026-10-26
 
 ### Added
-- Pool assignment backend (P3a, #222): local pool and pinned launches, soft-threshold eligibility, deterministic headroom ranking, conservative unknown usage, and atomic per-account slot reservations with explanations on runtime attempts. Provider, requested model, repository access, permissions, sandbox and subscription billing constraints remain fixed.
-- Person-only pool and member CRUD, side-effect-free `POST /api/launch/dry-run`, and a compact pool list inside `state.pools`. Tasks, sessions and scheduled jobs accept the new assignment fields. Launcher controls come in this version's second half; this entry will be completed then. Rotation and continuation wait for P4; other nodes wait for P5 account grants.
+- Pool assignment (P3, #222): local pool and pinned launches, soft-threshold eligibility, deterministic headroom ranking, conservative unknown usage, and atomic per-account slot reservations with explanations on runtime attempts. Provider, requested model, repository access, permissions, sandbox and subscription billing constraints remain fixed.
+- Person-only pool and member CRUD, side-effect-free `POST /api/launch/dry-run`, and a compact pool list inside `state.pools`. Tasks, sessions and scheduled jobs accept the new assignment fields. Rotation and continuation wait for P4; other nodes wait for P5 account grants.
+- Launcher Account choices for Default login, pinned accounts and provider-matched pools, with debounced assignment previews, candidate details and visible refusal reasons. On-limit policies are stored for P4; remote targets show the P5 refusal.
+- Settings > Accounts now includes Pools: create pools, manage provider-matched members, edit soft thresholds and confirm deletion, with in-use errors shown inline. Both interfaces stay in lazy bundles and leave pools-off behavior unchanged.
+
+### Fixed
+- Remote pool dry-runs return the P5 account-grant refusal before checking the peer repository on the local filesystem.
 
 Upgrade: nothing to do. Nothing new runs unless `CCBOARD_POOLS=1`; additive migrations create `pool` and `pool_member`, add assignment columns to tasks and runtime attempts, and add subscription billing / optional model metadata to pool accounts.
 

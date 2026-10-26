@@ -1664,6 +1664,11 @@ def api_launch_dry_run(request: Request, body: dict):
         provider = _launch_kind(parsed)[0] if is_session else _task_agent(parsed.agent)
         if provider not in ('claude', 'codex'):
             raise projects.BadRequest('pool accounts require claude or codex')
+        # A remote form names the peer's repository, which need not exist here.
+        # Refuse local-profile routing before inspecting that path (P5 grants).
+        if parsed.account_mode != 'legacy' and body.get('node') not in (None, '', 'local'):
+            result = pools.choose(db, **pools.selection(binding, provider))
+            return {**empty, 'refused_reason': result['reason'], 'candidates': result['candidates']}
         project, repo = body.get('project'), body.get('repo')
         if not isinstance(project, str) or not isinstance(repo, str) or not project or not repo:
             raise projects.BadRequest('project and repo are required')

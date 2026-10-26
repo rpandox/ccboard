@@ -235,7 +235,7 @@ function lxnForm(opt, handle, hooks) {
   const name = () => Nodes.nameOf(handle);
   const rec = () => Nodes.get(handle);
   let repos = lxnRepos(handle);
-  const R = { project: '', repo: '', agent: autoAgent || 'claude', name: String(carry.name || ''), title: String(carry.title || ''), prompt: String(carry.prompt || ''), issue: '', when: 'now', autoClose: true,
+  const R = { project: '', repo: '', agent: autoAgent || (carry.agent === 'codex' ? 'codex' : 'claude'), name: String(carry.name || ''), title: String(carry.title || ''), prompt: String(carry.prompt || ''), issue: '', when: 'now', autoClose: true,
     where: 'lane', sess: '', claude: null, codex: null, notes: [], dirty: false };
 
   /* ---- where: the project and repo (a dispatch is for the repo its task lives in) ---- */
@@ -365,11 +365,15 @@ function lxnForm(opt, handle, hooks) {
   const goIcon = el('span', { class: 'tf-go-ic' });
   const go = el('button', { class: 'primary', type: 'submit' }, goIcon, goText);
   const cancel = el('button', { type: 'button', text: 'Cancel', onclick: () => { if (hooks && typeof hooks.cancel === 'function') hooks.cancel(); else { ui.openForm = null; closeSheet(); } } });
-  const foot = el('div', { class: 'submit lx-foot' }, go, cancel);
+  const poolKit = launcherPoolsKit({ current: hooks && hooks.isCurrent, selection: hooks && hooks.poolSelection, agent: () => R.agent,
+    active: () => !dispatch || R.where === 'lane', changed: () => update(),
+    body: () => ({ ...(session ? { ...lxnSessionBody(R), launcher: 'claude' } : lxnTaskBody(R)), node: handle }) });
+  const foot = el('div', { class: 'submit lx-foot' }, poolKit ? poolKit.refusal : null, go, cancel);
 
   /* ---- what is offered, and why Start is off ---- */
   const need = () => (session ? ['sessions'] : dispatch && R.where === 'session' ? ['tasks', 'sessions'] : ['tasks']);
   const gate = () => {
+    if (poolKit && poolKit.blocked()) return poolKit.blocked();
     const r = rec();
     for (const sc of need()) { const c = Nodes.can(r, sc); if (!c.ok) return c.why; }
     if (dispatch && R.where === 'session') return ready().length ? '' : `No session on ${name()} is idle in ${R.project}/${R.repo}.`;
@@ -428,6 +432,7 @@ function lxnForm(opt, handle, hooks) {
   };
   let busy = false;
   update = () => {
+    if (poolKit) poolKit.sync();
     const w = gate();
     cmdText = previewText();
     cmdNode.textContent = '';
@@ -517,6 +522,7 @@ function lxnForm(opt, handle, hooks) {
     if (busy) return;
     wipe();
     syncPrompt();
+    if (poolKit) poolKit.sync();
     const w = gate();
     if (w) { formStatus(status, w, true); return; }
     if (session && R.name && (!LXN_NAME.test(R.name) || R.name.indexOf('--') >= 0)) { fieldError(nameField, "use letters, digits, '-' or '_' (no '--')", true); return; }
@@ -530,8 +536,8 @@ function lxnForm(opt, handle, hooks) {
 
   composerBind(promptEl, { maxRows: 10, onSend: () => submit() });
   const form = el('form', { class: 'form lx-form lx-remote' + (session ? '' : ' task-form'), 'data-node': handle, onsubmit: (e) => { e.preventDefault(); submit(); } },
-    placeField, dispatch ? [whereField, sessField] : null, trustWarning, agentField, modelField, modelNote, effortField, reasonField, permField, cxField, noBypass, nameField, noPrompt,
-    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, why, status, foot);
+    placeField, dispatch ? [whereField, sessField] : null, trustWarning, agentField, poolKit ? poolKit.node : null, modelField, modelNote, effortField, reasonField, permField, cxField, noBypass, nameField, noPrompt,
+    mode === 'task' ? [whenField, titleField, promptField, issueField] : null, autoField, cmdBox, poolKit ? poolKit.result : null, why, status, foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });
   form.focusFirst = () => focusFine(mode === 'task' ? promptEl : (session ? nameIn : null));
   paint();
@@ -539,7 +545,7 @@ function lxnForm(opt, handle, hooks) {
   /* the node's schema arrives after the sheet opened (cached 10 minutes): the lists follow it, and a saved choice it no longer offers is replaced */
   const refresh = () => { repos = lxnRepos(handle); if (!R.project || !repos.some((x) => x.project === R.project && x.repo === R.repo)) { if (!rt && repos[0]) { R.project = repos[0].project; R.repo = repos[0].repo; } } if (!R.dirty) loadPrefs(); paint(); };
   lxnSchemaLoad(handle).then(() => { if (form.isConnected !== false) refresh(); });
-  return { form, R, submit, go, status, gate, refresh, preview: () => cmdText, body: () => (session ? lxnSessionBody(R) : dispatch ? lxnDispatchBody(R, rt) : lxnTaskBody(R)), busy: () => busy, paint };
+  return { form, R, submit, go, status, gate, refresh, poolKit, preview: () => cmdText, body: () => (session ? lxnSessionBody(R) : dispatch ? lxnDispatchBody(R, rt) : lxnTaskBody(R)), busy: () => busy, paint };
 }
 
 /* ---------- Auto: the board picks the node (issue #150) ---------- */
@@ -680,6 +686,8 @@ function lxnKit(opt, ctl, mode) {
     if (h === cur) { sync(); return; }
     if ((h === '' && !ctl) || (remoteTask && h !== remoteTask.node)) { sync(); return; }
     const from = cur;
+    if (kit.ctl && kit.ctl.poolKit) kit.ctl.poolKit.pause(true);
+    if (ctl && ctl.poolKit) ctl.poolKit.pause(!!h);
     cur = h;
     if (ctl) ctl.form.classList.toggle('hidden', !!h);
     host.textContent = '';
@@ -687,14 +695,17 @@ function lxnKit(opt, ctl, mode) {
     if (h) {
       let r = forms.get(h);
       if (!r) {
-        const carry = ctl && from === '' ? { title: ctl.T ? ctl.T.title : '', prompt: ctl.V.common.prompt, name: ctl.V.common.name } : {};
-        const hk = { carry, close: () => { ui.openForm = null; closeSheet(); }, cancel: typeof opt.onCancel === 'function' ? opt.onCancel : null };
+        const carry = ctl && from === '' ? { agent: ctl.V.agent, title: ctl.T ? ctl.T.title : '', prompt: ctl.V.common.prompt, name: ctl.V.common.name } : {};
+        const rp = ctl ? lxResolve(opt.project, opt.repo) : null;
+        const hk = { carry, isCurrent: () => cur === h, poolContext: rp ? { project: rp.p.name, repo: rp.r.name } : null, poolSelection: ctl && ctl.poolKit ? ctl.poolKit.selection : null, close: () => { ui.openForm = null; closeSheet(); }, cancel: typeof opt.onCancel === 'function' ? opt.onCancel : null };
         r = bareOf(h) ? lxbForm(bareOf(h), hk) : h === LXN_AUTO ? lxnAuto({ ...opt, mode }, ctl, hk) : lxnForm({ ...opt, mode }, h, hk);
         forms.set(h, r);
       } else r.refresh();
+      if (r.poolKit) r.poolKit.pause(false);
       host.append(r.form);
       kit.ctl = r;
     }
+    if (!h && ctl && ctl.poolKit) ctl.paint();
     sync();
     if (typeof kit.setTitle === 'function' && cur !== null && from !== null) kit.setTitle(h ? titleOf(h) : kit.localTitle);
   };
@@ -710,6 +721,7 @@ function lxnKit(opt, ctl, mode) {
     control = sel;
   }
   kit.pick = el('div', { class: 'form lx-form lx-nodepick' }, field('Node', control));
+  kit.dispose = () => { cur = null; for (const f of forms.values()) { if (f.poolKit) f.poolKit.dispose(); if (f.auto && f.auto.inner && f.auto.inner.poolKit) f.auto.inner.poolKit.dispose(); } };
   kit.current = () => cur;
   kit.choose = choose;
   kit.title = () => (cur ? titleOf(cur) : kit.localTitle);
@@ -724,6 +736,7 @@ function lxbForm(device, hooks) {
   const repo = selectEl((device.check.repos || []).map((r) => [r, r]));
   const available = (a) => a === 'shell' || device.check.rows.some((r) => r.key === a && r.ok);
   const agent = selectEl([['claude', 'Claude'], ['codex', 'Codex'], ['shell', 'Shell']].filter(([a]) => available(a)));
+  if (hooks.carry && hooks.carry.agent && available(hooks.carry.agent)) agent.value = hooks.carry.agent;
   const mode = el('select', { 'aria-label': 'Permissions' });
   const model = el('input', { type: 'text', placeholder: 'Default model', maxlength: '80' });
   const effort = selectEl([['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']]);
@@ -731,17 +744,21 @@ function lxbForm(device, hooks) {
   const status = el('p', { role: 'status', 'aria-live': 'polite', class: 'dim' });
   const go = el('button', { type: 'submit', class: 'primary', text: 'Start on ' + device.name });
   let sent = false;
+  const poolKit = launcherPoolsKit({ current: hooks.isCurrent, selection: hooks.poolSelection, agent: () => agent.value, changed: () => updatePool(),
+    body: () => ({ ...(hooks.poolContext || {}), agent: agent.value, launcher: 'claude', model: model.value.trim(), node: 'bare:' + device.ts_id }) });
+  const updatePool = () => { if (poolKit) poolKit.sync(); go.disabled = sent || !repo.value || !!(poolKit && poolKit.blocked()); };
   const paint = () => {
     mode.textContent = '';
     const modes = agent.value === 'codex' ? [['workspace-write', 'Ask · workspace write'], ['read-only', 'Read only']] : [['default', 'Default'], ['manual', 'Ask'], ['acceptEdits', 'Accept edits'], ['plan', 'Plan']];
     for (const [value, text] of modes) mode.append(el('option', { value, text }));
     mode.value = modes[0][0];
     agentFields.classList.toggle('hidden', agent.value === 'shell');
-    go.disabled = sent || !repo.value;
+    updatePool();
   };
   agent.addEventListener('change', paint);
   const body = () => ({ repo: repo.value, agent: agent.value, ...(agent.value === 'shell' ? {} : { mode: mode.value, model: model.value.trim(), effort: effort.value }) });
   const submit = async () => {
+    if (poolKit) { poolKit.sync(); if (poolKit.blocked()) return; }
     if (sent || !repo.value) return;
     sent = true; go.disabled = true; status.textContent = 'Starting on ' + device.name + '…';
     try {
@@ -758,8 +775,9 @@ function lxbForm(device, hooks) {
     }
   };
   const form = el('form', { class: 'form lx-form', onsubmit: (e) => { e.preventDefault(); submit(); } },
-    field('Repository', repo), field('Agent', agent), agentFields,
-    el('p', { class: 'dim', text: 'Read the device to update session status. Terminal attachment and replies are not available yet.' }), status, go);
+    field('Repository', repo), field('Agent', agent), poolKit ? poolKit.node : null, agentFields,
+    el('p', { class: 'dim', text: 'Read the device to update session status. Terminal attachment and replies are not available yet.' }), status, poolKit ? [poolKit.result, poolKit.refusal] : null, go);
+  for (const control of [repo, model, effort, mode]) { control.addEventListener('input', updatePool); control.addEventListener('change', updatePool); }
   paint();
-  return { form, submit, go, status, body, refresh: () => {}, gate: () => !sent && !!repo.value };
+  return { form, poolKit, submit, go, status, body, refresh: () => {}, gate: () => !sent && !!repo.value };
 }

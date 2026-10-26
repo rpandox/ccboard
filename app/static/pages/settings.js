@@ -3356,7 +3356,9 @@ function settingsPoolsLoad(force = false) {
   settingsPools.at = Date.now();
   settingsPools.busy = true;
   const wasEnabled = Array.isArray(settingsPools.rows);
-  api('GET', '/api/pools/accounts').then((rows) => {
+  const demo = /[?&]pools=1(?:&|$)/.test(location.search) && typeof demoOn === 'function' && demoOn();
+  const request = demo ? Lazy.load('launcher').then(() => launcherPoolsDemo('GET', '/api/pools/accounts')) : api('GET', '/api/pools/accounts');
+  request.then((rows) => {
     const enabled = Array.isArray(rows);
     const changed = enabled !== Array.isArray(settingsPools.rows);
     settingsPools.rows = enabled ? rows : null;
@@ -3409,6 +3411,81 @@ function settingsPoolRows(list) {
   if (settingsPools.err) list.append(el('div', { class: 'bad set-note', role: 'alert', text: settingsPools.err }));
 }
 
+/* Pool definitions, beside the isolated accounts. Keep the editor mounted across
+   Settings polls so a partially typed name or threshold never gets replaced. */
+function settingsPoolManager() {
+  const host = el('div', { class: 'set-pool-manager' });
+  const rows = el('div');
+  const error = el('p', { class: 'bad set-note set-pool-error', role: 'alert' });
+  const name = el('input', { type: 'text', required: true, maxlength: 80, 'aria-label': 'Pool name', placeholder: 'e.g. Claude work' });
+  const provider = selectEl([['claude', 'Claude'], ['codex', 'Codex']], 'claude');
+  provider.setAttribute('aria-label', 'Pool provider');
+  const create = el('button', { type: 'submit', text: 'Create pool' });
+  let data = [], busy = false, memberPickers = [];
+  const request = async (method, path, body) => {
+    if (typeof demoOn === 'function' && demoOn()) { await Lazy.load('launcher'); return launcherPoolsDemo(method, path, body); }
+    return api(method, path, body);
+  };
+  const load = async () => {
+    try { const r = await request('GET', '/api/pools'); if (!Array.isArray(r)) throw new Error('Could not load pools'); data = r; render(); }
+    catch (e) { error.textContent = errorText(e); }
+  };
+  const act = async (method, path, body) => {
+    if (busy) return false;
+    busy = true; error.textContent = ''; create.disabled = true;
+    try { await request(method, path, body); await load(); return true; }
+    catch (e) { error.textContent = errorText(e); return false; }
+    finally { busy = false; create.disabled = false; }
+  };
+  const render = () => {
+    rows.textContent = ''; memberPickers = [];
+    for (const pool of data) {
+      const path = '/api/pools/' + encodeURIComponent(pool.id);
+      const members = pool.members || [];
+      const labels = members.map((m) => (settingsPools.rows || []).find((a) => a.id === m.account_id)?.label || m.account_id);
+      const remove = confirmButton('pool-delete:' + pool.id, 'Delete', () => act('DELETE', path), false, render);
+      const head = settingsKv(pool.name, el('span', { class: 'badge hue-slate', text: pool.provider }),
+        el('span', { class: 'dim', text: `${labels.length ? labels.join(', ') : 'No members'} · Soft ${pool.soft_pct_5h}% / ${pool.soft_pct_weekly}% · Hard ${pool.hard_pct_5h}% / ${pool.hard_pct_weekly}% · ${pool.concurrency} slots/account` }), remove);
+      const memberRows = el('div', { class: 'set-pool-members' });
+      members.forEach((m, i) => memberRows.append(settingsKv(labels[i], null, null,
+        el('button', { type: 'button', text: 'Remove', 'aria-label': 'Remove ' + labels[i] + ' from ' + pool.name, onclick: () => act('DELETE', path + '/members/' + encodeURIComponent(m.account_id)) }))));
+      const offered = (settingsPools.rows || []).filter((a) => a.provider === pool.provider && !members.some((m) => m.account_id === a.id));
+      const account = selectEl([['', 'Choose account'], ...offered.map((a) => [a.id, a.label])], '');
+      account.setAttribute('aria-label', 'Add member to ' + pool.name);
+      const add = el('button', { type: 'button', text: 'Add member', onclick: () => { if (account.value) act('PUT', path + '/members/' + encodeURIComponent(account.value), {}); } });
+      add.disabled = !offered.length;
+      memberPickers.push(() => {
+        const selected = account.value;
+        const offered = (settingsPools.rows || []).filter((a) => a.provider === pool.provider && !members.some((m) => m.account_id === a.id));
+        const key = JSON.stringify(offered.map((a) => [a.id, a.label]));
+        if (account._members === key) return;
+        account._members = key; account.textContent = '';
+        account.append(el('option', { value: '', text: 'Choose account' }));
+        for (const a of offered) account.append(el('option', { value: a.id, text: a.label }));
+        account.value = offered.some((a) => a.id === selected) ? selected : '';
+        add.disabled = !offered.length;
+      });
+      const five = el('input', { type: 'number', min: 0, max: pool.hard_pct_5h, step: 'any', required: true, value: String(pool.soft_pct_5h), 'aria-label': pool.name + ' soft 5 h percent' });
+      const weekly = el('input', { type: 'number', min: 0, max: pool.hard_pct_weekly, step: 'any', required: true, value: String(pool.soft_pct_weekly), 'aria-label': pool.name + ' soft weekly percent' });
+      const thresholds = el('form', { class: 'set-pool-thresholds', onsubmit: (e) => {
+        e.preventDefault(); act('PATCH', path, { soft_pct_5h: Number(five.value), soft_pct_weekly: Number(weekly.value) });
+      } }, field('Soft 5 h %', five), field('Soft weekly %', weekly), el('button', { type: 'submit', text: 'Save thresholds' }));
+      rows.append(el('section', { class: 'set-pool-definition', 'aria-label': pool.name }, head,
+        el('details', {}, el('summary', { text: 'Edit ' + pool.name }), memberRows, el('div', { class: 'set-acts' }, account, add), thresholds)));
+    }
+    if (!data.length) rows.append(el('p', { class: 'dim set-note', text: 'No pools yet. Create one, then add accounts of its provider.' }));
+  };
+  const form = el('form', { class: 'set-pool-create', onsubmit: async (e) => {
+    e.preventDefault(); if (!name.value.trim()) return;
+    const id = 'pool-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    if (await act('POST', '/api/pools', { id, name: name.value.trim(), provider: provider.value })) name.value = '';
+  } }, field('Pool name', name), field('Provider', provider), create);
+  host.append(rows, error, form);
+  host.refreshAccounts = () => memberPickers.forEach((refresh) => refresh());
+  load();
+  return host;
+}
+
 function settingsAcctSkeleton(p) {
   p.textContent = '';
   const err = el('div', { class: 'set-err bad hidden', role: 'alert' });
@@ -3436,6 +3513,7 @@ function settingsAcctSkeleton(p) {
   const cxSec = el('div', { class: 'cx-section hidden' }, settingsHead('Codex accounts'), cxErr, cxSplit, cxList, cxNote, cxWarn, settingsHead('Add a Codex account'), cx.root);
   const pools = Array.isArray(settingsPools.rows) ? el('div', { class: 'set-pool-list' }) : null;
   if (pools) p.append(settingsHead('Pool accounts'), el('div', { class: 'dim set-note', text: 'Each account runs in its own profile. Nothing switches machine-wide.' }), pools);
+  if (pools && state && state.pools) p.append(settingsHead('Pools'), settingsPoolManager());
   p.append(err, settingsHead(pools ? 'Legacy: subscription accounts' : 'Subscription accounts'), ...(pools ? [el('div', { class: 'dim set-note', text: 'The old machine-wide switch. It is refused while a pool session runs.' })] : []), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root, cxSec);
   return { err, list, pools, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cxSplit, cxSplitText, cx };
 }
@@ -3489,6 +3567,8 @@ function settingsAcctFocus(s) {
 function settingsAccounts(p) {
   const s = p.ccAcct || (p.ccAcct = settingsAcctSkeleton(p));
   if (s.pools) settingsPoolRows(s.pools);
+  const manager = settingsPage.refs.panels.accounts.querySelector('.set-pool-manager');
+  if (manager) manager.refreshAccounts();
   settingsPoolsLoad();
   const list = agentsAccounts(state);
   s.list.textContent = '';
