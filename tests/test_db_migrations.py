@@ -681,7 +681,7 @@ def test_runtime_profiles_add_empty_tables_to_old_db(tmp_path):
     try:
         assert set(columns(db.conn, "pool_account")) == {"id", "provider", "label", "state", "cred_version", "created_at", "quota_group_id", "billing_class", "allowed_models"}
         assert set(columns(db.conn, "runtime_attempt")) == {"id", "task_id", "n", "account_id", "provider", "node_id", "provider_session_id",
-                                                            "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id", "account_mode", "pinned_account_id", "pool_id", "on_limit_policy", "assignment"}
+                                                            "profile_dir", "started_at", "ended_at", "end_reason", "resumed_from_attempt_id", "account_mode", "pinned_account_id", "pool_id", "on_limit_policy", "assignment", "reservation_owner"}
         for table in ("pool_account", "runtime_attempt"):
             assert db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         before = dump(db)
@@ -719,6 +719,7 @@ def test_pool_assignment_migration_preserves_legacy_and_is_idempotent(tmp_path):
         for field in ('pinned_account_id', 'pool_id', 'on_limit_policy'):
             assert columns(db.conn, table)[field] == ('TEXT', 0, None)
     assert columns(db.conn, 'runtime_attempt')['assignment'] == ('TEXT', 0, None)
+    assert columns(db.conn, 'runtime_attempt')['reservation_owner'] == ('TEXT', 0, None)
     # Old image INSERT shapes continue to work after upgrading or rolling back.
     tid = db.task_add(project='p', repo='r', slug='old', title='Old', prompt='Do it')
     db.conn.execute("INSERT INTO runtime_attempt(task_id,n,account_id,provider,profile_dir,started_at) VALUES (?,?,?,?,?,?)",

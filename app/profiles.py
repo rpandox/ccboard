@@ -12,6 +12,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .config import settings
@@ -405,11 +406,41 @@ def _attempt_names(active):
     return ", ".join(sorted({r["tmux_name"] or r["task_id"] or f"attempt {r['id']}" for r in active}))
 
 
+def abandoned_reservations(db):
+    """Database-only snapshot under db.lock; started_at is creation time.
+
+    An owner label alone is not proof of life: require a session binding, run or task row.
+    Old attempts without an owner column are covered as well after the two-minute grace.
+    """
+    return [r[0] for r in db.conn.execute("""
+        SELECT a.id FROM runtime_attempt a
+        WHERE a.ended_at IS NULL AND julianday(a.started_at) < julianday('now', '-2 minutes')
+        AND NOT EXISTS (SELECT 1 FROM kv k JOIN sessions s ON k.key='runtime_session:' || s.id
+                        WHERE json_extract(k.value, '$.attempt')=a.id)
+        AND NOT EXISTS (SELECT 1 FROM tasks t WHERE CAST(t.id AS TEXT)=a.task_id)
+        AND NOT EXISTS (SELECT 1 FROM runs r WHERE a.task_id='run:' || r.id)
+        AND NOT EXISTS (SELECT 1 FROM kv k JOIN runs r ON k.key='runtime_run:' || r.id
+                        WHERE json_extract(k.value, '$.attempt')=a.id)
+    """)]
+
+
+def reconcile_reservations(db):
+    """No profile/probe I/O: an abandoned reservation never reached a bound process."""
+    from .db import now
+    if not settings.pools:
+        return
+    with db.lock:
+        for aid in abandoned_reservations(db):
+            db.conn.execute("UPDATE runtime_attempt SET ended_at=?, end_reason='reservation_abandoned' WHERE id=? AND ended_at IS NULL",
+                            (now(), aid))
+
+
 def reconcile_attempts(db):
     """Close proven stale attempts. False means tmux liveness was unknown."""
     if not settings.pools:
         return True
     from . import tmux
+    reconcile_reservations(db)
     known = True
     for attempt in _open_attempts(db):
         stale = False
@@ -460,12 +491,18 @@ def _serialized(fn):
 
 
 def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, provider_session_id=None, resumed_from=None,
-                  account_mode='legacy', pinned_account_id=None, pool_id=None, on_limit_policy=None, selection=None):
+                  account_mode='legacy', pinned_account_id=None, pool_id=None, on_limit_policy=None, selection=None, reservation_owner=None):
     require_account(db, provider, account_id)
     path = str(profile_dir(provider, account_id))
+    if reservation_owner is None:
+        if task_id is not None:
+            reservation_owner = str(task_id) if str(task_id).startswith('run:') else f'task:{task_id}'
+        else:
+            reservation_owner = f'session:{session_row or uuid.uuid4().hex}'
     aid = _record_attempt(db, provider, account_id, path=path, task_id=task_id, session_row=session_row,
                           provider_session_id=provider_session_id, resumed_from=resumed_from, account_mode=account_mode,
-                          pinned_account_id=pinned_account_id, pool_id=pool_id, on_limit_policy=on_limit_policy, selection=selection)
+                          pinned_account_id=pinned_account_id, pool_id=pool_id, on_limit_policy=on_limit_policy, selection=selection,
+                          reservation_owner=reservation_owner)
     from . import pool_usage
     pool_usage.attempt_started(db, account_id)
     return aid
@@ -473,7 +510,7 @@ def start_attempt(db, provider, account_id, *, task_id=None, session_row=None, p
 
 @_serialized
 def _record_attempt(db, provider, account_id, *, path, task_id, session_row, provider_session_id, resumed_from,
-                    account_mode, pinned_account_id, pool_id, on_limit_policy, selection):
+                    account_mode, pinned_account_id, pool_id, on_limit_policy, selection, reservation_owner):
     # Only database work under the account/migration locks. The profile path was
     # validated outside; recheck the row here so Release cannot race the INSERT.
     require_enabled()
@@ -498,8 +535,8 @@ def _record_attempt(db, provider, account_id, *, path, task_id, session_row, pro
             elif resumed_from is not None:
                 previous = db.conn.execute("SELECT n FROM runtime_attempt WHERE id=?", (resumed_from,)).fetchone()
                 n = previous[0] + 1 if previous else 1
-            cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id,account_mode,pinned_account_id,pool_id,on_limit_policy,assignment) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                  (str(task_id) if task_id is not None else None, n, account_id, provider, path, started_at, provider_session_id, resumed_from, account_mode, pinned_account_id, pool_id, policy, json.dumps(assignment) if assignment else None))
+            cur = db.conn.execute("INSERT INTO runtime_attempt (task_id,n,account_id,provider,profile_dir,started_at,provider_session_id,resumed_from_attempt_id,account_mode,pinned_account_id,pool_id,on_limit_policy,assignment,reservation_owner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (str(task_id) if task_id is not None else None, n, account_id, provider, path, started_at, provider_session_id, resumed_from, account_mode, pinned_account_id, pool_id, policy, json.dumps(assignment) if assignment else None, reservation_owner))
             aid = cur.lastrowid
     if session_row is not None:
         db.kv_set(f"runtime_session:{session_row}", {"attempt": aid})

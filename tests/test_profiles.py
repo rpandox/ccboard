@@ -1225,7 +1225,9 @@ def test_pool_db_access_is_locked_and_reconciliation_batches_bindings(box, fake_
     statements.clear()
     profiles.reconcile_attempts(box)
     assert sum('JOIN kv' in s for s in statements) == 1
-    assert not any('SELECT' in s and 'FROM kv' in s for s in statements)
+    # One batched orphan snapshot plus one batched session/run liveness snapshot.
+    assert sum('FROM runtime_attempt a' in s for s in statements) == 2
+    assert not any(s.lstrip().startswith('SELECT value FROM kv') for s in statements)
     monkeypatch.setattr(box, 'kv_get', original_get)
     # Check release separately too, including its first read and active-attempt query.
     monkeypatch.setattr(box, 'conn', CheckedConnection())

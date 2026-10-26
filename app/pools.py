@@ -18,6 +18,8 @@ from .db import now
 FIELDS = ('account_mode', 'pinned_account_id', 'pool_id', 'on_limit_policy')
 BINDING_FIELDS = ('account_id', *FIELDS, 'node')
 POLICIES = ('auto', 'wait')
+ROLLBACK_POOL_ACCOUNT = '!pool-requires-p3'  # P1 rejects this before any process can run.
+P4_RESUME_REASON = 'resuming on another account comes in P4'
 P5_REASON = 'pool accounts run on this node until account grants (P5)'
 # Lock order: P1 account -> migration -> assignment -> database. Never acquire an
 # account lock from inside this lock. CRUD only takes assignment -> database.
@@ -73,6 +75,37 @@ def validate_target(db, provider, values):
         profiles.require_account(db, provider, b['pinned_account_id'])
         b.setdefault('on_limit_policy', POOL_POLICIES['pinned'])
     return b
+
+
+def job_binding(db, provider, values):
+    """Persist P1's account_id too, so an older scheduler cannot use the global login."""
+    b = validate_target(db, provider, values)
+    if b.get('account_mode') == 'pinned':
+        b['account_id'] = b['pinned_account_id']
+    elif b.get('account_mode') == 'pool':
+        b['account_id'] = ROLLBACK_POOL_ACCOUNT
+    return b
+
+
+def scheduled_binding(values):
+    """Only the scheduler decodes the rollback sentinel; API validation stays strict."""
+    b = dict(values)
+    if b.get('account_mode') == 'pool' and b.get('account_id') == ROLLBACK_POOL_ACCOUNT:
+        b.pop('account_id')
+    return b
+
+
+def resume_binding(values, account_id=None):
+    """A continuation is pinned to its recorded account, never a fresh pool choice."""
+    if values.get('account_mode', 'legacy') == 'legacy':
+        return dict(values)
+    aid = account_id or values.get('account_id') or values.get('pinned_account_id')
+    if not aid or aid == ROLLBACK_POOL_ACCOUNT:
+        raise projects.BadRequest(P4_RESUME_REASON + ': no recorded account')
+    return {**{k: v for k, v in values.items() if k not in BINDING_FIELDS},
+            'account_mode': 'pinned', 'pinned_account_id': aid, 'account_id': aid,
+            'on_limit_policy': values.get('on_limit_policy') or 'wait',
+            **({'node': values['node']} if values.get('node') is not None else {})}
 
 
 def safe_label(value, fallback):
@@ -241,8 +274,10 @@ def choose(db, provider, pool_id=None, pinned_account_id=None, requested_model=N
     with db.lock:
         members = {r['account_id']: dict(r) for r in db.conn.execute('SELECT * FROM pool_member WHERE pool_id=?', (pool_id,))} if pool_id else {pinned_account_id: {}}
         all_accounts = {r['id']: dict(r) for r in db.conn.execute('SELECT * FROM pool_account')}
-        activity = {r['account_id']: dict(r) for r in db.conn.execute('''SELECT account_id,MAX(started_at) AS last,
-            SUM(ended_at IS NULL) AS active FROM runtime_attempt GROUP BY account_id''')}
+        abandoned = profiles.abandoned_reservations(db)
+        activity = {r['account_id']: dict(r) for r in db.conn.execute(f'''SELECT account_id,MAX(started_at) AS last,
+            SUM(ended_at IS NULL AND id NOT IN ({','.join('?' for _ in abandoned) or '0'})) AS active
+            FROM runtime_attempt GROUP BY account_id''', abandoned)}
     usage = {r['account_id']: r for r in pool_usage.account_headroom(db)}
     candidates, ranks = [], {}
     for aid, member_row in sorted(members.items()):
@@ -318,6 +353,7 @@ def checked_assignment(db, account_id, selection):
 
 
 def reserve(db, provider, values, *, repo=None, requested_model=None, **attempt_fields):
+    profiles.reconcile_reservations(db)
     b = binding(values)
     request = selection(b, provider, repo, requested_model)
     while True:

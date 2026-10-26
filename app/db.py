@@ -153,6 +153,7 @@ MIGRATIONS = [
     "ALTER TABLE runtime_attempt ADD COLUMN pool_id TEXT",
     "ALTER TABLE runtime_attempt ADD COLUMN on_limit_policy TEXT",
     "ALTER TABLE runtime_attempt ADD COLUMN assignment TEXT",
+    "ALTER TABLE runtime_attempt ADD COLUMN reservation_owner TEXT",
 
     "CREATE TABLE IF NOT EXISTS quota_group (id INTEGER PRIMARY KEY, provider TEXT NOT NULL, subscription_key TEXT NOT NULL, plan TEXT, UNIQUE(provider, subscription_key))",
     "CREATE TABLE IF NOT EXISTS usage_sample (id INTEGER PRIMARY KEY, quota_group_id INTEGER NOT NULL, sampled_at TEXT NOT NULL, window_5h_pct REAL, window_5h_reset_at TEXT, weekly_pct REAL, weekly_reset_at TEXT, source TEXT NOT NULL, confidence REAL NOT NULL, node_id TEXT)",

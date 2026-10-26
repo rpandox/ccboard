@@ -40,8 +40,7 @@ from .agents import registry
 from . import profiles
 from .agents.base import BYPASS_ACK_REQUIRED, BYPASS_REFUSAL, BYPASS_REFUSAL_CODEX, LaunchReq
 from .agents import claude as claude_adapter
-from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
-from .agents.codex import FORBIDDEN_ARG_PARTS as CODEX_BYPASS_PARTS
+from .agents.claude import OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
 from . import platform as plat
@@ -1679,8 +1678,9 @@ def api_launch_dry_run(request: Request, body: dict):
         if len(parsed.args or '') > MAX_ARGS:
             raise projects.BadRequest('extra args too long')
         raw = (_codex_session_opts(parsed, extra) if provider == 'codex' else _claude_session_opts(parsed, extra)) if is_session else _agent_opts(provider, parsed)
-        if (body.get('devcontainer') or body.get('bypass') or body.get('mode') in ('bypass', 'bypassPermissions')
-                or _task_danger(body.get('opts') or {}) or _task_danger(raw) or _bypass_requested(extra)
+        if not is_session and provider == 'claude' and parsed.account_mode != 'legacy':
+            raw = {**raw, 'opts': parsed.opts}
+        if (body.get('devcontainer') or _launch_danger(provider, raw, extra, bypass=body.get('bypass'))
                 or _override_requested(extra) or agents.get(provider).forbidden_extra(extra, interactive=True, task=not is_session)):
             raise projects.BadRequest('profiles require a local launch without bypass')
         _resolve_add_dirs(parsed.add_dirs, rpath)
@@ -1692,8 +1692,13 @@ def api_launch_dry_run(request: Request, body: dict):
             if provider == 'codex' and kind != 'new' and (kind == 'continue' or not parsed.resume_id or not UUID_RE.fullmatch(parsed.resume_id)):
                 raise projects.BadRequest('profile resumes require a thread UUID')
         if parsed.account_mode == 'legacy':
-            # P1 account_id is the original explicit binding; preview it as pinned.
-            binding = {'account_mode': 'pinned', 'pinned_account_id': parsed.account_id}
+            # P1's explicit binding never used selection thresholds or account caps.
+            profiles.require_account(db, provider, parsed.account_id)
+            with db.lock:
+                row = db.conn.execute('SELECT label FROM pool_account WHERE id=?', (parsed.account_id,)).fetchone()
+            return {**empty, 'will_start_as': {'provider': provider, 'account_id': parsed.account_id,
+                    'account_label': pools.safe_label(row['label'], parsed.account_id), 'node': 'local',
+                    'reason': 'pinned to legacy explicit account (no pool selection)'}}
         result = pools.choose(db, **pools.selection(binding, provider, str(rpath), pools.requested_model(raw, extra)))
         if result.get('refused'):
             return {**empty, 'refused_reason': result['reason'], 'candidates': result['candidates']}
@@ -2209,9 +2214,8 @@ def _assignment_preview(body, provider, repo, opts=None, extra=None):
     if body.account_mode == 'legacy':
         return None
     raw = opts or _agent_opts(provider, body)
-    if (getattr(body, 'devcontainer', False) or getattr(body, 'bypass', False)
-            or getattr(body, 'mode', None) in ('bypass', 'bypassPermissions')
-            or _task_danger(getattr(body, 'opts', None) or {}) or _task_danger(raw) or _bypass_requested(extra or []) or _override_requested(extra or [])):
+    if (getattr(body, 'devcontainer', False)
+            or _launch_danger(provider, raw, extra or [], bypass=getattr(body, 'bypass', False)) or _override_requested(extra or [])):
         raise projects.BadRequest('profiles require a local launch without bypass')
     result = pools.choose(db, **pools.selection(binding, provider, repo, pools.requested_model(raw, extra)))
     if result.get('refused'):
@@ -2306,7 +2310,7 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             raise projects.NotFound(f"project {project} not found")
         inplace = True      # the whole project folder, not a git repo: the task runs in place (mode 'attached'), no worktree or branch
     title, prompt = _task_text(body.title, body.prompt)
-    if body.account_mode != 'legacy' and _task_danger(body.opts or {}):
+    if body.account_mode != 'legacy' and _launch_danger(_task_agent(body.agent), body.opts or {}):
         raise projects.BadRequest('profiles require a local launch without bypass')
     agent = _task_agent(getattr(body, "agent", None))
     profiles.require_account(db, agent, body.account_id)
@@ -2328,7 +2332,7 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
         # a bypass or an unsandboxed run asked for through the controls: none of them reaches a task
         raw = _agent_opts(agent, body)
         bad = (agents.get(agent).forbidden_extra(extra, interactive=True, task=True) or _override_requested(extra)
-               or _bypass_requested(extra) or _task_danger(raw))
+               or _launch_danger(agent, raw, extra))
         if bad:
             raise projects.BadRequest(f"{bad}: {refusal}")
         if not raw.get("permission_mode"):
@@ -2877,6 +2881,22 @@ def _stage_transcript(src: Path, wt: Path) -> None:
     shutil.copy2(src, dest)
 
 
+def _task_resume_binding(t):
+    spec = _task_spec(t)
+    if spec.get('account_mode', t.get('account_mode', 'legacy')) == 'legacy':
+        return {k: spec[k] for k in pools.BINDING_FIELDS if k in spec}
+    with db.lock:
+        attempt = db.conn.execute('SELECT account_id FROM runtime_attempt WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                  (str(t['id']),)).fetchone()
+    b = pools.resume_binding({**spec, 'account_mode': t.get('account_mode') or spec.get('account_mode')},
+                             attempt['account_id'] if attempt else spec.get('account_id'))
+    result = pools.choose(db, **pools.selection(b, t.get('agent') or 'claude',
+        requested_model=pools.requested_model({**spec, **(spec.get('opts') or {})}, shlex.split(spec.get('args') or ''))))
+    if result.get('refused'):
+        raise projects.BadRequest(pools.P4_RESUME_REASON + ': ' + result['reason'])
+    return {k: b[k] for k in pools.BINDING_FIELDS if k in b}
+
+
 def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, str | None]:
     """A new session of the task's agent that starts IN its existing worktree (no --worktree, no new branch): the same launch the card
     remembers, with a line that says the work so far is already there. Returns (tmux name, sessions.id, agent session id)."""
@@ -2946,6 +2966,10 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
             return _conflict_body("the session is still open; open it, or close it first", tmux=old)
         merged = {k: v for k, v in _task_spec(t).items() if k in TASK_SPEC_KEYS}
         merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None and (k != "account_mode" or k in body.model_fields_set)})
+        if t.get('account_mode') != 'legacy' and t.get('account_mode') is not None:
+            for key in pools.BINDING_FIELDS:
+                merged.pop(key, None)
+            merged.update(_task_resume_binding(t))
         try:
             launch = TaskIn(title=t["title"], prompt=body.prompt or t["prompt"], agent=_task_agent(t.get("agent")), **merged)
         except ValueError as e:
@@ -3468,7 +3492,7 @@ def _validate_job(body) -> dict:
     agent = _job_agent(body.agent)
     profiles.require_account(db, agent, body.account_id)
     pools.validate_target(db, agent, body.model_dump())
-    if body.account_mode != 'legacy' and _task_danger(body.opts or {}):
+    if body.account_mode != 'legacy' and _launch_danger(_task_agent(body.agent), body.opts or {}):
         raise projects.BadRequest('profiles require a local launch without bypass')
     if not body.name.strip() or not body.prompt.strip():
         raise projects.BadRequest("name and prompt are required")
@@ -3502,7 +3526,7 @@ def api_create_job(project: str, repo: str, body: JobIn):
     if not projects.is_repo(rpath):
         raise projects.NotFound("not a git repo")
     opts = _validate_job(body)
-    opts.update(pools.validate_target(db, _job_agent(body.agent), body.model_dump()))
+    opts.update(pools.job_binding(db, _job_agent(body.agent), body.model_dump()))
     agent = _job_agent(body.agent)
     _job_installed(agent)
     cron = body.cron.strip() if body.cron else None
@@ -3544,7 +3568,7 @@ def api_batch(body: BatchIn):
                                max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args, agent=agent,
                                model=body.model, reasoning_effort=body.reasoning_effort, opts=body.opts,
                                allowed_tools=body.allowed_tools, acknowledge_fable=body.acknowledge_fable, **{k: getattr(body, k) for k in pools.BINDING_FIELDS}))
-    opts.update(pools.validate_target(db, _job_agent(body.agent), body.model_dump()))
+    opts.update(pools.job_binding(db, _job_agent(body.agent), body.model_dump()))
     _job_installed(agent)
     targets = []
     for ident in body.repos:
@@ -3667,7 +3691,8 @@ def api_run_resume(rid: int):
     if not t or not tasks.has_worktree(t) or not Path(t["worktree"]).is_dir():
         raise projects.NotFound("worktree is gone")
     agent = t.get("agent") or "claude"
-    bound = _task_spec(t).get("account_id")
+    resume_binding = _task_resume_binding(t)
+    bound = resume_binding.get("account_id")
     profiles.require_account(db, agent, bound)
     name = t["tmux_name"]
     if not tmux.has_session(name):
@@ -3679,7 +3704,7 @@ def api_run_resume(rid: int):
             cmd = ag.resume_argv(r["session_id"]) if r.get("session_id") else ag.continue_argv(t["worktree"])
         _start_session(name, t["project"], t["repo"], session, "task", t["worktree"], cmd_line=shlex.join(cmd),
                        claude_session_id=r.get("session_id"), add_dirs=[], agent=agent, task_id=t["id"],
-                       **({"opts": {"account_id": bound}} if bound is not None else {}))
+                       **({"opts": resume_binding} if resume_binding else {}))
     _invalidate_scan()
     return {"tmux": name, "attach_url": f"/term/{name}"}
 
@@ -3688,7 +3713,7 @@ def api_run_resume(rid: int):
 
 # Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in
 # extra args, use the controls instead. The bypass flags themselves are an explicit choice on interactive sessions in the repo's devcontainer only (#104).
-# (OVERRIDE_PARTS and BYPASS_PARTS live in app.agents.claude, where launch_plan enforces the same rules.)
+# The adapters also enforce their own extra-argument rules.
 
 def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
     for a in extra:
@@ -3702,8 +3727,39 @@ def _override_requested(extra: list[str]) -> str | None:
     return _arg_matching(extra, OVERRIDE_PARTS)
 
 
+# Exact permission/sandbox bypass spellings. Hook trust is a separate supported setting.
+_PERMISSION_BYPASS = frozenset({
+    'bypasspermissions', 'danger-full-access', '--dangerously-skip-permissions',
+    '--allow-dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox', '--yolo',
+})
+
+
 def _bypass_requested(extra: list[str]) -> str | None:
-    return _arg_matching(extra, BYPASS_PARTS)
+    for word in extra:
+        if word == '--':
+            break
+        parts = word.lower().split('=', 1)
+        if any(part in _PERMISSION_BYPASS for part in parts):
+            return word
+    return None
+
+
+def _launch_danger(agent, raw, extra=(), *, bypass=False):
+    """One danger decision for preview and launch, using the adapter's mode precedence."""
+    if agent == 'shell':
+        return None
+    raw = dict(raw or {})
+    own = raw.pop('opts', None)
+    normalize = agents.get(agent)._with_mode
+    own_danger = None
+    if isinstance(own, dict):
+        if agent == 'claude':
+            # Claude's adapter reads flat controls. Nested options cannot override
+            # their safety checks; explicit nested danger is still refused by P3.
+            own_danger = _task_danger(normalize(own))
+        else:
+            raw.update(own)
+    return bypass or own_danger or _task_danger(normalize(raw)) or _bypass_requested(extra)
 
 
 def _bypass_asked(agent: str, body, extra: list[str]) -> bool:
@@ -3711,12 +3767,8 @@ def _bypass_asked(agent: str, body, extra: list[str]) -> bool:
     Codex's danger-full-access sandbox (flat or in `opts`), or a bypass flag in the extra args? Only Claude inside the repo's devcontainer may (#104)."""
     if agent == "shell":
         return False
-    asked = {"bypass": body.bypass, "permission_mode": body.permission_mode, "sandbox": body.sandbox, **(body.opts or {})}
-    if body.mode == "bypass" or any(recover._is_bypass(k, v) for k, v in asked.items()):
-        return True
-    if agent == "codex":
-        return any(w in str(a).lower() for a in extra for w in (*CODEX_BYPASS_PARTS, "danger-full-access"))
-    return bool(_bypass_requested(extra))
+    raw = _codex_session_opts(body, extra) if agent == 'codex' else _claude_session_opts(body, extra)
+    return bool(_launch_danger(agent, raw, extra, bypass=body.bypass))
 
 
 def _normalize_launcher(launcher: str, agent: str | None = None) -> tuple[str, str]:
@@ -3822,23 +3874,28 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
                 raise projects.BadRequest("a profile requires an agent command")
             words = shlex.split(cmd_line)
             option_words = words[:words.index("--")] if "--" in words else words
-            if ((opts or {}).get("devcontainer") or _task_danger(opts or {})
-                    or _bypass_requested(option_words) or _override_requested(option_words)):
+            if ((opts or {}).get("devcontainer") or _launch_danger(agent, opts, option_words)
+                    or _override_requested(option_words)):
                 raise projects.BadRequest("profiles require a local launch without bypass")
             if agent == "codex" and words[:2] == ["codex", "resume"] and not claude_session_id:
                 raise projects.BadRequest("profile resumes require a thread UUID")
             previous = profiles.previous_attempt(db, name, task_id)
             transcript_snapshot = profiles.transcript_snapshot(agent, cwd)
             if selected:
-                attempt, assignment = pools.reserve(db, agent, opts, repo=f'{project}/{repo}',
-                    requested_model=pools.requested_model(opts, words), task_id=task_id,
-                    provider_session_id=claude_session_id, resumed_from=previous)
+                try:
+                    attempt, assignment = pools.reserve(db, agent, opts, repo=f'{project}/{repo}',
+                        requested_model=pools.requested_model(opts, words), task_id=task_id,
+                        provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=f'session:{name}')
+                except projects.BadRequest as exc:
+                    if task_id is not None and previous is not None:
+                        raise projects.BadRequest(pools.P4_RESUME_REASON + ': ' + str(exc)) from exc
+                    raise
                 bound = assignment['account_id']
                 opts = {**opts, 'account_id': bound}
             else:
                 profiles.require_account(db, agent, bound)
                 attempt = profiles.start_attempt(db, agent, bound, task_id=task_id,
-                    provider_session_id=claude_session_id, resumed_from=previous)
+                    provider_session_id=claude_session_id, resumed_from=previous, reservation_owner=f'session:{name}')
             cmd_line = profiles.wrap_command(cmd_line, agent, bound)
         real = tmux.new_session(name, cwd, env=env)
         try:                                                      # the account the session starts under (None: unknown, the column stays NULL)

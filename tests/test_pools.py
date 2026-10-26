@@ -391,7 +391,7 @@ def test_scheduler_stored_body_and_model(api, box, projects_dir, monkeypatch):
         'name': 'Pool job', 'prompt': 'Do it', 'model': 'opus', 'permission_mode': 'acceptEdits', **MODE}, headers=HEADERS)
     assert response.status_code == 201, response.text
     job = box.job_get(response.json()['id'])
-    assert scheduler.job_opts(job) == {'model': 'opus', **MODE, 'on_limit_policy': 'auto'}
+    assert scheduler.job_opts(job) == {'model': 'opus', **MODE, 'on_limit_policy': 'auto', 'account_id': pools.ROLLBACK_POOL_ACCOUNT}
     seen = []
     monkeypatch.setattr(scheduler.tasks, 'ensure_excluded', lambda *a: None)
     monkeypatch.setattr(scheduler.tasks, 'unique_slug', lambda *a: 'job')

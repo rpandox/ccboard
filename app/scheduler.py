@@ -372,7 +372,7 @@ def headless_mode(job: dict) -> str:
 
 def run_job(db, job: dict, run_id: int) -> dict:
     from . import profiles, recover
-    opts = {**job_opts(job), **{k: job[k] for k in pools.BINDING_FIELDS if job.get(k) is not None}}
+    opts = pools.scheduled_binding({**job_opts(job), **{k: job[k] for k in pools.BINDING_FIELDS if job.get(k) is not None}})
     bound = opts.get('account_id')
     selected = opts.get('account_mode', 'legacy') != 'legacy'
     if bound is None and not selected:
@@ -541,7 +541,7 @@ class Worker(threading.Thread):
             if held:                       # not run, not retried every tick: a cron job waits for its next fire, a one-off stays parked until acknowledged
                 self.db.job_update(job["id"], next_run_at=next_fire(job["cron"]) if job.get("cron") else None, last_status=held)
                 continue
-            opts = job_opts(job)
+            opts = pools.scheduled_binding(job_opts(job))
             if opts.get('account_mode', 'legacy') != 'legacy':
                 try:
                     choice = pools.choose(self.db, **pools.selection(opts, job.get('agent') or 'claude',
