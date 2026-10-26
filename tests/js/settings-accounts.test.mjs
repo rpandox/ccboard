@@ -1325,7 +1325,7 @@ test('pool accounts use their own endpoint, styled rows and confirmed release; m
   assert.equal(list.querySelectorAll('.set-pool-row').length, 1);
   assert.equal(text(list.querySelector('.set-pool-row .k')), 'Account A');
   assert.equal(list.querySelectorAll('.badge').length, 2);
-  assert.equal(text(list.querySelector('.mono')), 'claude-account-a');
+  assert.equal(text(list.querySelector('.mono')), 'claude-account-a · usage unknown');
   btn(list, 'Release').click();
   assert.equal(calls(w).filter((c) => c.method === 'POST' && c.path.includes('/release')).length, 0);
   btn(panel(w), 'Confirm Release').click();
@@ -1344,4 +1344,13 @@ test('handed-over legacy rows name their owner and have no Switch even with pool
   assert.match(text(row), /belongs to pool account claude-account-a/);
   assert.equal(btn(row, 'Switch'), undefined);
   assert.equal(btn(row, 'Log in again'), undefined);
+});
+
+test('pool Settings figures use shared group windows and keep unknown explicit', () => {
+  const w = acctWorld({ state: stateOf({ pools: { enabled: true, groups: [{ id: 1, accounts: ['first', 'copy'], state: 'ok', window_5h_pct: 34, weekly_pct: 67 }] } }) });
+  assert.equal(w.get('settingsPoolFigures')('first'), ' · 5 h 34% · weekly 67%');
+  assert.equal(w.get('settingsPoolFigures')('copy'), ' · 5 h 34% · weekly 67%');
+  assert.equal(w.get('settingsPoolFigures')('absent'), ' · usage unknown');
+  w.run("state.pools.groups[0].state = 'unknown'");
+  assert.equal(w.get('settingsPoolFigures')('first'), ' · usage unknown');
 });

@@ -3384,13 +3384,20 @@ async function settingsPoolsAction(path) {
   settingsPoolsLoad(true);
   if (typeof poll === 'function') poll(true);
 }
+function settingsPoolFigures(id) {
+  const pools = typeof state !== 'undefined' && state && state.pools;
+  const g = pools && (pools.groups || []).find((g) => (g.accounts || []).includes(id));
+  if (!g || g.state !== 'ok') return ' · usage unknown';
+  const pct = (n) => typeof n === 'number' ? `${Math.round(n)}%` : 'unknown';
+  return ` · 5 h ${pct(g.window_5h_pct)} · weekly ${pct(g.weekly_pct)}`;
+}
 function settingsPoolRows(list) {
   list.textContent = '';
   for (const a of settingsPools.rows || []) {
     const chips = el('span', { class: 'set-chips' },
       el('span', { class: 'badge ' + (a.provider === 'codex' ? 'hue-teal' : 'hue-slate'), text: a.provider }),
       el('span', { class: 'badge hue-slate', text: a.state }));
-    const row = settingsKv(a.label, chips, el('span', { class: 'dim mono set-pool-id', text: a.id }),
+    const row = settingsKv(a.label, chips, el('span', { class: 'dim mono set-pool-id', text: a.id + settingsPoolFigures(a.id) }),
       confirmButton(`pool-release:${a.id}`, 'Release', () => settingsPoolsAction(`/api/pools/accounts/${encodeURIComponent(a.id)}/release`), false));
     row.classList.add('set-acct', 'set-pool-row');
     list.append(row);

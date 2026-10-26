@@ -325,7 +325,8 @@ def test_state_legacy_keys_are_unchanged(board):
     st = board.client.get("/api/state", headers=H).json()
     assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh",
                                                                "scan_slow", "claude_defaults", "node", "nodes_enabled", "preview", "boot", "settings_pending",
-                                                               "restart", "bare_devices", "tmux_fix", "node_keys", "links_enabled"}      # bare_devices and tmux_fix (#309) and node_keys (#271) are additive; legacy keys keep their shape.
+                                                               "restart", "bare_devices", "tmux_fix", "node_keys", "links_enabled", "pools"}      # bare_devices and tmux_fix (#309) and node_keys (#271) are additive; legacy keys keep their shape.
+    assert st["pools"] is None
     assert st["scan_slow"] is False, "#31: false while the box is not busy"
     assert st["usage_refresh"] == {"running": False, "last": None}, "v0.5.17f: the Usage page's Refresh: a /usage ask in flight, and the newest one"
     assert st["usage_codex"] is None, "v0.5.12: the Codex account's windows (kv rate_limits_codex), null until a rollout reported them"

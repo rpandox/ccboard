@@ -38,7 +38,7 @@ def account(db, provider="claude", aid="account-a"):
     home = settings.claude_config_dir if provider == "claude" else settings.codex_home
     (home / ("projects" if provider == "claude" else "sessions")).mkdir(parents=True, exist_ok=True)
     path = profiles.ensure_profile(provider, aid)
-    db.conn.execute("INSERT INTO pool_account VALUES (?,?,?,?,?,?)", (aid, provider, aid, "ready", None, "2026-01-01"))
+    db.conn.execute("INSERT INTO pool_account(id,provider,label,state,cred_version,created_at) VALUES (?,?,?,?,?,?)", (aid, provider, aid, "ready", None, "2026-01-01"))
     profiles._write(path / (".credentials.json" if provider == "claude" else "auth.json"), b"opaque fixture bytes")
     return path
 
@@ -183,6 +183,13 @@ def test_routes_scrubbed_account_response_and_legacy_guard(lite_client, fake_tmu
     assert set(response.json()[0]) == {"id", "provider", "label", "state", "cred_version"}
     assert not [key for key in response.json()[0] if key != "cred_version" and re.search("cred|token|auth|secret|email", key, re.I)]
     aid = profiles.start_attempt(main.db, "claude", "account-a")
+    from app import pool_usage
+    pool_usage.collector(main.db).tick(active=False)
+    usage = lite_client.get("/api/pools/usage", headers=HEADERS)
+    assert usage.status_code == 200 and set(usage.json()) == {"groups"}
+    group = usage.json()["groups"][0]
+    assert set(group) == {"id", "provider", "plan", "accounts", "window_5h_pct", "window_5h_reset_at", "weekly_pct", "weekly_reset_at", "sampled_at", "age_s", "confidence", "source", "state", "nodes", "account_labels", "reason"}
+    assert not [key for key in group if re.search("cred|token|auth|secret|email|uuid", key, re.I)]
     for provider, store in [("accounts", account_store), ("codex-accounts", codex_accounts)]:
         monkeypatch.setattr(store, "_require", lambda: pytest.fail("guard must precede legacy work"))
         r = lite_client.post(f"/api/{provider}/any/switch", headers=HEADERS)
@@ -199,7 +206,7 @@ def test_off_routes_bindings_and_no_side_effects(lite_client, fake_tmux, project
     monkeypatch.setattr(settings, "allowed_users", {"owner"})
     monkeypatch.setattr(settings, "pools", False)
     (projects_dir / "project").mkdir()
-    for method, url in [("GET", "/api/pools/accounts"), ("POST", "/api/pools/migrate")]:
+    for method, url in [("GET", "/api/pools/accounts"), ("GET", "/api/pools/usage"), ("POST", "/api/pools/migrate")]:
         r = lite_client.request(method, url, headers=HEADERS)
         assert r.status_code == 404 and r.json() == {"detail": "pools are off"}
     for url, body in [("/api/projects/project/repos/root/tasks", {"title": "Task", "prompt": "Do it"}),
@@ -359,8 +366,11 @@ def test_fallback_finds_only_fresh_matching_project(box, tmp_path, provider, no_
         path.write_text(json.dumps(data) + "\n")
     old = root / "old.jsonl"
     transcript(old, tmp_path, "33333333-3333-4333-8333-333333333333")
+    stale = root / "stale.jsonl"
+    transcript(stale, tmp_path, "44444444-4444-4444-8444-444444444444")
+    os.utime(stale, (time.time() - 10, time.time() - 10))
     snapshot = profiles.transcript_snapshot(provider, tmp_path)
-    assert snapshot == {(old.name, old.stat().st_ino, old.stat().st_size)}
+    assert snapshot == {(p.name, p.stat().st_ino, p.stat().st_size) for p in (old, stale)}
     assert not hasattr(old.stat(), "st_birthtime")
     aid = profiles.start_attempt(box, provider, "account-a")
     started = time.time()
@@ -369,9 +379,6 @@ def test_fallback_finds_only_fresh_matching_project(box, tmp_path, provider, no_
         f.write('{}\n')
     transcript(root / "good.jsonl", tmp_path, SID)
     transcript(root / "wrong-project.jsonl", tmp_path / "elsewhere", "22222222-2222-4222-8222-222222222222")
-    stale = root / "stale.jsonl"
-    transcript(stale, tmp_path, "44444444-4444-4444-8444-444444444444")
-    os.utime(stale, (started - 10, started - 10))
 
     worker = profiles.discover_attempt(box, aid, str(tmp_path), provider, started, None, snapshot)
     worker.join(timeout=1)
@@ -408,6 +415,7 @@ def test_launch_passes_snapshot_taken_before_agent_starts(box, tmp_path, monkeyp
     _, aid, cwd, found_provider, started, _, snapshot = discoveries[0]
     assert aid == rows(box)[0]["id"] and cwd == str(tmp_path) and found_provider == provider
     assert snapshot == expected
+    os.utime(root / "new.jsonl", (started - 0.01, started - 0.01))
     assert profiles.newest_transcript(provider, cwd, started, snapshot) == SID
 
 
@@ -419,10 +427,12 @@ def test_off_state_keys_and_unbound_on_launch(lite_client, fake_tmux, projects_d
     monkeypatch.setattr(settings, "pools", False)
     before = lite_client.get("/api/state", headers=HEADERS).json()
     assert "pool_accounts" not in before
+    assert before["pools"] is None
     monkeypatch.setattr(settings, "pools", True)
     enabled = lite_client.get("/api/state", headers=HEADERS).json()
     assert set(enabled) == set(before)
     assert "pool_accounts" not in enabled
+    assert enabled["pools"] == {"enabled": True, "groups": []}
     monkeypatch.setattr(settings, "pools", False)
     after = lite_client.get("/api/state", headers=HEADERS).json()
     assert set(after) == set(before)
@@ -615,7 +625,7 @@ def test_clear_keeps_attempt_and_guard_then_flag_toggle_reconciles(box, monkeypa
 
 @pytest.mark.parametrize('provider', ['claude', 'codex'])
 def test_validation_has_no_filesystem_side_effects(box, provider):
-    box.conn.execute('INSERT INTO pool_account VALUES (?,?,?,?,?,?)', ('account-a', provider, 'A', 'ready', None, '2026-01-01'))
+    box.conn.execute('INSERT INTO pool_account(id,provider,label,state,cred_version,created_at) VALUES (?,?,?,?,?,?)', ('account-a', provider, 'A', 'ready', None, '2026-01-01'))
     profiles.require_account(box, provider, 'account-a')
     assert not (settings.data_dir / 'profiles').exists()
     with pytest.raises(projects.BadRequest):
@@ -677,7 +687,7 @@ def test_fallback_ambiguous_first_id_line_and_existing_id(box, tmp_path, monkeyp
     assert profiles.newest_transcript('claude', tmp_path, time.time() - 1) == SID
     (root / 'second.jsonl').write_text(first.read_text())
     assert profiles.newest_transcript('claude', tmp_path, time.time() - 1) is None
-    assert profiles.newest_transcript('claude', tmp_path, time.time() + 1) is None
+    assert profiles.newest_transcript('claude', tmp_path, time.time() + 3) is None
     box.conn.execute('UPDATE runtime_attempt SET provider_session_id=? WHERE id=?', (SID, aid))
     monkeypatch.setattr(profiles, 'newest_transcript', lambda *a: pytest.fail('already bound'))
     assert profiles.discover_attempt(box, aid, str(tmp_path), 'claude', 0) is None
@@ -700,7 +710,7 @@ def test_task_validation_and_launch_plan_do_not_make_directories(box, lite_clien
     from app.agents.base import LaunchReq
     monkeypatch.setattr(main, 'db', box)
     (projects_dir / 'project').mkdir()
-    box.conn.execute('INSERT INTO pool_account VALUES (?,?,?,?,?,?)', ('account-a', 'claude', 'A', 'ready', None, '2026-01-01'))
+    box.conn.execute('INSERT INTO pool_account(id,provider,label,state,cred_version,created_at) VALUES (?,?,?,?,?,?)', ('account-a', 'claude', 'A', 'ready', None, '2026-01-01'))
     body = main.TaskIn(title='Task', prompt='Do it', account_id='account-a')
     main._task_check('project', 'root', body, launching=False)
     agents.get('claude').launch_plan(LaunchReq(kind='new', account_id='account-a'))
@@ -886,6 +896,40 @@ def test_move_crash_after_fsync_before_unlink_converges(box, monkeypatch):
     monkeypatch.setattr(Path, 'unlink', unlink)
     assert profiles.migrate(box)[0]['moved'] == aid
     assert not source.exists() and len(profiles.accounts_view(box)) == 1
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+@pytest.mark.parametrize('populated', [False, True])
+@pytest.mark.parametrize('lag', [0.01, 10])
+def test_transcript_snapshot_freshness_ignores_mtime(box, tmp_path, provider, populated, lag, no_birthtime):
+    root = profiles.transcript_directory(provider, tmp_path)
+    root.mkdir(parents=True)
+    if populated:
+        (root / 'old.jsonl').write_text('{}\n')
+    snapshot = profiles.transcript_snapshot(provider, tmp_path)
+    started = 1793022432.0
+    path = root / 'new.jsonl'
+    meta = {'sessionId': SID, 'cwd': str(tmp_path)} if provider == 'claude' else {'type': 'session_meta', 'payload': {'id': SID, 'cwd': str(tmp_path)}}
+    path.write_text(json.dumps(meta) + '\n')
+    os.utime(path, (started - lag, started - lag))
+    assert profiles.newest_transcript(provider, tmp_path, started, snapshot) == SID
+    second = root / 'second.jsonl'
+    second.write_text(path.read_text())
+    os.utime(second, (started - lag, started - lag))
+    assert profiles.newest_transcript(provider, tmp_path, started, snapshot) is None
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+@pytest.mark.parametrize('lag,expected', [(0.01, SID), (2, SID), (2.01, None)])
+def test_transcript_without_snapshot_allows_mtime_slack(box, tmp_path, provider, lag, expected, no_birthtime):
+    root = profiles.transcript_directory(provider, tmp_path)
+    root.mkdir(parents=True)
+    started = 1793022432.0
+    path = root / 'new.jsonl'
+    meta = {'sessionId': SID, 'cwd': str(tmp_path)} if provider == 'claude' else {'type': 'session_meta', 'payload': {'id': SID, 'cwd': str(tmp_path)}}
+    path.write_text(json.dumps(meta) + '\n')
+    os.utime(path, (started - lag, started - lag))
+    assert profiles.newest_transcript(provider, tmp_path, started) == expected
 
 
 @pytest.mark.parametrize('provider', ['claude', 'codex'])
@@ -1255,3 +1299,49 @@ def test_codex_profile_trust_review_instructions_and_existing_records(box):
     for required in ['CCBOARD_CODEX_HOOK_TRUST=review', "CODEX_HOME='<data dir>/profiles/codex/<account_id>' codex",
                      '/hooks', 'trusted_hash', 'per profile', 'does not grant trust automatically']:
         assert required in doc
+
+
+def test_release_serializes_with_pool_probe_and_prunes_metadata(box, monkeypatch):
+    import threading
+    from app import pool_usage as pu
+    store, keys = saved_slots(box, monkeypatch, 'codex')
+    aid = profiles.migrate(box)[0]['moved']
+    path = profiles.profile_dir('codex', aid)
+    (path / 'auth.json').write_text(json.dumps({'tokens': {'account_id': 'workspace'}}))
+    monkeypatch.setattr(profiles, '_check_liveness', lambda db: None)
+    n = profiles.start_attempt(box, 'codex', aid)
+    profiles.finish_attempt(box, n, 'done')
+    a = pu.ensure_groups(box)[0]
+    entered, unblock, released = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(pu.shutil, 'which', lambda _: 'fake')
+    def probe(account):
+        entered.set()
+        assert unblock.wait(3)
+        assert (path / 'auth.json').exists()
+        assert box.conn.execute('SELECT state FROM pool_account WHERE id=?', (aid,)).fetchone()[0] == 'ready'
+        return {'window_5h_pct': 20}
+    monkeypatch.setattr(pu, 'app_server', probe)
+    c = pu.collector(box)
+    sample = threading.Thread(target=lambda: c.active_sample(a, time.time()))
+    sample.start()
+    assert entered.wait(2)
+    errors = []
+    def release_account():
+        try:
+            profiles.release(box, aid)
+            released.set()
+        except Exception as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=release_account)
+    worker.start()
+    try:
+        assert not released.wait(.1), 'release overlapped app-server'
+        assert (path / 'auth.json').exists()
+    finally:
+        unblock.set()
+        sample.join(3)
+        worker.join(3)
+    assert not errors and released.is_set()
+    assert box.kv_get('pool_refresh:' + aid) is None
+    assert box.conn.execute('SELECT count(*) FROM quota_group').fetchone()[0] == 0
+    assert c.active_sample(a, time.time() + 600) is None

@@ -15,6 +15,7 @@
 'use strict';
 
 const LAZY_BUNDLES = {
+  pools: { js: ['/static/pool-usage.js'], probe: () => typeof paintPoolStrip === 'function' },
   // the create flow behind Shell.openCreate (+ session / + task / Schedule): the place from the route, the repo picker, the launcher form in a sheet; shell.js asks for it on a tap
   demobare: { js: ['/static/bare-play.js'], probe: () => typeof demoBare === 'function' },
   bare: { js: ['/static/bare.js'], probe: () => typeof Shell !== 'undefined' && typeof Shell.bareDevice === 'function' },

@@ -831,7 +831,12 @@ class Tailer:
         """One poll of the account's rate limits (see the module docstring). Returns {account key | None: the reading written for it}."""
         accts, current = _accounts(db)
         grouped: dict = {}
-        for rl, at, account_id in _readings(now):
+        excluded = set()
+        if settings.pools:
+            with db.lock:
+                excluded = {r[0] for r in db.conn.execute("SELECT provider_session_id FROM runtime_attempt WHERE provider='codex' AND provider_session_id IS NOT NULL")}
+        readings = _readings(now, exclude=excluded) if excluded else _readings(now)
+        for rl, at, account_id in readings:
             grouped.setdefault(_owner(accts, current, account_id), []).append((rl, at))
         results = {}
         for key, readings in grouped.items():
@@ -894,10 +899,12 @@ def _rollout_reading(path: Path, mtime: float, size: int) -> dict | None:
     return out
 
 
-def _readings(now: float) -> list[tuple[dict, float, str | None]]:
+def _readings(now: float, exclude=None) -> list[tuple[dict, float, str | None]]:
     """(rate_limits, reported at, creator_account_id) of the newest MAX_ROLLOUTS rollouts modified within RL_LOOKBACK_DAYS."""
     out = []
     for mtime, size, path in recent_rollouts(now - RL_LOOKBACK_DAYS * 86400)[:MAX_ROLLOUTS]:
+        if exclude and any(path.name.endswith(sid + ".jsonl") for sid in exclude):
+            continue
         r = _rollout_reading(path, mtime, size)
         if r:
             out.append((r["rl"], min(r["at"], now), r["account_id"]))

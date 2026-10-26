@@ -117,3 +117,94 @@ def view(db) -> dict:
         last = None
     last = last.get("value") if isinstance(last, dict) and isinstance(last.get("value"), dict) else last
     return {"running": busy(), "last": last if isinstance(last, dict) else None}
+
+
+def pool_refresh(collector, account, now):
+    """Ask only an idle, bound profile pane, using the command route's existing guards."""
+    from . import main, pool_usage, agents, profiles
+    from .agents import claude_pane
+    from .config import settings
+    if not settings.pools or collector.stop.is_set():
+        return False
+    db = collector.db
+    try:
+        candidates = panes(tmux.list_sessions(), db.open_rows(), tmux.viewers())
+        def eligible(p):
+            attempt = pool_usage.bound_attempt(db, p['name'])
+            return (attempt and attempt['account_id'] == account['id']
+                    and p['row'].get('state') in ('idle', 'done', 'waiting')
+                    and main._typing_refusal(p['name'], p['row']) is None)
+        def safe_now(name):
+            with db.lock:
+                if not db.conn.execute("SELECT 1 FROM pool_account WHERE id=? AND state='ready'", (account['id'],)).fetchone():
+                    return False
+            live = tmux.list_sessions()
+            watchers = tmux.viewers()
+            # Failure to enumerate viewers is not evidence of an unattended pane.
+            if watchers is None or name not in live or live[name].get('attached'):
+                return False
+            if (watchers.get(name) or {}).get('full', 0):
+                return False
+            row = db.open_row(name)
+            if not row or not eligible({'name': name, 'row': row}):
+                return False
+            text = tmux.capture(name, lines=claude_pane.TAIL_LINES)
+            if claude_pane.screen_state(text) != 'waiting':
+                return False
+            lines = [line.strip() for line in text.splitlines()]
+            prompts = [i for i in range(max(0, len(lines) - 5), len(lines)) if claude_pane.PROMPT_RE.match(lines[i])]
+            # Same prompt marker as the pane monitor; no marker is inconclusive.
+            if not prompts or claude_pane.PROMPT_RE.sub('', lines[prompts[-1]]).strip(' │┃'):
+                return False
+            for line in lines[prompts[-1] + 1:]:
+                if claude_pane._box_only(line) and claude_pane.RULE_RE.search(line):
+                    break
+                if line.strip(' │┃'):
+                    return False  # continuation of a multiline draft
+            return True
+        pick = choose(candidates, eligible, unattached_only=True)
+    except (tmux.TmuxError, tmux.TmuxDown):
+        return False
+    if not pick or not claim():
+        return False
+    key = 'pool_refresh:' + account['id']
+    old = (db.kv_get(key) or {}).get('value') or {}
+    db.kv_set(key, {**old, 'next_at': now + 300})
+    name = pick['name']
+    try:
+        # Check again immediately before typing: a prompt may have started working.
+        row = db.open_row(name)
+        if not safe_now(name):
+            release()
+            return False
+        main._type_command(name, row, agents.get('claude').slash_commands()['usage'], '', 'pool usage', clear=False)
+    except Exception:
+        release()
+        collector.failure(account, now)
+        return True
+
+    def finish():
+        try:
+            with profiles.account_lock(account['id']):
+                if not settings.pools or collector.stop.is_set():
+                    return
+                row = db.open_row(name)
+                if not safe_now(name) or not tmux.has_session(name):
+                    return
+                tmux.send_keys(name, ['Escape'])
+                hit = pool_usage.cache_reading(account, time.time())
+                if hit and hit[1] >= int(now):
+                    pool_usage.save(db, account['quota_group_id'], hit[0], 'cli', .9, hit[1])
+                    if any((hit[0].get(k) or 0) >= 100 for k in ('window_5h_pct', 'weekly_pct')):
+                        collector.failure(account, now)
+                    else:
+                        db.kv_set(key, {'next_at': now + 300, 'misses': 0})
+                else:
+                    collector.failure(account, now)
+        except Exception:
+            if not collector.stop.is_set():
+                collector.failure(account, now)
+        finally:
+            release()
+    later(ESCAPE_AFTER_S, finish)
+    return True
