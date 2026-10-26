@@ -108,14 +108,10 @@
     {
       "name": "ccboard",
       "path": "/home/ccboard/projects/ccboard",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "ccboard",
           "path": "/home/ccboard/projects/ccboard/ccboard",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790452080,
@@ -268,8 +264,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/ccboard",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -287,14 +281,10 @@
     {
       "name": "HarnessAgents",
       "path": "/home/ccboard/projects/HarnessAgents",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "hive",
           "path": "/home/ccboard/projects/HarnessAgents/hive",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -308,8 +298,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/HarnessAgents",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -327,14 +315,10 @@
     {
       "name": "internalSystem",
       "path": "/home/ccboard/projects/internalSystem",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "server",
           "path": "/home/ccboard/projects/internalSystem/server",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -348,8 +332,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/internalSystem",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -367,14 +349,10 @@
     {
       "name": "mailgate",
       "path": "/home/ccboard/projects/mailgate",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "mailgate",
           "path": "/home/ccboard/projects/mailgate/mailgate",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -388,8 +366,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/mailgate",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -407,14 +383,10 @@
     {
       "name": "My_Brain",
       "path": "/home/ccboard/projects/My_Brain",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "vault",
           "path": "/home/ccboard/projects/My_Brain/vault",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -428,8 +400,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/My_Brain",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -447,14 +417,10 @@
     {
       "name": "petroit",
       "path": "/home/ccboard/projects/petroit",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "api",
           "path": "/home/ccboard/projects/petroit/api",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790832240,
@@ -661,8 +627,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/petroit",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -680,14 +644,10 @@
     {
       "name": "phasezero",
       "path": "/home/ccboard/projects/phasezero",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "NestJs-Ecommerce-Backend",
           "path": "/home/ccboard/projects/phasezero/NestJs-Ecommerce-Backend",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790633520,
@@ -767,8 +727,6 @@
         {
           "name": "website",
           "path": "/home/ccboard/projects/phasezero/website",
-          "linked": false,
-          "target": null,
           "sessions": [
             {
               "created": 1790771760,
@@ -849,8 +807,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/phasezero",
-        "linked": false,
-        "target": null,
         "sessions": [
           {
             "created": 1790236080,
@@ -930,14 +886,10 @@
     {
       "name": "reporting_system",
       "path": "/home/ccboard/projects/reporting_system",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "web",
           "path": "/home/ccboard/projects/reporting_system/web",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -951,8 +903,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/reporting_system",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -970,14 +920,10 @@
     {
       "name": "research",
       "path": "/home/ccboard/projects/research",
-      "linked": false,
-      "target": null,
       "repos": [
         {
           "name": "notebooks",
           "path": "/home/ccboard/projects/research/notebooks",
-          "linked": false,
-          "target": null,
           "sessions": [],
           "devcontainer": false,
           "branch": "main",
@@ -991,8 +937,6 @@
       "root": {
         "name": "root",
         "path": "/home/ccboard/projects/research",
-        "linked": false,
-        "target": null,
         "sessions": [],
         "root": true,
         "state": "project",
@@ -2462,7 +2406,6 @@
     "cores": 8,
     "at": 1790996400.0
   },
-  "links_enabled": true,
   "nodes_enabled": true,
   "nodes": {
     "value": [
