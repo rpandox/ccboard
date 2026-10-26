@@ -1284,3 +1284,30 @@ test('a project with no session: the empty state has its own New session button 
   b[0].click();
   assert.deepEqual(launched(env).map((l) => [l.mode, l.project]), [['session', 'internalSystem']]);
 });
+
+test('linked project and repo show their paths, Unlink and the disk-preserving confirmation', async () => {
+  const state = projectState();
+  const p = state.projects.find((p) => p.name === 'phasezero');
+  Object.assign(p, { linked: true, target: '/Work/phasezero' });
+  Object.assign(p.repos[0], { linked: true, target: '/Work/phasezero/website' });
+  const env = projectWorld({ state });
+  await go(env, '#/p/phasezero');
+  assert.ok(all(env.page(), '.badge').some((n) => n.textContent === 'Linked' && n.getAttribute('title') === p.target));
+  overflow(env).click(); menuItem(env, /^Unlink$/).click();
+  assert.match(textOf(env.page()), /Unlink\? The folder stays on disk at \/Work\/phasezero\./);
+  assert.ok(button(env.page(), /^Confirm Unlink$/));
+  assert.equal(button(env.page(), /^Delete project$/), undefined);
+});
+
+test('deleting a normal project with a linked repo explains that linked folders stay on disk', async () => {
+  const state = projectState();
+  const p = state.projects.find((p) => p.name === 'phasezero');
+  Object.assign(p.repos[0], { linked: true, target: '/Work/website' });
+  const env = projectWorld({ state }); await go(env, '#/p/phasezero');
+  overflow(env).click(); menuItem(env, /repos and danger/i).click();
+  button(env.page(), /^Unlink$/).click();
+  assert.match(textOf(env.page()), /Unlink\? The folder stays on disk at \/Work\/website\./);
+  button(env.page(), /^Cancel$/).click();
+  button(env.page(), /^Delete project$/).click();
+  assert.match(textOf(env.page()), /Linked repos are only unlinked; their folders stay on disk\./);
+});

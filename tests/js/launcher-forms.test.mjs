@@ -312,12 +312,12 @@ test('addRepoForm: two labelled fields with helper text, an empty submit says wh
   assert.deepEqual(f.querySelectorAll('.field-label').map(text), ['New repo', 'Clone URL']);
   assert.ok(f.querySelectorAll('.field-hint').length === 2, 'helper text under both');
   assert.deepEqual(f.querySelector('.submit').querySelectorAll('button').map((b) => text(b).trim()), ['Add repo', 'Cancel']);
-  submit(f);
+  submit(f.querySelector('form'));
   await tick();
   assert.match(text(fieldOf(f, /^New repo$/).querySelector('.field-err')), /name a new repo, or give a URL/i);
   assert.equal(calls(w).length, 0, 'the server would say the same: not asked');
   fieldOf(f, /^Clone URL$/).querySelector('input').value = 'https://nope.invalid/x.git';
-  submit(f);
+  submit(f.querySelector('form'));
   await tick();
   assert.match(text(fieldOf(f, /^Clone URL$/).querySelector('.field-err')), /could not resolve host/);
 });
@@ -713,4 +713,16 @@ test('the schedule row says a Fable job is held or acknowledged, with its cap, a
   const post = calls(w).find((c) => c.method === 'POST');
   assert.equal(post.path, '/api/jobs/5/acknowledge-fable');
   assert.deepEqual(post.body, { acknowledge_fable: true, max_budget_usd: 4 });
+});
+
+test('add repo shares the four choices and Link sends the selected project and checked path', async () => {
+  const w = fWorld({ answers: { '/api/preflight/folder': { ok: true, path: '/Work/mailgate', git: true, branch: 'main', suggested_name: 'mailgate' } } });
+  w.run('state.links_enabled = true');
+  const host = w.run('addRepoForm(state.projects[0])');
+  assert.deepEqual(host.querySelectorAll('.seg-btn').map(text), ['Clone a git repo', 'Link a folder on this computer', 'Import from GitHub', 'Start a blank repo']);
+  host.querySelectorAll('.seg-btn')[1].click();
+  const path = fieldOf(host, /^Folder path$/).querySelector('input');
+  path.value = '/Work/mailgate'; path.dispatchEvent({ type: 'blur' }); await tick();
+  submit(host.querySelector('form')); await tick(); await tick();
+  assert.deepEqual(calls(w).find((c) => c.path === '/api/projects/shop/repos').body, { name: 'mailgate', link: '/Work/mailgate' });
 });

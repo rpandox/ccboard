@@ -493,3 +493,28 @@ test('a click on a link marked data-standalone="skip" is left to the browser in 
   assert.equal(plainLink.prevented, 1);
   assert.deepEqual(plain(w.get('__assigned')), ['/term/x--y--z']);
 });
+
+test('demo folder preflight and link creation retain linked/target for projects and repos', async () => {
+  const w = coreWorld();
+  const res = plain(await w.get('demoApi')('POST', '/api/preflight/folder', { path: '~/work/tools' }));
+  assert.equal(res.ok, true);
+  assert.equal(res.path, '/home/ccboard/work/tools');
+  assert.deepEqual(res.repos, ['mailgate', 'scripts']);
+  assert.equal((await w.get('demoApi')('POST', '/api/preflight/folder', { path: 'relative' })).ok, false);
+  w.run(`demoMake('POST', '/api/projects', { name: 'tools', link: '/home/ccboard/work/tools' }); demoMake('POST', '/api/projects/shop/repos', { name: 'mailgate', link: '/home/ccboard/work/mailgate' });`);
+  const projects = plain(w.get('demoMade.projects'));
+  assert.equal(projects[0].linked, true);
+  assert.equal(projects[0].root.target, '/home/ccboard/work/tools');
+  assert.equal(projects[1].linked, false);
+  assert.equal(projects[1].target, null);
+  assert.equal(projects[1].repos[0].target, '/home/ccboard/work/mailgate');
+  w.run("demoMake('POST', '/api/projects', { name: 'mailgate', link: '/home/ccboard/work/mailgate' })");
+  assert.equal(w.get('demoMade.projects[2].repos[0].name'), 'mailgate');
+  assert.equal(w.get('demoMade.projects[2].repos[0].path'), '/home/demo/projects/mailgate');
+  const fixture = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo/state.json'), 'utf8'));
+  assert.equal(fixture.links_enabled, true);
+  for (const p of fixture.projects) for (const item of [p, p.root, ...p.repos].filter(Boolean)) {
+    assert.equal(typeof item.linked, 'boolean');
+    assert.ok(Object.hasOwn(item, 'target'));
+  }
+});

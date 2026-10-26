@@ -864,3 +864,9 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 #page .rrow .rr-main .nchip, #page .peek-sub .nchip { flex:none; }
 
 #page .home-settings-pending { overflow-wrap:anywhere; }
+
+/* Four add choices stay readable on a phone and inside the launcher sheet. */
+#page .add-modes.seg-ctl, #sheet .add-modes.seg-ctl { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:100%; }
+#page .add-modes .seg-btn, #sheet .add-modes .seg-btn { flex:none; text-align:left; white-space:normal; min-height:44px; padding:10px 12px; line-height:1.4; border:1px solid var(--line); border-radius:2px; }
+#sheet .wiz-chips { display:flex; flex-wrap:wrap; gap:6px; }
+#page .wiz-chips .badge, #sheet .wiz-chips .badge { white-space:normal; overflow-wrap:anywhere; max-width:100%; }

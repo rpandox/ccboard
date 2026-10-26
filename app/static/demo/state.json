@@ -260,7 +260,9 @@
           "branch": "main",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": true,
+          "target": "/home/ccboard/work/shared"
         }
       ],
       "root": {
@@ -274,9 +276,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "HarnessAgents",
@@ -294,7 +300,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -308,9 +316,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "internalSystem",
@@ -328,7 +340,9 @@
           "branch": "main",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -342,9 +356,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "mailgate",
@@ -362,7 +380,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -376,9 +396,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "My_Brain",
@@ -396,7 +420,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -410,9 +436,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "petroit",
@@ -623,7 +653,9 @@
           "branch": "feature/devices-pagination",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -637,9 +669,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "phasezero",
@@ -724,7 +760,9 @@
           "branch": "develop",
           "dirty": true,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         },
         {
           "name": "website",
@@ -803,7 +841,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -879,9 +919,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "reporting_system",
@@ -899,7 +943,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -913,9 +959,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": false,
+      "target": null
     },
     {
       "name": "research",
@@ -933,7 +983,9 @@
           "branch": "main",
           "dirty": false,
           "state": "ok",
-          "claude_trust_warning": null
+          "claude_trust_warning": null,
+          "linked": false,
+          "target": null
         }
       ],
       "root": {
@@ -947,9 +999,13 @@
         "branch": null,
         "dirty": null,
         "devcontainer": false,
-        "claude_trust_warning": null
+        "claude_trust_warning": null,
+        "linked": false,
+        "target": null
       },
-      "orphan_sessions": []
+      "orphan_sessions": [],
+      "linked": true,
+      "target": "/home/ccboard/work/research"
     }
   ],
   "user": "demo@example.com",
@@ -2626,5 +2682,6 @@
       "1 permission is waiting for an answer and will be lost",
       "2 terminals are open; ttyd and tmux sessions keep running"
     ]
-  }
+  },
+  "links_enabled": true
 }
