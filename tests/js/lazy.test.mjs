@@ -20,6 +20,8 @@ const settle = async (until, max = 200) => {
   return until ? !!until() : true;
 };
 
+let realm = 0;
+
 /** The first-paint set of index.html (shell.js included, main.js left out) in a world whose head fetches lazy files from app/static. */
 function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false, cold = false } = {}) {
   const w = makeWorld({ companions: false, setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; }, setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; }, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
@@ -34,30 +36,36 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
   // Styles are ranked by the loader now; there is no eager charts anchor.
   const find = doc.querySelector;
   doc.querySelector = (s) => find(s) || head.querySelector(s);
-  const net = { scripts: [], sheets: [], preloads: [], fail: new Set(fail) };
+  const net = { scripts: [], sheets: [], preloads: [], held: new Map(), hold: new Set(), fail: new Set(fail) };
   const onInsert = (n) => {
     if (n.tagName === 'SCRIPT') {
       const src = n.src.split('?')[0];
       net.scripts.push(src);
-      (slow ? (f) => setTimeout(f, slow) : setImmediate)(() => {
+      const finish = () => {
         if (net.fail.has(src)) { n.onerror(); return; }
         try { w.load(src.slice('/static/'.length).split('?')[0]); } catch (e) { (net.errors ||= []).push(e); }
         n.onload();
-      });
+      };
+      if (net.hold.has(src)) net.held.set(src, finish);
+      else (slow ? (f) => setTimeout(f, slow) : setImmediate)(finish);
     } else if (n.tagName === 'LINK' && n.getAttribute('rel') === 'preload') {
       net.preloads.push(n.getAttribute('href'));
       setImmediate(() => n.onload()); // Downloads bytes; never executes the script.
     } else if (n.tagName === 'LINK' && n.getAttribute('data-lazy')) {
       const href = n.getAttribute('href');
       net.sheets.push(href);
-      setImmediate(() => { if (net.fail.has(href)) n.onerror(); else n.onload(); });
+      const finish = () => { if (net.fail.has(href)) n.onerror(); else n.onload(); };
+      if (net.hold.has(href)) net.held.set(href, finish);
+      else setImmediate(finish);
     }
   };
   const append = head.appendChild.bind(head);
   const insert = head.insertBefore.bind(head);
   head.appendChild = (n) => { const r = append(n); onInsert(n); return r; };
   head.insertBefore = (n, ref) => { const r = insert(n, ref); onInsert(n); return r; };
-  w.load('lazy.js');
+  // V8 caches unresolved global lookups across vm contexts with identical source.
+  // Each browser page has its own realm; keep these cold-load fixtures isolated too.
+  w.run(fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8') + `\n// realm ${++realm}`);
   for (const src of plain(w.get('LAZY_BUNDLES.app.js'))) try { w.load(src.slice('/static/'.length).split('?')[0]); } catch (e) { (net.errors ||= []).push(e); }
   if (!cold) {
     // Historical component fixtures: explicit dependencies, without page-specific bundles.
@@ -814,20 +822,25 @@ test('review: Lazy and core.loadAsset stamp every script and stylesheet with the
   assert.ok(urls.slice(-2).every(u => u.endsWith('?v=release-b')));
 });
 
-test('LCP: every bundle script is requested before any load event, with ordered execution and a CSS mount barrier', async () => {
+test('LCP: batch preloads start together but execution awaits each export and mounting awaits CSS', async () => {
   const L = lazyWorld({ cold: true });
   const pending = [];
   L.head.appendChild = n => { pending.push(n); return n; };
   let done = false;
   const load = L.w.run("Lazy.load('sessionrows')").then(() => { done = true; });
   await settle(() => pending.some(n => n.tagName === 'SCRIPT'));
-  const scripts = pending.filter(n => n.tagName === 'SCRIPT');
-  assert.deepEqual(scripts.map(n => n.src), ['/static/pages/agents.js', '/static/page-selection.js', '/static/session-groups.js']);
-  assert.ok(scripts.every(n => n.async === false), 'browser downloads together but executes in insertion order');
-  for (const script of scripts) { L.w.load(script.src.slice('/static/'.length)); script.onload(); }
+  const sources = ['/static/pages/agents.js', '/static/page-selection.js', '/static/session-groups.js'];
+  assert.deepEqual(pending.filter(n => n.getAttribute('rel') === 'preload').map(n => n.getAttribute('href')), sources);
+  for (const [i, src] of sources.entries()) {
+    assert.ok(await settle(() => pending.filter(n => n.tagName === 'SCRIPT').length === i + 1));
+    const script = pending.filter(n => n.tagName === 'SCRIPT')[i];
+    assert.equal(script.src, src);
+    assert.equal(script.async, false);
+    L.w.load(src.slice('/static/'.length)); script.onload();
+  }
   await settle(null, 2);
   assert.equal(done, false, 'exports alone cannot skip the pending stylesheet');
-  pending.find(n => n.tagName === 'LINK').onload();
+  pending.find(n => n.getAttribute('rel') === 'stylesheet').onload();
   await load;
   assert.equal(L.w.run("Lazy.done('sessionrows')"), true);
 });
@@ -864,11 +877,14 @@ test('LCP: a parallel failure waits for outstanding members before Retry and reu
   let failed = false;
   const load = L.w.run("Lazy.load('sessionrows')").catch(() => { failed = true; });
   await settle(() => pending.some(n => n.tagName === 'SCRIPT'));
-  pending.find(n => n.tagName === 'LINK').onerror();
+  pending.find(n => n.getAttribute('rel') === 'stylesheet').onerror();
   await settle(null, 2);
   assert.equal(failed, false, 'Retry must not overlap scripts from this attempt');
-  const scripts = pending.filter(n => n.tagName === 'SCRIPT');
-  for (const script of scripts) { L.w.load(script.src.slice('/static/'.length)); script.onload(); }
+  for (let i = 0; i < 3; i++) {
+    assert.ok(await settle(() => pending.filter(n => n.tagName === 'SCRIPT').length > i));
+    const script = pending.filter(n => n.tagName === 'SCRIPT')[i];
+    L.w.load(script.src.slice('/static/'.length)); script.onload();
+  }
   await load;
   assert.equal(failed, true);
   assert.equal(L.w.run("Lazy.done('sessionrows')"), false);
@@ -879,4 +895,122 @@ test('LCP: a parallel failure waits for outstanding members before Retry and reu
   pending[0].onload();
   await retry;
   assert.equal(L.w.run("Lazy.done('sessionrows')"), true);
+});
+
+
+test('verification: cold Settings holds the remaining batch after nodes-pair fails and Retry registers and mounts it', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/settings', fail: ['/static/nodes-pair.js'] });
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.document.querySelector('.load-error')));
+  assert.equal(L.w.run("Lazy.done('settings')"), false);
+  assert.equal(L.w.run('typeof pages.settings'), 'undefined');
+  for (const src of ['/static/pages/doctor.js', '/static/pages/settings.js']) {
+    assert.ok(!L.net.scripts.includes(src), `${src} must be held after the failed prerequisite`);
+  }
+  L.net.fail.clear();
+  L.w.document.querySelector('.load-error button').click();
+  assert.ok(await settle(() => L.mounted() === 'settings'));
+  assert.equal(L.w.run("Lazy.done('settings')"), true);
+  assert.equal(L.w.run('typeof pages.settings.mount'), 'function');
+  assert.deepEqual(L.net.scripts.filter(s => ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'].includes(s)),
+    ['/static/nodes-pair.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js']);
+  assert.deepEqual(L.net.errors || [], []);
+  L.w.run('takeDownPage(); delete pages.settings');
+  assert.equal(L.w.run('typeof settingsPage'), 'object');
+  assert.equal(L.w.run("Lazy.done('settings')"), false, 'early declaration cannot replace registration');
+});
+
+test('verification: Home → Inbox → Home cannot mount widget DOM while widgets.css is outstanding', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/' });
+  L.net.hold.add('/static/pages/widgets.css');
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.run("typeof Widgets.usageCard === 'function'") && L.net.held.has('/static/pages/widgets.css')));
+  const first = L.w.get('homePage.refs');
+  assert.equal(first.usageHost.children.length, 0);
+  L.w.location.hash = '#/inbox';
+  assert.ok(await settle(() => L.mounted() === 'inbox'));
+  L.w.location.hash = '#/';
+  assert.ok(await settle(() => L.mounted() === 'home'));
+  const second = L.w.get('homePage.refs');
+  assert.notEqual(second, first);
+  assert.equal(L.w.run("Lazy.done('widgets')"), false);
+  assert.equal(second.usageHost.children.length, 0, 'remount must obey the same CSS barrier');
+  L.net.held.get('/static/pages/widgets.css')();
+  assert.ok(await settle(() => second.usageHost.children.length > 0));
+  assert.equal(L.w.run("Lazy.done('widgets')"), true);
+  assert.equal(first.usageHost.children.length, 0, 'late completion must not mount the abandoned host');
+  assert.equal(L.net.scripts.filter(s => s === '/static/pages/widgets.js').length, 1);
+  L.w.run('takeDownPage()');
+});
+
+for (const chord of ['g n', 'g u', 'c t', 'g x n', 'g Tab n']) {
+  test(`verification: slow keymap preserves every event in ${chord}`, async () => {
+    const L = lazyWorld({ cold: true });
+    await L.w.run("Lazy.load('nodeshub')");
+    L.w.run("globalThis.actions = []; Nodes.enabled = () => true; Nodes.goFirst = () => { actions.push('nodes'); return true; }; Shell.openCreate = kind => { actions.push(kind); return true; }; Lazy.watchKeys()");
+    L.net.hold.add('/static/keymap.js');
+    const gate = L.w.document.listeners.keydown.at(-1);
+    for (const key of chord.split(' ')) gate({ key, target: L.w.document.body, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} });
+    assert.ok(await settle(() => L.net.held.has('/static/keymap.js')));
+    L.net.held.get('/static/keymap.js')();
+    assert.ok(await settle(() => L.w.run("Lazy.done('keyboard')")));
+    await settle(null, 2);
+    assert.deepEqual(plain(L.w.get('actions')), chord === 'g n' ? ['nodes'] : chord === 'c t' ? ['task'] : []);
+    if (chord === 'g u') assert.equal(L.w.location.hash, '#/usage');
+    L.w.run('takeDownPage()');
+  });
+}
+
+for (const feature of ['nodeshub', 'teamview']) {
+  test(`verification: ${feature} first mount and remount wait for their CSS through the shared feature gate`, async () => {
+    const L = lazyWorld({ cold: true });
+    const css = feature === 'nodeshub' ? '/static/pages/nodes.css' : '/static/pages/team-view.css';
+    const ready = feature === 'nodeshub' ? 'Nodes.ready' : "typeof TeamView !== 'undefined' && TeamView.ready";
+    L.net.hold.add(css);
+    L.w.run("state.nodes_enabled = true; state.team = { shared: true }; globalThis.featureHost = el('div'); document.body.append(featureHost)");
+    const invoke = feature === 'nodeshub' ? "Nodes.use(() => featureHost.append(NodeView.chip('node')))" : "teamUse(() => featureHost.append(el('p', {text:'team'})))";
+    L.w.run(invoke);
+    assert.ok(await settle(() => L.w.run(ready) && L.net.held.has(css)));
+    assert.equal(L.w.get('featureHost').children.length, 0);
+    L.w.run(invoke);
+    assert.equal(L.w.get('featureHost').children.length, 0, 'a defined JS export is not the CSS barrier');
+    L.net.held.get(css)();
+    assert.ok(await settle(() => L.w.get('featureHost').children.length === 2));
+    assert.equal(L.w.run(`Lazy.done('${feature}')`), true);
+  });
+}
+
+for (const expired of ['between keys', 'before install']) {
+  test(`verification: slow keyboard respects chord timeout ${expired}`, async () => {
+    const L = lazyWorld({ cold: true });
+    await L.w.run("Lazy.load('nodeshub')");
+    L.net.hold.add('/static/keymap.js');
+    L.w.run("globalThis.clock = 1000; Date.now = () => clock; globalThis.navigations = 0; Nodes.enabled = () => true; Nodes.goFirst = () => { navigations++; return true; }; Lazy.watchKeys()");
+    const gate = L.w.document.listeners.keydown.at(-1);
+    const event = key => ({ key, target: L.w.document.body, preventDefault() {}, stopImmediatePropagation() {} });
+    gate(event('g'));
+    L.w.run('clock += 801');
+    if (expired === 'between keys') gate(event('n'));
+    assert.ok(await settle(() => L.net.held.has('/static/keymap.js')));
+    L.net.held.get('/static/keymap.js')();
+    assert.ok(await settle(() => L.w.run("Lazy.done('keyboard')")));
+    await settle(null, 2);
+    if (expired === 'before install') L.w.run("Keymap.handle({ key: 'n', target: document.body, preventDefault() {} })");
+    assert.equal(L.w.get('navigations'), 0);
+    assert.equal(L.w.get('Keymap.pending'), null);
+  });
+}
+
+test('verification: repeated dock Open cannot bypass the stylesheet after the implementation arrives', async () => {
+  const L = lazyWorld({ cold: true, fine: false });
+  L.w.run('Shell.dockWide = () => true; Shell.dockOff = () => false');
+  L.net.hold.add('/static/shell-dock.css');
+  L.w.run('Shell.openDock("shop--api--s1", { quiet: true })');
+  assert.ok(await settle(() => L.w.run("typeof Shell.dockMount === 'function'") && L.net.held.has('/static/shell-dock.css')));
+  L.w.run('Shell.closeDock(); Shell.openDock("shop--api--s1", { quiet: true })');
+  assert.equal(L.w.document.querySelector('#dock').children.length, 0);
+  assert.equal(L.w.run("Lazy.done('shelldock')"), false);
+  L.net.held.get('/static/shell-dock.css')();
+  assert.ok(await settle(() => L.w.document.querySelector('#dock').children.length > 0));
+  L.w.run('Shell.closeDock()');
 });

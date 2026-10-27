@@ -267,10 +267,12 @@ def test_the_task_card_names_are_stubs_in_lazy_js_for_the_tasksheets_bundle():
     stubbed = re.findall(r"'(\w+)'", m.group(1))
     assert sorted(stubbed) == ["openTaskModal", "taskEditSheet", "taskMoveSheet", "taskPortSheet"]
     # the probe must be a name that is NOT stubbed, or the stub would make the bundle look loaded before its file ran
-    probe = re.search(r"tasksheets: \{[^\n]*probe: \(\) => typeof (\w+)", src).group(1)
+    exports = src.split("const LAZY_EXPORTS = {", 1)[1].split("\n};", 1)[0]
+    probe = re.search(r"'/static/task-sheets.js': \(\) => (\w+)", exports).group(1)
     assert probe not in stubbed and _declares(_code("task-sheets.js"), probe)
-    shellcreate = re.search(r"shellcreate: \{[^\n]*probe: \(\) => typeof Shell !== 'undefined' && typeof Shell\.(\w+)", src).group(1)
-    assert shellcreate == "pickRepo", "the shellcreate probe is a method that shell.js does not define"
+    assert "'/static/shell-create.js': () => Shell.pickRepo" in exports
+    assert "probe:" not in src.split("const LAZY_EXPORTS", 1)[0], "module probes have one authoritative table"
+
 
 
 def test_the_agents_route_is_lazy_and_settings_loads_the_bundle_it_reads():
@@ -314,7 +316,7 @@ def test_the_team_page_is_a_lazy_bundle_and_the_eager_part_is_a_few_bytes():
     index = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "pages/team" not in index and "team-view" not in index
     core = _code("core.js")
-    assert "function teamUse" in core and "Lazy.load('teamview')" in core and "s.team.shared === true" in core
+    assert "function teamUse" in core and "mountBundle('teamview'" in core and "s.team.shared === true" in core
     for name in ("router.js", "main.js", "nodes.js"):
         assert "TeamView" not in _code(name), name
     assert "teamSync" in _code("shell.js") and "TeamView.sbItems" in _code("shell.js")

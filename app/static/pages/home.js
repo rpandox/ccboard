@@ -558,10 +558,9 @@ registerPage('home', {
       const i = Pages.items().findIndex((x) => x.tmux === row.getAttribute('data-tmux'));
       if (i >= 0) Pages.setIndex(i);
     });
-    let usage = null;
-    if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.usageCard === 'function') { try { usage = Widgets.usageCard(usageHost); } catch (e) { console.error('ccboard usage card', e); } }
-    homePage.refs = { summary, group, away, team: null, awaySig: null, inboxHost, usageHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
+    homePage.refs = { summary, group, away, team: null, awaySig: null, inboxHost, usageHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage: null,
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
+    if (currentState()) homeUsageWatch(homePage.refs);
     startAgeTicker();
   },
   update(st) { homeRender(st); homeOnboard(st); },                                  // a board never used, with no project: the wizard once (pages/onboarding.js)
@@ -584,17 +583,17 @@ registerPage('home', {
 /* The usage card is below the session list. Fetch its component as it approaches
    the viewport, including empty boards where it is visible immediately. */
 function homeUsageWatch(r) {
-  if (r.usage || r.usageWatching || typeof Lazy === 'undefined') return;
+  if (r.usage || r.usageWatching) return;
+  if (typeof Lazy === 'undefined' && (typeof Widgets === 'undefined' || typeof Widgets.usageCard !== 'function')) return;
   r.usageWatching = true;
   const load = () => {
     if (r.usageObserver) { r.usageObserver.disconnect(); r.usageObserver = null; }
-    Lazy.load('widgets').then(() => {
-      if (homePage.refs !== r || r.usage) return;
+    mountBundle('widgets', () => {
       r.usage = Widgets.usageCard(r.usageHost);
       if (typeof state !== 'undefined' && state) r.usage.update(state);
-    }, (err) => { r.usageWatching = false; Lazy.fail('the usage card', err); });
+    }, () => homePage.refs === r && !r.usage, (err) => { r.usageWatching = false; Lazy.fail('the usage card', err, () => homeUsageWatch(r)); });
   };
-  if (typeof IntersectionObserver === 'undefined') { load(); return; }
+  if (typeof Lazy === 'undefined' || Lazy.done('widgets') || typeof IntersectionObserver === 'undefined') { load(); return; }
   r.usageObserver = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) load(); }, { root: $('#main'), rootMargin: '200px' });
   r.usageObserver.observe(r.usageHost);
 }

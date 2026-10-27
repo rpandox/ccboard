@@ -152,15 +152,19 @@ def test_script_order_core_first_main_last():
     core.js (el/api), components.js (composer), termkit.js (TermKit, definition-only), term.js (starts the page)."""
     from tests.test_static import SCRIPT_ORDER
     idx = _scripts("index.html")
-    from tests.test_static_perf import _manifest
+    from tests.test_static_perf import _manifest, first_view_measurement
     manifest = _manifest()
     assert idx == ["/static/boot.js"]
     app = manifest["app"]["js"]
     assert app[:3] == ["/static/core.js", "/static/refs.js", "/static/components.js"]
     assert app[-1] == "/static/router.js"
     assert manifest["main"]["js"] == ["/static/main.js"]
-    boot = (STATIC_ROOT / "boot.js").read_text()
-    assert "Lazy.load('app').then(() => Lazy.load('main'))" in boot
+    executed = first_view_measurement()["executed"]
+    # Observe boot's real execution, excluding only its two bootstrap scripts.
+    startup = executed[:executed.index("/static/main.js") + 1]
+    assert startup == ["/static/boot.js", "/static/lazy.js", *app, "/static/main.js"]
+    assert startup[2] == "/static/core.js" and startup[-1] == "/static/main.js"
+    assert len(startup) == len(set(startup)), f"duplicate startup execution: {startup}"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     for lazy_file in ("launcher.js", "palette.js", "dnd.js", "tree.js", "termkit.js", "charts.js", "pages/project.js", "pages/settings.js", "pages/doctor.js",

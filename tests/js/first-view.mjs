@@ -7,7 +7,7 @@ import { makeWorld, STATIC } from './harness.mjs';
 import { installDom } from './minidom.mjs';
 
 export async function firstView() {
-  const requests = [], errors = [];
+  const requests = [], errors = [], executed = [];
   const timers = new Set();
   const w = makeWorld({ companions: false, primitives: false,
     requestAnimationFrame: fn => setImmediate(fn),
@@ -39,6 +39,7 @@ export async function firstView() {
     setImmediate(() => {
       try {
         if (n.tagName === 'SCRIPT') {
+          executed.push(file);
           if (file === '/static/boot.js') w.run(fs.readFileSync(path.join(STATIC, 'boot.js'), 'utf8').replaceAll('__ASSET_VERSION__', 'test-release'));
           else w.load(file.slice(8));
         }
@@ -67,7 +68,7 @@ export async function firstView() {
   if (stable < 20 || errors.length) throw new Error('First view incomplete: ' + errors.join('\n'));
   w.run('takeDownPage()');
   const files = [...new Set(requests.filter(f => /\.(js|css)$/.test(f)))].sort();
-  return { files, requests, total: files.reduce((n, f) => {
+  return { files, requests, executed, total: files.reduce((n, f) => {
     const body = fs.readFileSync(path.join(STATIC, f.slice(8)));
     // boot is a server template: count the bytes served with a 12-character hash.
     return n + (f === '/static/boot.js' ? Buffer.byteLength(body.toString().replaceAll('__ASSET_VERSION__', 'test-release')) : body.length);

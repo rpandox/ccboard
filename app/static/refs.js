@@ -204,8 +204,7 @@ Nodes.nameOf = function (h) {
 /* Run fn once the hub bundle is here; false (and nothing loaded) while the hub view is off. A bundle that cannot be fetched is not asked again for a minute. */
 Nodes.use = function (fn) {
   if (!Nodes.enabled()) return false;
-  if (Nodes.ready) { fn(); return true; }
-  if (typeof Lazy !== 'undefined' && !(Nodes.bad && Date.now() - Nodes.bad < 60000)) Lazy.load('nodeshub').then(() => { if (Nodes.ready) fn(); }, () => { Nodes.bad = Date.now(); });
+  if (!(Nodes.bad && Date.now() - Nodes.bad < 60000)) mountBundle('nodeshub', () => { if (Nodes.ready) fn(); }, () => Nodes.enabled(), () => { Nodes.bad = Date.now(); });
   return true;
 };
 

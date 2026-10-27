@@ -978,7 +978,7 @@ Shell.quadSlots = function () {
   return [];
 };
 
-Shell.withDock = function (fn) { return Lazy.run('shelldock', fn, 'the terminal dock'); };
+Shell.withDock = function (fn) { return mountBundle('shelldock', fn); };
 Shell.openDock = function (tmux, opts) {
   if (typeof tmux !== 'string' || !tmux || !Shell.dockOn() || Shell.dockHeld() || !$('#dock')) return false;
   Shell.dock.wanted = tmux;
@@ -1157,7 +1157,7 @@ function installShell() {
 
 /* The rate-limit callout (pages/widgets.js) lives in #banner, which renderBanner() empties on every render: it is put back right after. */
 Shell.limit = function (st) {
-  if (typeof Lazy !== 'undefined' && (st?.pools != null || Lazy.done('pools'))) Lazy.run('pools', () => paintPoolStrip(state));
+  if (typeof Lazy !== 'undefined' && (st?.pools != null || Lazy.done('pools'))) mountBundle('pools', () => paintPoolStrip(state));
   try { if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function') Widgets.limitBanner(st); }
   catch (e) { console.error('ccboard limit banner', e); }
 };

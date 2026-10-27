@@ -140,12 +140,11 @@ Keymap.candidates = function (e, prefix, dialogs, editable) {
 };
 
 /* The keydown handler. Returns the binding that ran (or null), so the tests can ask. */
-Keymap.handle = function (e) {
+Keymap.handle = function (e, now = Keymap.now()) {
   if (!e || e.defaultPrevented || e.isComposing) return null;
   const key = Keymap.eventKey(e);
   if (!key || Keymap.MODIFIER_KEYS.includes(key)) return null;               // a bare Shift or Ctrl neither starts nor breaks a chord
   if (Keymap.inIframe(e)) { Keymap.pending = null; return null; }
-  const now = Keymap.now();
   const prefix = Keymap.pending && now - Keymap.pending.at <= Keymap.CHORD_MS ? Keymap.pending.keys : [];
   Keymap.pending = null;
   const dialogs = Keymap.dialogsOpen();

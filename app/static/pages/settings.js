@@ -364,7 +364,8 @@ function settingsWorkerForm(p, data) {
   for (const f of fields.values()) { f.control.addEventListener('input', draft); f.control.addEventListener('change', draft); }
   save.disabled = !data.page_widen;
   root.append(next, error, el('div', { class: 'row' }, save));
-  if (typeof EpicWorker !== 'undefined') {
+  const refs = settingsPage.refs;
+  if (typeof EpicWorker !== 'undefined') mountBundle('worker', () => {
     EpicWorker.pageWiden = data.page_widen;
     const live = EpicWorker.build({ mode: 'settings', form: true, onChange: () => paintLive() });
     const paintLive = () => live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
@@ -373,7 +374,7 @@ function settingsWorkerForm(p, data) {
     p.ccWorkerPaint = paintLive;
     live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
     root.append(el('h3', { text: 'Running worker' }), el('p', { class: 'dim', text: 'Stop and Start act now. Saving the form only changes the next restart.' }), live.root);
-  }
+  }, () => settingsPage.refs === refs);
   return root;
 }
 
@@ -1288,16 +1289,19 @@ function settingsNdPaintThis(host, st) {
    when the tab opens); the panel is built once and painted in place, so a poll never recreates the button under a finger. */
 function settingsNdPaintWorker(ui, st) {
   if (typeof EpicWorker === 'undefined') return;
-  if (!ui.worker) {
-    ui.worker = EpicWorker.build({ mode: 'settings', onChange: () => { settingsNd.rev++; settingsFill('nodes', true); } });
-    ui.workerHost.append(ui.worker.root);
-    ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
-  }
-  ui.worker.paint(EpicWorker.pick(st), { page_widen: EpicWorker.pageWiden });
+  const refs = settingsPage.refs;
+  mountBundle('worker', () => {
+    if (!ui.worker) {
+      ui.worker = EpicWorker.build({ mode: 'settings', onChange: () => { settingsNd.rev++; settingsFill('nodes', true); } });
+      ui.workerHost.append(ui.worker.root);
+      ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
+    }
+    ui.worker.paint(EpicWorker.pick(st), { page_widen: EpicWorker.pageWiden });
+  }, () => settingsPage.refs === refs);
 }
 
 function settingsNdWorkerOpen() {
-  const have = typeof EpicWorker !== 'undefined';
+  const have = typeof EpicWorker !== 'undefined' && (typeof Lazy === 'undefined' || Lazy.done('worker'));
   const demo = typeof demoOn === 'function' && demoOn();
   if (settingsNd.workerAsked || (have && EpicWorker.pageWiden !== undefined && !(demo && !EpicWorker.fixture))) return;
   const warm = async () => {
@@ -1976,7 +1980,7 @@ function settingsNdDispose() {
 /* Settings > Team (issue #197): team.js draws the panel. It is a lazy bundle, so the first visit shows a line and asks for it; the panel then watches the board's team view while it is the open
    tab (a switch, a read that finished) and stops when another tab is opened or the page goes away. */
 function settingsTeam(p) {
-  if (typeof Team !== 'undefined') { Team.settingsPanel(p); return; }
+  if (typeof Team !== 'undefined') { const refs = settingsPage.refs; mountBundle('team', () => Team.settingsPanel(p), () => settingsPage.refs === refs); return; }
   p.textContent = '';
   p.append(el('p', { class: 'dim set-note', role: 'status', text: 'Loading the team settings…' }));
   settingsTeamOpen();
@@ -1984,7 +1988,7 @@ function settingsTeam(p) {
 
 function settingsTeamOpen() {
   if (settingsPage.teamStop) return;
-  if (typeof Team === 'undefined') {
+  if (typeof Team === 'undefined' || (typeof Lazy !== 'undefined' && !Lazy.done('team'))) {
     if (typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.team || settingsPage.teamAsked) return;
     settingsPage.teamAsked = true;
     Lazy.load('team').then(() => { settingsPage.teamAsked = false; if (settingsPage.refs) { settingsFill('team', true); if (settingsPage.active === 'team') settingsTeamOpen(); } },
@@ -2078,18 +2082,21 @@ function settingsMemBlock() {
   const why = el('span', { class: 'dim' });
   const err = el('span', { class: 'v bad', role: 'status' });
   const sends = el('ul', { class: 'set-mem-sends dim' });
-  const tile = typeof memoryHealthTile === 'function' && typeof state !== 'undefined' && state && state.memory ? memoryHealthTile(state.memory, { link: true }) : null;     // v0.5.20 health tile (pages/memory.js)
-  if (typeof memoryHealthTile !== 'function' && typeof state !== 'undefined' && state && state.memory && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {      // memory.js is lazy (lazy.js): only a box with claude-mem loads it for the tile
-    Lazy.load('memory').then(() => { if (settingsPage.refs && typeof memoryHealthTile === 'function') settingsFill('box', true); }, () => { /* no tile */ });
-  }
   const hasViewer = typeof state !== 'undefined' && state && state.config && typeof state.config.mem_viewer_url === 'string' && /^https:\/\//.test(state.config.mem_viewer_url);
   const wrap = el('div', { class: 'set-mem' },
-    tile,
-    tile && !hasViewer ? el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (docs/security.md says who can reach it).' }) : null,
     el('label', { class: 'set-check set-pref' }, box,
       el('span', { class: 'set-pref-t' }, el('b', { text: 'Save finished tasks to claude-mem' }), el('span', { class: 'dim', text: SETTINGS_MEM_NOTE }))),
     why, err,
     el('details', { class: 'set-mem-what' }, el('summary', { text: 'What is sent' }), sends));
+  if (typeof state !== 'undefined' && state?.memory && (typeof Lazy !== 'undefined' || typeof memoryHealthTile === 'function')) {
+    const refs = settingsPage.refs;
+    mountBundle('memory', () => {
+      const tile = memoryHealthTile(state.memory, { link: true });
+      if (!tile) return;
+      wrap.insertBefore(tile, wrap.firstChild);
+      if (!hasViewer) wrap.insertBefore(el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (docs/security.md says who can reach it).' }), tile.nextSibling);
+    }, () => settingsPage.refs === refs, () => { /* no tile */ });
+  }
   function paint() {
     box.checked = st.prefs.writeback === true;
     box.disabled = st.available === false;

@@ -348,7 +348,7 @@ test('the Team tab asks for the lazy bundle when it opens, and says so when it c
   made.push(w);
   w.load('tree.js'); w.load('pages/project.js');
   w.run(`globalThis.__asked = [];
-    globalThis.Lazy = { bundles: { team: {} }, pending: () => [], load: (n) => { __asked.push(n); return Promise.reject(new Error('could not load')); } };`);
+    globalThis.Lazy = { done: () => false, bundles: { team: {} }, pending: () => [], load: (n) => { __asked.push(n); return Promise.reject(new Error('could not load')); } };`);
   w.location.hash = '#/p/phasezero?tab=team';
   await settle();
   assert.deepEqual(plain(w.get('__asked')), ['team']);
@@ -470,7 +470,7 @@ test('the Team tab loads the bundle on first use, draws, and stops watching the 
   w.ctx.__team = body();
   w.ctx.__loadTeam = () => w.load('team.js');
   w.run(`__answers['/api/team/state'] = () => __team; globalThis.__asked = [];
-    globalThis.Lazy = { bundles: { team: {} }, pending: () => [], wants: () => false, load: (n) => { __asked.push(n); __loadTeam(); return Promise.resolve(); } };`);
+    globalThis.Lazy = { done: () => false, bundles: { team: {} }, pending: () => [], wants: () => false, load: (n) => { __asked.push(n); __loadTeam(); return Promise.resolve(); } };`);
   w.location.hash = '#/p/phasezero?tab=team';
   await settle(8);
   assert.deepEqual(plain(w.get('__asked')), ['team']);

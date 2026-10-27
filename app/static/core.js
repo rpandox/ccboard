@@ -89,10 +89,21 @@ function ownKey(map, key) { return Object.prototype.hasOwnProperty.call(map, key
    board says some repository is shared (state.team.shared, app/main.py). With nothing shared nothing here loads a script, asks the network or changes a screen. */
 let teamViewBad = 0;
 function teamShared(st) { const s = st || (typeof state !== 'undefined' ? state : null); return !!s && !!s.team && s.team.shared === true; }
+/* All optional component mounts share the bundle's script AND CSS barrier.
+   Eager/terminal contexts have no loader; callers guard their available exports.
+   isCurrent prevents a late load from mounting into an abandoned route. */
+function mountBundle(name, mount, isCurrent = () => true, failed = null) {
+  const apply = () => { if (isCurrent()) return mount(); };
+  if (typeof Lazy === 'undefined' || Lazy.done(name)) return apply();
+  return Lazy.load(name).then(apply).catch(err => {
+    if (!isCurrent()) return;
+    if (failed) failed(err); else Lazy.fail(name, err, () => mountBundle(name, mount, isCurrent, failed));
+  });
+}
+
 function teamUse(fn) {
   if (!teamShared()) return false;
-  if (typeof TeamView !== 'undefined' && TeamView.ready) { fn(); return true; }
-  if (typeof Lazy !== 'undefined' && !(teamViewBad && Date.now() - teamViewBad < 60000)) Lazy.load('teamview').then(() => { if (typeof TeamView !== 'undefined' && TeamView.ready) fn(); }, () => { teamViewBad = Date.now(); });
+  if (!(teamViewBad && Date.now() - teamViewBad < 60000)) mountBundle('teamview', () => { if (typeof TeamView !== 'undefined' && TeamView.ready) fn(); }, () => teamShared(), () => { teamViewBad = Date.now(); });
   return true;
 }
 function teamSync(st) { if (teamShared(st)) teamUse(() => TeamView.start()); else if (typeof TeamView !== 'undefined' && TeamView.ready) TeamView.stop(); }

@@ -737,7 +737,7 @@ test('opening an epic remembers that this viewer has epics, so the Tasks page sh
 
 // ---------------------------------------------------------------- entry point: the Tasks page's Epics tab
 
-const LAZY_STUB = "globalThis.Lazy = { run: (n, fn) => fn(), wants: () => false, load: () => Promise.resolve(), pending: () => [], later() {}, warm() {} };";
+const LAZY_STUB = "globalThis.Lazy = { done: () => true, run: (n, fn) => fn(), wants: () => false, load: () => Promise.resolve(), pending: () => [], later() {}, warm() {} };";
 
 /** A world on the Tasks page with the epic bundle "loaded" (Lazy stubbed to run at once). `issue` puts a GitHub issue on one task, the sign the tab keys on. */
 async function tasksWorld({ issue = true, extra = {}, hash = '#/tasks', list = clone(FX.list), storage = null } = {}) {

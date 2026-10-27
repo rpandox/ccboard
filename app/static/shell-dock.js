@@ -175,7 +175,7 @@ Shell.dockRemote = function (key, o) {
   if (!host || !k || k.node === null) return false;
   if (typeof Nodes === 'undefined' || !Nodes.enabled()) { if (typeof toast === 'function') toast('That session is on a node that is not paired on this board', { kind: 'bad' }); return false; }
   if (D.pane && D.tmux === key) { if (o && o.focus) D.pane.focus(); return true; }
-  if (!Nodes.ready || typeof Nodes.tailTile !== 'function') { Nodes.use(() => { if (!Shell.dock.pane && !Shell.dockHeld() && !Shell.dockOff()) Shell.dockRemote(key, o); }); return false; }
+  if (!Nodes.ready || typeof Nodes.tailTile !== 'function' || (typeof Lazy !== 'undefined' && !Lazy.done('nodeshub'))) { Nodes.use(() => { if (!Shell.dock.pane && !Shell.dockHeld() && !Shell.dockOff()) Shell.dockRemote(key, o); }); return false; }
   if (!Nodes.get(k.node)) { if (typeof toast === 'function') toast('That node is not paired on this board', { kind: 'bad' }); return false; }
   const tile = Nodes.tailTile(k.node, k.tmux, { head: true, onClose: () => Shell.closeDock() });
   if (!tile) return false;
@@ -251,6 +251,12 @@ Shell.openDock = function (tmux, opts) {
   if (typeof tmux !== 'string' || !tmux) return false;
   if (!Shell.dockOn() || Shell.dockHeld()) { if (!o.quiet) Shell.dockWhy(); return false; }          // the quad owns the window: no dock over it
   if (!$('#dock')) return false;
+  // The implementation can arrive before its sheet, including a second Open.
+  if (typeof Lazy !== 'undefined' && !Lazy.done('shelldock')) {
+    D.wanted = tmux;
+    mountBundle('shelldock', () => Shell.openDock(tmux, o), () => D.wanted === tmux && !Shell.dockHeld() && !Shell.dockOff());
+    return true;
+  }
   if ((Ref.splitKey(tmux) || {}).node) return Shell.dockRemote(tmux, o);                              // another node's session: its tail tile, not a terminal
   if (!Shell.kitReady()) {                                                                            // the terminal kit loads now; the dock opens when it is here (true: it is on its way)
     Lazy.load('termkit').then(() => { if (Shell.kitReady() && !Shell.dockHeld() && !Shell.dockOff()) Shell.openDock(tmux, o); }, (e) => { if (!o.quiet) Lazy.fail('the terminal', e); });

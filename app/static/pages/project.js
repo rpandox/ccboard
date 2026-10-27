@@ -481,23 +481,21 @@ function pjSchedulesView(P, route) {
 function pjMemoryView(P) {
   const project = P.project;
   const makePalace = () => (typeof memoryPalaceView === 'function' ? memoryPalaceView(project, { repo: typeof memStoredFilters === 'function' ? memStoredFilters(project).repo : '' }) : null);
-  let palace = makePalace();
+  let palace = null;
   const placeholder = pageEmpty('database', 'Project memory', 'The memory palace of this project: observations, timeline and summaries.');
   const node = el('div', { class: 'pj-memory' },
     el('div', { class: 'pj-memory-head' }, el('a', { class: 'btn small', href: `#/memory/${encodeURIComponent(project)}`, text: 'Open in Memory' }),
       el('span', { class: 'dim', text: 'What claude-mem kept from past sessions here.' })),
     palace ? palace.node : placeholder);
   let gone = false;
-  if (palace) palace.load();
-  else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {       // pages/memory.js is a lazy bundle (lazy.js): the tab loads it, then the palace takes the placeholder's place
-    Lazy.load('memory').then(() => {
-      if (gone || palace) return;
+  if (typeof Lazy !== 'undefined' || typeof memoryPalaceView === 'function') {
+    mountBundle('memory', () => {
       palace = makePalace();
       if (!palace) return;
       node.insertBefore(palace.node, placeholder);
       placeholder.remove();
       palace.load();
-    }, () => { /* the placeholder stays */ });
+    }, () => !gone && !palace, () => { /* the placeholder stays */ });
   }
   return { node, update() { /* the palace is fetched once per visit; Retry and the Memory page refresh it */ }, onRoute() { /* static */ }, destroy() { gone = true; if (palace) palace.destroy(); } };
 }
@@ -506,17 +504,18 @@ function pjMemoryView(P) {
    a slow one or a project without gotchas leaves the strip hidden. */
 function pjGotchas(P, st) {
   const h = P.head.gotchas;
-  if (st && st.memory && typeof memoryGotchasMount !== 'function' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory && !P.gotchAsked) {      // pages/memory.js is lazy (lazy.js): load it, then paint again
-    P.gotchAsked = true;
-    Lazy.load('memory').then(() => { if (projectPage.cur === P && typeof repaintPage === 'function') repaintPage(); }, () => { /* no strip */ });
-  }
-  if (!st || !st.memory || typeof memoryGotchasMount !== 'function') { if (P.gotchFor) { P.gotchFor = null; h.textContent = ''; h.classList.add('hidden'); } return; }
-  if (P.gotchFor === P.project) return;
-  P.gotchFor = P.project;
-  h.textContent = '';
-  h.classList.add('hidden');
+  if (!st || !st.memory) { if (P.gotchFor) { P.gotchFor = null; h.textContent = ''; h.classList.add('hidden'); } return; }
+  if (P.gotchFor === P.project || P.gotchAsked) return;
+  if (typeof Lazy === 'undefined' && typeof memoryGotchasMount !== 'function') return;
+  P.gotchAsked = true;
   const project = P.project;
-  memoryGotchasMount(h, project, { isCurrent: () => projectPage.cur === P && P.project === project });
+  mountBundle('memory', () => {
+    P.gotchAsked = false;
+    P.gotchFor = project;
+    h.textContent = '';
+    h.classList.add('hidden');
+    memoryGotchasMount(h, project, { isCurrent: () => projectPage.cur === P && P.project === project });
+  }, () => projectPage.cur === P && P.project === project, () => { P.gotchAsked = false; });
 }
 
 /* The Files tab: a repo switcher and the toggles, the tree on the left (full width on a phone), the preview beside it (below it on a phone). */
@@ -684,8 +683,7 @@ function pjTeamView(P, route) {
     host.textContent = '';
     sec = Team.projectSection(host, { project: () => P.project, repo: () => pjParse(P.route, pjState()).repo });
   };
-  if (typeof Team !== 'undefined') mount();
-  else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.team) Lazy.load('team').then(mount, () => { if (!dead) { host.textContent = ''; host.append(el('p', { class: 'bad', role: 'alert', text: 'The team view did not load. Reload the page to try again.' })); } });
+  if (typeof Lazy !== 'undefined' || typeof Team !== 'undefined') mountBundle('team', mount, () => !dead, () => { host.textContent = ''; host.append(el('p', { class: 'bad', role: 'alert', text: 'The team view did not load. Reload the page to try again.' })); });
   else { host.textContent = ''; host.append(el('p', { class: 'bad', text: 'team.js did not load' })); }
   return {
     node: host,
