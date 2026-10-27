@@ -456,7 +456,7 @@ test('team.js is a lazy bundle: not in index.html, in lazy.js with its own sheet
   const idx = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.ok(!idx.includes('team.js') && !idx.includes('team.css'));
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /team: \{ js: \['\/static\/team\.js'\], css: \[\{ href: '\/static\/pages\/team\.css', rank: 16 \}\]/);
+  assert.match(lazy, /team: \{ js: \['\/static\/team\.js'\], css: \[\{ href: '\/static\/pages\/team\.css', rank: 116 \}\]/);
   assert.deepEqual([...lazy.matchAll(/^  (\w+): \{ needs: \[[^\]]*'team'/gm)].map((m) => m[1]), ['teamview'], 'only the Team page (issue #200) builds on the team bundle');
   const src = fs.readFileSync(path.join(STATIC, 'team.js'), 'utf8');
   assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|cssText|\.style\b|style:/);

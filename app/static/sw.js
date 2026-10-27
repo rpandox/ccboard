@@ -1,6 +1,8 @@
 /* ccboard service worker: offline shell (network-first; vendor and fonts cache-first) + Web Push. API and terminal are never cached.
    This file is a template: /sw.js (app/main.py render_sw) fills in the build id and the list of static files,
-   both generated from one glob over app/static, so no file can be forgotten. */
+   both generated from one glob over app/static, so no file can be forgotten.
+   v0.5.119: new route files and blueprint-used.css are included by that glob; their
+   bytes change ASSET_VERSION and therefore bump this cache without a manual counter. */
 'use strict';
 const CACHE = 'ccboard-shell-__ASSET_VERSION__';
 const SHELL = JSON.parse('__SHELL_JSON__');

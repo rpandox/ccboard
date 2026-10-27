@@ -313,7 +313,7 @@ function takeDownPage() {
   if (old && typeof old.unmount === 'function') { try { old.unmount(); } catch (e) { console.error('ccboard unmount', mountedId, e); } }
   mountedId = null;
   mountedHash = '';
-  if (root) root.textContent = '';
+  if (root && !root.querySelector('.startup-skeleton')) root.textContent = '';
   return root;
 }
 
@@ -329,7 +329,7 @@ function routeLazy(r, wait) {
   if (root) {
     lazyHint = setTimeout(() => {
       lazyHint = null;
-      if (token !== lazyToken || mountedId) return;
+      if (token !== lazyToken || mountedId || root.querySelector('.startup-skeleton')) return;
       root.textContent = '';
       root.append(el('div', { class: 'dim lazy-hint', role: 'status', text: 'Loading…' }));
     }, 250);
@@ -354,6 +354,7 @@ function showLoadError(r, err) {
     const root = takeDownPage();
     if (!root) return;
     try { document.body.setAttribute('data-page', r.id); } catch (_) { /* no body */ }
+    root.textContent = '';
     const retry = el('button', { class: 'btn small', type: 'button', text: 'Retry', onclick: () => { lazyToken += 1; lazyRetry = false; route(); } });
     root.append(el('div', { class: 'load-error', role: 'alert' }, pageEmpty('warning-sign', 'This page could not be loaded', 'The connection dropped or the board is restarting. Try again in a moment.'), el('div', { class: 'actions' }, retry)));
   } finally { routing = false; }

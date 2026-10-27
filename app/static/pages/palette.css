@@ -1,0 +1,41 @@
+/* ---------- command palette and shortcut help (palette.js): one modal dialog#helpdlg, class palette ---------- */
+dialog#helpdlg.palette { margin:max(8px, 9vh) auto 0; padding:0; width:min(640px, calc(100vw - 16px)); max-width:none; max-height:min(600px, calc(100vh - 16px - 9vh)); max-height:min(600px, calc(100dvh - 16px - 9vh));
+                         border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--fg); overflow:hidden; box-shadow:0 14px 44px rgba(0,0,0,.55); }
+dialog#helpdlg.palette[open] { display:flex; flex-direction:column; animation:pal-in .12s ease-out; }
+dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
+@keyframes pal-in { from { transform:translateY(-8px); opacity:.5; } to { transform:none; opacity:1; } }
+@media (prefers-reduced-motion:reduce) { dialog#helpdlg.palette[open] { animation:none; } }
+@media (max-width:599px) { dialog#helpdlg.palette { margin-top:calc(var(--sat) + 8px); } }
+
+.palette .pal-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
+.palette .pal-input { flex:1 1 auto; min-width:0; width:100%; height:40px; font:14px/1 var(--font-ui); }
+@media (pointer:coarse) { .palette .pal-input { font-size:16px; } }          /* 16 px: iOS Safari zooms into a smaller field */
+.palette .pal-list { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:2px 0 6px; }
+.palette .pal-group { padding:10px 14px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.palette .pal-item { display:flex; align-items:center; gap:10px; min-height:var(--tap); padding:4px 14px 4px 12px; border-left:2px solid transparent; cursor:pointer; -webkit-touch-callout:none; }
+.palette .pal-item.sel { background:rgba(77,208,225,.12); border-left-color:var(--sig); }
+.palette .pal-label { flex:0 0 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }   /* the name keeps its room; the hint is what gives */
+.palette .pal-hit { color:var(--sig); font-weight:700; }
+.palette .pal-hint { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.3 var(--font-mono); color:var(--dim); }
+.palette .pal-kbd { flex:none; margin-left:auto; padding:1px 6px; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--dim); font:11px/1.5 var(--font-mono); }
+.palette .pal-hint + .pal-kbd { margin-left:0; }
+.palette .pal-note { flex:none; font:11px/1.3 var(--font-mono); color:var(--dim); white-space:nowrap; }
+.palette .pal-act { flex:none; padding:1px 6px; border:1px solid var(--line); border-radius:3px; font:11px/1.5 var(--font-ui); color:var(--fg-2); }
+.palette .pal-item.off .pal-label, .palette .pal-item.off .pal-act { color:var(--dim); }
+.palette .pal-empty { padding:16px 14px; color:var(--dim); }
+.palette .pal-foot { flex:none; padding:7px 14px calc(7px + var(--sab)); border-top:1px solid var(--line); font:11px/1.4 var(--font-mono); color:var(--dim); }
+@media (hover:hover) { .palette .pal-item:hover:not(.sel) { background:var(--card); } }
+.palette .pal-input:focus-visible, .palette .help-head .bp5-button:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+.palette .pal-input:focus, .palette .pal-input:focus-visible { box-shadow:none; }       /* Blueprint's inset focus shadow would be a second --sig ring inside the outline */
+dialog#helpdlg:focus { outline:none; }                                                  /* the help dialog holds the focus itself (palette.js openHelp), like the sheets */
+
+/* the shortcut list (Palette.openHelp) */
+.palette.help .help-head { justify-content:space-between; }
+.palette .help-title { margin:0; font-size:15px; font-weight:600; }
+.palette .help-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:4px 14px 14px; }
+.palette .help-group h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+.palette .help-row { display:flex; align-items:baseline; gap:12px; padding:3px 0; }
+.palette .help-keys { flex:none; width:clamp(104px, 28%, 170px); color:var(--dim); font:12px/1.6 var(--font-mono); }
+.palette .help-keys .pal-kbd { margin-left:0; }
+.palette .help-text { min-width:0; font-size:13px; color:var(--fg-2); }
+

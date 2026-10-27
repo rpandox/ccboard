@@ -1,0 +1,20 @@
+/* Only render-blocking sheet. Match shell.css's default frame, without fonts or
+   vendor widgets. These frame rules stop applying as soon as Shell installs. */
+body[data-shell=""] { margin:0; background:#14181c; color:#d4d8de; font:13px/1.45 system-ui,sans-serif; height:100vh; height:100dvh; overflow:hidden; }
+body[data-shell=""] #app { display:grid; height:100%; grid-template-columns:0 minmax(0,1fr); grid-template-rows:48px minmax(0,1fr); grid-template-areas:"top top" "side main"; }
+body[data-shell=""] #topbar { grid-area:top; display:flex; align-items:center; padding:0 12px; border-bottom:1px solid #30363d; }
+body[data-shell=""] #sidebar { grid-area:side; border-right:1px solid #30363d; }
+body[data-shell=""] #main { grid-area:main; min-width:0; padding:0 12px; margin:0; max-width:none; }
+body[data-shell=""] .skip { position:absolute; top:-80px; }
+body[data-shell=""] .skip:focus { top:8px; }
+body[data-shell=""] .hidden, body[data-shell=""] #bnav { display:none; }
+.startup-brand { font-weight:600; }
+.startup-skeleton { position:fixed; top:54px; left:12px; right:12px; padding:24px 0; }
+@media (min-width:600px) { .startup-skeleton { left:60px; } }
+@media (min-width:840px) { .startup-skeleton { left:272px; } }
+.startup-heading { width:120px; height:20px; margin-bottom:28px; background:#252b32; border-radius:2px; }
+.startup-row { height:54px; margin:12px 0; border:1px solid #30363d; border-radius:2px; background:#1b2026; }
+@media (min-width:600px) { body[data-shell=""] #app { grid-template-columns:48px minmax(0,1fr); } }
+@media (min-width:840px) { body[data-shell=""] #app { grid-template-columns:260px minmax(0,1fr); } }
+@media (pointer:coarse) { body[data-shell=""] #app { grid-template-rows:54px minmax(0,1fr); } }
+html.force-coarse body[data-shell=""] #app { grid-template-rows:54px minmax(0,1fr); }

@@ -21,15 +21,13 @@ const same = (a, b) => assert.deepEqual(plain(a), b);
 
 // ---------------------------------------------------------------- the file itself
 
-test('nodes.js is a classic script in index.html right after core.js, ahead of everything that builds a key', () => {
-  const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
-  const srcs = [...html.matchAll(/<script defer src="([^"]+)"/g)].map((m) => m[1]);
-  const at = srcs.indexOf('/static/nodes.js');
-  assert.equal(at, srcs.indexOf('/static/core.js') + 1, 'nodes.js directly after core.js');
-  for (const later of ['components.js', 'live.js', 'shell.js', 'router.js', 'pages/quad.js']) {
-    const i = srcs.indexOf('/static/' + later);
-    assert.ok(i < 0 || i > at, `${later} loads after nodes.js`);
-  }
+test('refs.js loads after core; node discovery and pairing remain on-use bundles', () => {
+  const w = makeWorld({ companions: false });
+  w.load('lazy.js');
+  const app = plain(w.get('LAZY_BUNDLES.app.js'));
+  assert.equal(app.indexOf('/static/refs.js'), app.indexOf('/static/core.js') + 1);
+  assert.ok(!app.includes('/static/nodes.js'));
+  assert.deepEqual(plain(w.get('LAZY_BUNDLES.nodes.js')), ['/static/nodes.js']);
 });
 
 test('nodes.js: no innerHTML, no inline style, no cssText, no storage, no network, no timer', () => {
@@ -43,7 +41,7 @@ test('the pairing half is not in the first-paint set: nodes-pair.js is in no ind
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.ok(!html.includes('nodes-pair.js'), 'index.html does not load nodes-pair.js');
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /settings: \{ needs: \['agents'\], js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
+  assert.match(lazy, /settings: \{ needs: \['agents',[^\]]*\], js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
   const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
   for (const moved of ['NodeView.SCOPES', 'NodeView.peerRow', 'NodeView.auditWord', 'NodeView.errField']) assert.ok(!eager.includes(moved), `${moved} lives in nodes-pair.js`);
 });

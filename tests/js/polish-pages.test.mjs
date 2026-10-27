@@ -387,7 +387,7 @@ test('style.css: under 700 px a task card\'s actions wrap instead of scrolling s
 
 test('css pins: the palette input has one focus ring (no Blueprint inset shadow), the help dialog holds its own focus quietly, the task form\'s Start button spaces its icon', () => {
   const read = (f) => fs.readFileSync(path.join(STATIC, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const pages = read('pages.css');
+  const pages = ['pages.css', 'pages/palette.css', 'pages/tasks.css'].map(read).join('\n');
   const ring = /\.palette \.pal-input:focus,\s*\.palette \.pal-input:focus-visible\s*\{([^}]*)\}/.exec(pages);
   assert.ok(ring && /box-shadow:\s*none/.test(ring[1]), 'the inset shadow goes, the 2 px outline stays');
   assert.match(pages, /\.palette \.pal-input:focus-visible[^{]*\{[^}]*outline:\s*2px solid var\(--sig\)/);

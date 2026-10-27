@@ -32,7 +32,7 @@ test('pending options have one restart control; cleared options put it beside th
 });
 
 test('armed demo confirmation keeps both blockers directly under its sole button pair at 390 and 1280', async t => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages/settings.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages/restart.css'), 'utf8');
   assert.match(css, /\.set-restart-control\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/);
   for (const width of [390, 1280]) {
     const w = await world(t, FX.restart);

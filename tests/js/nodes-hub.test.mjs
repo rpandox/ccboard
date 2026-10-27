@@ -730,7 +730,7 @@ test('Settings, Nodes: the read model\'s line under a paired node: status with i
 
 test('the hub view is a lazy bundle: nodes-hub.js, pages/node.js and their sheet, loaded for the three node routes; index.html carries none of it', () => {
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /nodeshub: \{ js: \['\/static\/nodes-hub\.js', '\/static\/pages\/node\.js'\], css: \[\{ href: '\/static\/pages\/nodes\.css', rank: 14 \}\]/);
+  assert.match(lazy, /nodeshub: \{[^\n]* js: \['\/static\/nodes-hub\.js', '\/static\/pages\/node\.js'\], css: \[\{ href: '\/static\/pages\/nodes\.css', rank: 114 \}\]/);
   assert.match(lazy, /node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub'/);
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.ok(!/nodes-hub|pages\/node\.js/.test(html));

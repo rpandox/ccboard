@@ -86,7 +86,6 @@
 .tk-docked { --tk-h:28px; display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; gap:6px; box-sizing:border-box; min-width:0; padding:4px 6px; background:var(--bg-0); border-top:1px solid var(--line-soft); }
 .tk-docked textarea.composer.tk-ta { flex:1 1 auto; display:block; box-sizing:border-box; width:auto; min-width:0; height:var(--tk-h); min-height:var(--tk-h); max-height:var(--tk-h); margin:0; padding:3px 8px; font-size:13px; line-height:1.4; resize:none; overflow-y:hidden; }
 .tk-docked .tk-send, .tk-docked .tk-more { flex:0 0 auto; align-self:center; }
-.bp5-dark .bp5-button.tk-more:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:var(--tk-h); min-height:var(--tk-h); padding:0 6px; justify-content:center; font-weight:600; }
 @media (pointer:coarse) { .tk-docked { --tk-h:44px; } .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-size:16px; } }
 html.force-coarse .tk-docked { --tk-h:44px; }
 html.force-coarse .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-size:16px; }

@@ -43,7 +43,7 @@ async function boardAt(hash) {
 for (const route of ['#/tasks', '#/p/phasezero?tab=tasks']) {
   test(`qa-ui.sh ${route}: the demo has a startable Backlog card${route === '#/tasks' ? '' : ' and the owner chip on the handed in-progress card'}`, async () => {
     const w = await boardAt(route);
-    const answer = String(w.run(qaExpression(route)));
+    const answer = String(await w.run(qaExpression(route)));
     assert.equal(answer, "ok");
   });
 }

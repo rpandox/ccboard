@@ -410,6 +410,9 @@ def is_immutable_static(path: str) -> bool:
     """
     if not path.startswith("/static/") or ".." in path.split("/") or "//" in path:
         return False
+    # Generated app CSS changes as app selectors change; revalidate under its stable name.
+    if path == "/static/vendor/blueprint/blueprint-used.css":
+        return False
     return path.startswith("/static/vendor/") or path.endswith(".woff2")
 
 

@@ -2237,7 +2237,7 @@ test('pages.css (quad block, fullscreen): chrome hidden through html.quad-fs, th
   const base = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
   assert.match(base, /#page > \* \{ max-width:1400px;/, 'the page cap that rule beats (1,2,1 over 1,0,0)');
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
-  assert.ok(html.indexOf('/static/pages.css') > 0 && html.indexOf('/static/charts.css') > html.indexOf('/static/pages.css'), 'pages.css is linked before charts.css');
+  assert.ok(!html.includes('/static/charts.css'), 'charts load with Usage');
   assert.match(fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8'), /quad: \{[^}]*pages\/quad\.css/, 'and quad.css is inserted before charts.css (lazy.js), so it still comes after the page cap');
   const head = quad.match(/html\.quad-fs #page \.quad \.q-head \{([^}]*)\}/)[1];
   assert.match(head, /flex-wrap:nowrap/, 'one row');

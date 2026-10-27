@@ -16,21 +16,16 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/vendor/fonts/inter-latin-wght-normal.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/vendor/blueprint/blueprint-icons-20.woff2">
-<link rel="stylesheet" href="/static/vendor/blueprint/blueprint.css">
-<link rel="stylesheet" href="/static/vendor/blueprint/blueprint-icons.css">
-<link rel="stylesheet" href="/static/tokens.css">
-<link rel="stylesheet" href="/static/style.css">
-<link rel="stylesheet" href="/static/shell.css">
-<link rel="stylesheet" href="/static/pages.css">
-<link rel="stylesheet" href="/static/charts.css">
-<link rel="stylesheet" href="/static/termkit.css">
+<link rel="stylesheet" href="/static/skeleton.css">
 </head>
 <body class="bp5-dark" data-shell="" data-page="">
 <a class="skip" href="#main">Skip to content</a>
 <div id="app" class="app">
-  <header id="topbar"></header>
+  <header id="topbar"><span class="startup-brand">ccboard</span></header>
   <aside id="sidebar" aria-label="Projects"></aside>
-  <main id="main" tabindex="-1"><div id="banner"></div><div id="page"></div></main>
+  <main id="main" tabindex="-1"><div id="banner"></div><div id="page"><div class="startup-skeleton" role="status" aria-label="Loading ccboard">
+  <div class="startup-heading"></div><div class="startup-row"></div><div class="startup-row"></div><div class="startup-row"></div>
+</div></div></main>
   <aside id="dock" class="hidden" aria-label="Terminal dock"></aside>
 </div>
 <nav id="bnav" aria-label="Sections"></nav>
@@ -38,22 +33,6 @@
 <dialog id="sheet"></dialog>
 <dialog id="helpdlg" aria-label="Help"></dialog>
 <div id="toasts" role="status" aria-live="polite"></div>
-<script defer src="/static/core.js"></script>
-<script defer src="/static/nodes.js"></script>
-<script defer src="/static/components.js"></script>
-<script defer src="/static/keymap.js"></script>
-<script defer src="/static/live.js"></script>
-<script defer src="/static/lazy.js"></script>
-<script defer src="/static/shell.js"></script>
-<script defer src="/static/router.js"></script>
-<script defer src="/static/pages/home.js"></script>
-<script defer src="/static/pages/inbox.js"></script>
-<script defer src="/static/pages/widgets.js"></script>
-<script defer src="/static/pages/tasks.js"></script>
-<script defer src="/static/pages/agents.js"></script>
-<script defer src="/static/pages/search.js"></script>
-<script defer src="/static/pages/session.js"></script>
-<script defer src="/static/pages/placeholders.js"></script>
-<script defer src="/static/main.js"></script>
+<script defer src="/static/boot.js"></script>
 </body>
 </html>

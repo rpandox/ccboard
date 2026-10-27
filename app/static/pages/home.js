@@ -8,79 +8,6 @@
    The header, usage pills, nav and the render() state consumer are in shell.js; the notify panel and nodes strip in pages/settings.js. */
 'use strict';
 
-/* The banner: one message at a time (a notice, offline, an error, a login that does not work, a recovery, a rate limit, tmux down, not logged in). renderBanner only
-   removes what it put there itself and stray text, so a callout another file keeps in #banner (Widgets.limitBanner) survives a repaint. */
-const bannerOwn = [];
-
-/* "2 Claude and 1 Codex sessions": last_recovery.agents maps each recovered session to its agent; a record from before that field says "3 sessions". */
-function recoveryWho(v) {
-  const n = v.recovered.length, by = {};
-  for (const name of v.recovered) { const a = (v.agents || {})[name]; if (a) by[a] = (by[a] || 0) + 1; }
-  const parts = Object.keys(by).map((a) => `${by[a]} ${a.charAt(0).toUpperCase()}${a.slice(1)}`);
-  return `${parts.length ? parts.join(' and ') : n} session${n === 1 ? '' : 's'}`;
-}
-
-function renderBanner() {
-  const b = $('#banner');
-  if (!b) return;
-  for (const n of Array.from(b.childNodes || b.children || [])) {
-    if (n.nodeType === 1 && !bannerOwn.includes(n)) continue;           // somebody else's element: leave it
-    if (typeof b.removeChild === 'function') b.removeChild(n);
-  }
-  bannerOwn.length = 0;
-  b.classList.remove('warn', 'info', 'login');                               // only the classes this function owns: Widgets.limitBanner keeps its own
-  const own = (...nodes) => { for (const n of nodes) { bannerOwn.push(n); b.append(n); } };
-  const limitWidget = typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function';
-  const rl = limitWidget ? null : rateLimitOf(state);                      // the limit callout is Widgets' job once it exists
-  if (ui.notice) {
-    b.classList.add('warn');
-    own(el('span', { text: ui.notice }), el('button', { class: 'minimal small', type: 'button', onclick: () => { ui.notice = null; renderBanner(); }, text: 'ok' }));
-  } else if (ui.offline) {
-    b.classList.add('warn');
-    own(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
-  } else if (ui.error) {
-    own(el('span', { text: ui.error }), el('button', { class: 'minimal small', type: 'button', onclick: () => setError(null), text: 'dismiss' }));
-  } else if (acctProblem(state)) {
-    // a session stopped on an authentication error (state.accounts.problem): the login of that account does not work. Bordered actions only: Log in again goes to that
-    // account's row in Settings (where it is the row's lead action), Switch back is offered right after a switch, dismiss is for a false alarm
-    const p = acctProblem(state);
-    b.classList.add('warn', 'login');
-    const acts = el('div', { class: 'banner-acts' }, el('button', { class: 'small', type: 'button', onclick: () => acctProblemOpen(p), text: 'Log in again' }));
-    if (p.back && p.back.key) acts.append(el('button', { class: 'small', type: 'button', title: `Make ${p.back.label || 'the other account'} the account in use again`, onclick: () => acctProblemBack(p), text: `Switch back to ${p.back.label || 'the other account'}` }));
-    const x = el('button', { class: 'minimal small bn-x', type: 'button', 'aria-label': 'dismiss', title: 'Dismiss this notice: a false alarm, or the login was fixed in a terminal', onclick: () => acctProblemDismiss(), text: '×' });   // a corner ×, like the limit callout's
-    own(el('span', { text: acctProblemText(p) }), acts, x);                 // on a phone the × shares the text line and the two real actions keep one line below
-  } else if (state && state.deploy && state.deploy.pending) {
-    const d = state.deploy;
-    b.classList.add('info');                                                 // an update is news, not an error: the red bar is for ui.error and tmux_down
-    if (d.hold) {
-      const asked = d.forced || ui.installNow > Date.now();                   // #313: asked here (a poll in flight keeps it) or confirmed by the board
-      const why = (d.reasons || []).length ? ` (${d.reasons.join(', ')})` : '';
-      own(el('span', { text: `An update is ready. It installs when the terminals are closed${why}, or in ${d.minutes_left} min at the latest.` }),
-        el('button', { class: 'primary small', onclick: deployNow, disabled: asked ? true : null, text: asked ? 'installing at the next check' : 'Install now' }));
-    } else {
-      own(el('span', { text: 'Update installing: the board restarts and is back in about a minute.' }));
-    }
-  } else if (state && state.last_recovery && state.last_recovery.value && (state.last_recovery.value.recovered || []).length) {
-    b.classList.add('warn');
-    const v = state.last_recovery.value;
-    const cont = v.continue || [];
-    own(el('span', { text: `After a restart, ${recoveryWho(v)} relaunched: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
-      el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/recovery/dismiss'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
-  } else if (rl) {
-    own(el('span', { text: `Rate limited: ${rl.message || ''}${rl.session ? ' (' + rl.session + ')' : ''}` }),
-      el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
-  } else if (state && state.tmux_down) {
-    const fix = typeof state.tmux_fix === 'string' ? state.tmux_fix : '';       // this platform's start command (#309); an older board sends none
-    own(el('span', null, 'The ccboard tmux server is not running.', fix ? [' Start it on the box: ', el('code', { class: 'bn-cmd' }, fix.split(' ').flatMap((t, i) => (i ? [' ', el('span', { class: 'bn-tok', text: t })] : [el('span', { class: 'bn-tok', text: t })])))] : false),   // wraps only at the command's spaces
-      el('button', { class: 'primary small', type: 'button', onclick: () => { const h = '#/settings?sec=doctor'; if (typeof navigate === 'function') navigate(h); else location.hash = h; }, text: 'Open Doctor' }));
-  } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
-    b.classList.add('warn');
-    own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary small', type: 'button', onclick: () => accountLogin(), text: 'Log in' }));
-  }
-  if (bannerOwn.length) b.classList.remove('limit-only');                    // the limit callout is no longer alone in the banner
-  if (state) homeAwayTouch(state);                                           // every render counts as "the tab was looked at", on any page
-}
-
 /* The diff and pull request sheet of a task card (openTaskModal) and its segmented control (diffSideControl) are task-sheets.js, a lazy bundle: a card's Diff / New PR button loads it. */
 
 /* The first-run redirect lives in pages/onboarding.js, a lazy bundle (lazy.js): only a board that was never used and has no project asks for it (once per page load; the
@@ -92,354 +19,6 @@ function homeOnboard(st) {
   if (homeOnboardAsked || typeof Lazy === 'undefined' || !st || !st.setup || !st.setup.first_run || (Array.isArray(st.projects) && st.projects.length)) return;
   homeOnboardAsked = true;
   Lazy.load('onboarding').then(() => { if (typeof onboardingMaybeRedirect === 'function') onboardingMaybeRedirect(currentState() || st); }, (e) => console.error('ccboard onboarding', e));
-}
-
-let homeDndAsked = false;
-let homeLaneBar = null;                                            // the dispatch bar of #/tasks (dnd.js): one node kept across repaints
-
-function renderTasks() {
-  const sec = $('#tasks');
-  if (!sec) return;
-  if (typeof Dnd !== 'undefined' && Dnd.afterDrag(renderTasks)) return;      // a card is being dragged: the board repaints once it is dropped, never under the pointer
-  sec.textContent = '';
-  const list = boardTasks(state);                                  // the poll's rows with the optimistic Start / add / edit / delete laid over them
-  if (!list.length) { sec.classList.add('hidden'); return; }
-  sec.classList.remove('hidden');
-  // the page's own head (no card around the board: the task cards are the only bordered boxes), then one column per column that has a card
-  sec.append(el('div', { class: 'page-head tk-head' },
-    el('h1', { text: `Tasks (${list.length})` }),
-    el('span', { class: 'summary', text: 'one worktree + branch per task; columns follow the session state' }),
-    el('div', { class: 'actions' }, el('button', { class: 'small primary', type: 'button', text: '+ task', title: 'new task: now, later (backlog) or scheduled', onclick: () => homeCreate('task') }))));
-  if (typeof Dnd !== 'undefined' && typeof Dnd.laneBar === 'function') {       // lanes above the board (dnd.js): drop a Backlog card on ◆ Claude / ◇ Codex, or on a running session's chip
-    if (!homeLaneBar) homeLaneBar = Dnd.laneBar({});
-    homeLaneBar.ccPatch(state);
-    sec.append(homeLaneBar);
-  } else if (typeof Lazy !== 'undefined' && Lazy.wants('dnd')) {               // dnd.js is a lazy bundle (lazy.js): the bar's room is kept while it loads, then the board is drawn again
-    sec.append(el('div', { class: 'dnd-bar-slot' }));
-    if (!homeDndAsked) { homeDndAsked = true; Lazy.load('dnd').then(() => renderTasks(), () => { homeDndAsked = false; }); }
-  }
-  const grid = el('div', { class: 'kanban' });
-  for (const [key, label] of BOARD_COLUMNS) {
-    const items = list.filter(t => t.column === key);
-    if (!items.length && key !== 'backlog') continue;                // Backlog stays (it is where a task starts); an empty In progress / PR / Merged column is only a heading
-    const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h2', { text: `${label} (${items.length})` }));
-    if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued: + task, then Later' }));
-    for (const t of items) col.append(taskCard(t));
-    grid.append(col);
-  }
-  sec.append(grid);
-}
-
-function renderJobs() {
-  const sec = $('#jobs');
-  if (!sec) return;
-  sec.textContent = '';
-  const jobs = state.jobs || [];
-  const runs = state.runs || [];
-  if (!jobs.length && !runs.length) { sec.classList.add('hidden'); return; }
-  sec.classList.remove('hidden');
-  const c = state.claude || {};
-  const cx = (state.agents && state.agents.codex) || {};
-  const logins = [c.installed && !c.loggedIn ? 'Claude is not logged in on this box: runs are deferred until you Log in (headless runs use the same subscription login)' : '',
-    jobs.some((j) => j.agent === 'codex') && cx.installed && !cx.loggedIn ? 'Codex is not logged in on this box: its runs are deferred until you log in (Settings)' : ''].filter(Boolean);
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }),
-    el('span', { class: 'hint', text: 'headless runs · max 2 at once · each agent pauses above 85% of its window · ' + schedWindowNotes(state, jobs).map((x) => x.text).join(' · ') }),
-    ...logins.map((t) => el('span', { class: 'dim', text: t }))));
-  const batches = {};
-  for (const j of jobs) if (j.batch_id) (batches[j.batch_id] = batches[j.batch_id] || []).push(j);
-  for (const [bid, js] of Object.entries(batches)) {
-    const done = js.filter(j => j.last_status && !j.enabled).length;
-    const ok = js.filter(j => j.last_status === 'ok').length;
-    sec.append(el('div', { class: 'dim', text: `batch ${bid}: ${js.length} repos · ${done} finished · ${ok} ok · ${js.filter(j => j.enabled).length} waiting` }));
-  }
-  for (const j of jobs) {
-    const jr = runs.filter(r => r.job_id === j.id).slice(0, 3);
-    const row = el('div', { class: 'sess' + (j.enabled ? '' : ' muted'), 'data-job': j.id, 'data-agent': j.agent || 'claude' },
-      el('div', { class: 'main' },
-        agentGlyph(j.agent || 'claude'),
-        el('span', { class: 'name', text: j.name }),
-        el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : j.enabled ? 'parked: Run now' : 'disabled' }),
-        el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode}${jobLimitText(j)}${j.last_status ? ' · last: ' + j.last_status : ''}` })),
-      el('div', { class: 'actions' },
-        jobFableButton(j),
-        el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
-        el('button', { type: 'button', class: 'minimal', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
-        confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`), true)));
-    for (const r of jr) {
-      row.append(el('div', { class: 'last', 'data-run': r.id, 'data-agent': r.agent || j.agent || 'claude' },
-        el('span', { class: 'dim' }, agentGlyph(r.agent || j.agent || 'claude'), ' ', runLineText(r, j.agent)),
-        r.result ? el('span', { text: r.result.slice(0, 300) }) : null,
-        r.task_id ? el('span', { class: 'row' },
-          el('button', { onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); openPage(x.attach_url); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
-          el('span', { class: 'dim', text: `task card: ${r.branch}` })) : null));
-    }
-    sec.append(row);
-  }
-}
-
-function inboxItems() {
-  if (typeof Inbox !== 'undefined' && Inbox && typeof Inbox.items === 'function') return state ? Inbox.items(state) : [];   // pages/inbox.js: the nine kinds, in their order
-  const items = [];
-  if (!state) return items;
-  const pend = {};
-  for (const pr of (state.pending_permissions || [])) pend[pr.tmux_name] = pr;
-  for (const p of state.projects) {
-    for (const r of repoGroups(p)) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name, perm: pend[s.tmux] || null });
-    for (const s of p.orphan_sessions) if (s.needs_attention) items.push({ ...s, project: p.name, perm: pend[s.tmux] || null });
-  }
-  return items.sort((a, b) => (a.state_at || '').localeCompare(b.state_at || ''));  // oldest first
-}
-
-/* ---------- the keyboard selection and the actions on it (keymap.js drives these; palette.js reads them) ----------
-   One selection for every list of sessions: Home (the inbox section, then the open project blocks), the inbox page and the Agents roster. The index
-   stays in ui.inboxSel (a click on a card sets it too); Pages remembers the tmux name beside it so a poll that reorders the list keeps
-   the same session selected, and the 'sel' class is painted on every row or card of that session. Only the list on screen answers:
-   on any other page items() is empty and j / k are not handled. */
-const Pages = {
-  selTmux: null,            // the selected session's tmux name (the index alone would point at another session after a reorder)
-  selHash: '',              // the route the selection was made on: with a peek open, a selection made before it opened does not beat the peek
-  retry: null,
-};
-
-Pages.hashNow = function () { return (typeof location !== 'undefined' && location.hash) || '#/'; };
-
-Pages.listId = function () {
-  const id = typeof mountedId !== 'undefined' && mountedId ? mountedId : (typeof currentRoute === 'function' && currentRoute() ? currentRoute().id : '');
-  return id === 'agents' || id === 'inbox' || id === 'home' ? id : '';
-};
-
-/* Every live session in the order the Agents page shows them (blocked first, grouped by project): mod+1..9 and the palette count in it. */
-Pages.order = function () {
-  if (typeof state === 'undefined' || !state) return [];
-  return agentsGroups(rosterSessions(state)).flatMap((g) => g.items);
-};
-
-/* The sessions the selection can walk on this page, in screen order ([] where the page has no session list). */
-Pages.items = function () {
-  if (typeof state === 'undefined' || !state) return [];
-  const id = Pages.listId();
-  if (id === 'agents') return Pages.order();
-  if (id === 'home') return homeVisibleItems();
-  if (id === 'inbox') return inboxItems();
-  return [];
-};
-
-Pages.active = function () { return Pages.items().length > 0; };
-
-/* Re-find the selection in the current list: by tmux name when it is still there, else by its index (clamped), else none. */
-Pages.sync = function () {
-  const items = Pages.items();
-  if (!items.length) { ui.inboxSel = -1; Pages.selTmux = null; return items; }
-  const at = Pages.selTmux ? items.findIndex((x) => x.tmux === Pages.selTmux) : -1;
-  if (at >= 0) ui.inboxSel = at;
-  else if (ui.inboxSel >= 0) { ui.inboxSel = Math.min(ui.inboxSel, items.length - 1); Pages.selTmux = items[ui.inboxSel].tmux; }
-  else Pages.selTmux = null;
-  return items;
-};
-
-Pages.selected = function () {
-  const items = Pages.items();
-  return ui.inboxSel >= 0 && ui.inboxSel < items.length ? items[ui.inboxSel] : null;
-};
-
-Pages.rowNodes = function () {
-  try { return Array.from(document.querySelectorAll('#page .rrow, #page .inbox-item, #page .inbox-card')); } catch (_) { return []; }
-};
-
-Pages.nodeFor = function (tmux) { return tmux ? (Pages.rowNodes().find((n) => n.getAttribute('data-tmux') === tmux) || null) : null; };
-
-Pages.paint = function () {
-  const tmux = Pages.selected() ? Pages.selTmux : null;
-  for (const n of Pages.rowNodes()) n.classList.toggle('sel', !!tmux && n.getAttribute('data-tmux') === tmux);
-  Pages.markLead();
-};
-
-/* The screen's one filled primary (v0.5.6d): of the cards and rows that can carry one (an inbox card always can; a row only while a permission waits on it),
-   the selected one leads, else the first in screen order. node.ccLead(true) paints that card's action filled and opens its chips and send box; every other
-   one is told false and shows the same action tinted. On Home the inbox section comes first, so its first card leads and the rows below keep Allow tinted;
-   on the Agents page and a project's Sessions tab the first row with a pending permission leads. */
-Pages.markLead = function () {
-  const nodes = Pages.rowNodes().filter((n) => typeof n.ccLead === 'function');
-  const can = (n) => (typeof n.ccCanLead === 'function' ? !!n.ccCanLead() : true);
-  const lead = nodes.find((n) => n.classList.contains('sel') && can(n)) || nodes.find(can) || null;
-  for (const n of nodes) n.ccLead(n === lead);
-};
-
-Pages.setIndex = function (i) {
-  const items = Pages.items();
-  if (i < 0 || i >= items.length) { ui.inboxSel = -1; Pages.selTmux = null; }
-  else { ui.inboxSel = i; Pages.selTmux = items[i].tmux; Pages.selHash = Pages.hashNow(); }
-  Pages.paint();
-};
-
-/* Move the selection by delta (j = 1, k = -1): none starts at the first row. False when the page has no list, so the key is left alone. */
-Pages.select = function (delta) {
-  const items = Pages.sync();
-  if (!items.length) return false;
-  Pages.setIndex(Math.max(0, Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + delta)));
-  const node = Pages.nodeFor(Pages.selTmux);
-  if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' });
-  return true;
-};
-
-Pages.clear = function () {
-  if (ui.inboxSel < 0 && !Pages.selTmux) return;
-  ui.inboxSel = -1;
-  Pages.selTmux = null;
-  Pages.paint();
-};
-
-/* A page mounts with nothing selected. */
-Pages.reset = function () { ui.inboxSel = -1; Pages.selTmux = null; Pages.selHash = ''; };
-
-Pages.peekTmux = function () {
-  const r = typeof currentRoute === 'function' ? currentRoute() : null;
-  return r && r.id === 'session' && r.params ? r.params.tmux : null;
-};
-
-/* The session a key or a palette nudge acts on: the selected row, unless a peek was opened after that selection (then the peek), else the peek. */
-Pages.target = function () {
-  const sel = Pages.selected();
-  const peek = Pages.peekTmux();
-  if (sel && (!peek || Pages.selHash === Pages.hashNow())) return sel.tmux;
-  return peek || null;
-};
-
-Pages.session = function (tmux) { return tmux ? (Pages.order().find((x) => x.tmux === tmux) || Inbox.items(state).find((x) => x.tmux === tmux) || null) : null; };
-
-Pages.targetPerm = function () {
-  const t = Pages.target();
-  return t && typeof sessionPerm === 'function' ? sessionPerm(t, true) : null;
-};
-
-/* mod+1..9: open the nth session of Pages.order() as the peek. False (key left alone) when there is no nth session. */
-Pages.openNth = function (n) {
-  const s = Pages.order()[n - 1];
-  if (!s) return false;
-  if (s.bare_device) { bareTerminal(s); return true; }
-  navigate(sessionHash(s.tmux));
-  return true;
-};
-
-/* The peek's send box (session.js builds it, a composer textarea): the node, or null while no peek is open. */
-Pages.sendBox = function () {
-  if (typeof sessionPeek !== 'undefined' && sessionPeek.parts && sessionPeek.parts.input && sessionPeek.parts.input.isConnected !== false) return sessionPeek.parts.input;
-  try { return document.querySelector('.peek-send textarea, .peek-send input'); } catch (_) { return null; }
-};
-
-/* Run fn(box) as soon as the peek's send box exists: now, or within about half a second (a peek opened by the same key press mounts on hashchange). */
-Pages.withSendBox = function (fn, tries) {
-  const box = Pages.sendBox();
-  if (box) { fn(box); return true; }
-  const left = typeof tries === 'number' ? tries : 8;
-  if (left <= 0 || typeof setTimeout !== 'function') return false;
-  Pages.retry = setTimeout(() => Pages.withSendBox(fn, left - 1), 60);
-  return true;
-};
-
-/* what: peek | term | ack | allow | deny | reply. Returns true when something was done (or started). */
-Pages.act = async function (what) {
-  if (what === 'peek') {
-    const s = Pages.selected();
-    if (!s) return false;
-    if (s.bare_device) { await bareTerminal(s); return true; }
-    const h = sessionHash(s.tmux);
-    Pages.selHash = h;
-    navigate(h);
-    return true;
-  }
-  const tmux = Pages.target();
-  if (!tmux) return false;
-  const s = Pages.session(tmux);
-  const name = (s && s.name) || tmux;
-  if (what === 'term') {                                       // the same surface as a click on the row's Open link: the dock from 1024 px up, else the terminal page
-    if (s && s.bare_device) { await bareTerminal(s); return true; }
-    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openTerm === 'function') Shell.openTerm(tmux);
-    else openPage(`/term/${encodeURIComponent(tmux)}`);
-    return true;
-  }
-  if (what === 'reply') {
-    if (s && s.bare_device) {
-      const card = Array.from(document.querySelectorAll('.inbox-card')).find((n) => n.getAttribute('data-tmux') === tmux);
-      if (!card) return false;
-      card.classList.add('open');
-      const box = card.querySelector('textarea');
-      if (box) box.focus();
-      return !!box;
-    }
-    if (!Pages.peekTmux() || Pages.peekTmux() !== tmux) { const h = sessionHash(tmux); Pages.selHash = h; navigate(h); }
-    return Pages.withSendBox((box) => box.focus());
-  }
-  if (what === 'ack') {
-    if (s && !s.needs_attention) { pageToast(`${name} has nothing to acknowledge`, 'info'); return false; }
-    if (!(await sessionAck(s || { tmux }))) return false;
-    pageToast(`acknowledged ${name}`, 'ok');
-    return true;
-  }
-  if (what === 'allow' || what === 'deny') {
-    const pr = typeof sessionPerm === 'function' ? sessionPerm(tmux, true) : null;
-    if (!pr) { pageToast(`no permission is waiting on ${name}`, 'warn'); return false; }
-    if (!(await decide(pr.id, what))) return false;
-    pageToast(`${what === 'allow' ? 'allowed' : 'denied'} ${name}`, what === 'allow' ? 'ok' : 'warn');
-    return true;
-  }
-  return false;
-};
-
-/* First-paint placeholder: n grey rows (core.js maps 'skeleton' to bp5-skeleton) until the first /api/state arrives; the page's update() drops it. */
-Pages.skeleton = function (n) {
-  const wrap = el('div', { class: 'skel-rows', 'aria-hidden': 'true' });
-  for (let i = 0; i < (n || 3); i++) {
-    wrap.append(el('div', { class: 'skel-row' },
-      el('span', { class: 'skeleton skel-g', text: '✽ ◆' }),
-      el('span', { class: 'skeleton skel-main', text: 'project/repo · session name' }),
-      el('span', { class: 'skeleton skel-meta', text: 'working · model · ctx 42%' })));
-  }
-  return wrap;
-};
-
-Pages.dropSkeleton = function () {
-  let nodes = [];
-  try { nodes = Array.from(document.querySelectorAll('#page .skel-rows')); } catch (_) { return; }
-  for (const n of nodes) n.remove();
-};
-
-/* Install now (#313): the button reads "installing at the next check" and is off at the click; a poll in flight cannot flip it back (ui.installNow, 15 s), a refusal restores it. */
-async function deployNow() {
-  ui.installNow = Date.now() + 15000;
-  renderBanner();
-  try { await api('POST', '/api/deploy/now'); } catch (e) {
-    ui.installNow = 0;
-    renderBanner();
-    toast(`The update was not started: ${errorText(e)}`, { kind: 'bad' });
-  }
-  await poll(true);
-}
-
-async function decide(pid, decision) {
-  if (actPending.has('perm:' + pid)) return false;               // #318: an answer is already out (the keys y / d are not guarded by a disabled button): never post a second one
-  const pr = (state && state.pending_permissions || []).find((p) => p.id === pid);
-  const bare = pr && pr.bare_device;
-  const ok = await actPost('perm:' + pid, decision, bare ? `/api/bare/${encodeURIComponent(bare)}/sessions/${encodeURIComponent(pr.tmux_name)}/${decision}` : `/api/permission/${pid}/${decision}`, bare ? { pid } : undefined,
-    () => repaintPage(), `${decision === 'allow' ? 'Allow' : 'Deny'} was not sent`);     // #313: both buttons off and "allowing…" before the board answers
-  if (ok) setError(null);
-  await poll(true);
-  return ok;
-}
-
-const INBOX_HINT = 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys';
-
-/* The v0.4 board's section renderers are gone; these two names stay because confirmButton() (components.js) and the launcher forms call them
-   after a local change, and the keyboard layer's tests call renderInbox(). Both just repaint whatever page is mounted. */
-function renderInbox() { repaintPage(); }
-
-function renderProjects() { repaintPage(); }
-
-
-async function logout() {
-  try { const r = await api('POST', '/api/claude/logout'); if (!r.ok) setError('logout: ' + (r.output || 'failed')); else setError(null); }
-  catch (e) { setError(e.message); }
-  await poll(true);
 }
 
 /* One-time hint to install the board as an app (shown in a browser tab only, until dismissed: ccboard:hint:install). */
@@ -472,20 +51,12 @@ const HOME_ACTIVE_DAYS = 7;                    // a project with no session acti
 const HOME_INBOX_LIMIT = 8;                    // cards of the inbox section on Home; the rest is behind the link to #/inbox
 const HOME_GROUP_KEY = 'ccboard:home:group';          // project | state | agent
 const HOME_COLLAPSED_KEY = 'ccboard:home:collapsed';  // JSON array of collapsed block keys: project names, 'older', 's:<state>', 'a:<agent>'
-const HOME_SEEN_KEY = 'ccboard:seen';                 // epoch seconds of the last render seen while the tab was visible
-const HOME_SEEN_TASKS_KEY = 'ccboard:seen:tasks';     // {task id: column} at that moment: a PR opened while away shows as a column change
 const HOME_GROUPS = [['project', 'Project'], ['state', 'State'], ['agent', 'Agent']];
 const HOME_FILTERS = [['waiting', 'need you'], ['working', 'working'], ['idle', 'idle'], ['done', 'done'], ['errored', 'error']];
 const HOME_STATE_ORDER = ['waiting', 'errored', 'working', 'idle', 'done', 'ended', 'unknown'];
 const HOME_AGENT_ORDER = ['claude', 'codex', 'shell'];
-const AWAY_MIN_S = 600;                        // the strip never shows for a gap shorter than 10 minutes
-const AWAY_WRITE_S = 30;                       // ccboard:seen is written at most this often
 
 const homePage = { refs: null, filter: '', cache: null };
-const homeAway = { since: undefined, active: false, dismissed: false, lastWrite: 0, wired: false, lim: null, limFor: 0, prevTasks: null };
-
-function homeGet(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
-function homeSet(key, v) { try { localStorage.setItem(key, v); } catch (_) { /* storage may be unavailable */ } }
 
 function homeGroupMode() { const v = homeGet(HOME_GROUP_KEY); return HOME_GROUPS.some((g) => g[0] === v) ? v : 'project'; }
 
@@ -506,13 +77,6 @@ function homeProjectHash(name) { try { return buildHash('project', { project: na
 function homeFilterHash(f) { try { return buildHash('home', {}, f ? { f } : {}); } catch (_) { return '#/'; } }
 
 /* Seconds from epoch seconds, epoch milliseconds or an ISO string; 0 when it is none of them. */
-function homeEpoch(v) {
-  if (v === null || v === undefined || v === '') return 0;
-  const n = typeof v === 'number' ? v : (/^\d+(?:\.\d+)?$/.test(String(v)) ? parseFloat(v) : Date.parse(v) / 1000);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return n > 1e12 ? n / 1000 : n;
-}
-
 function homeFmtUsd(x) { return '$' + (x >= 100 ? x.toFixed(0) : x.toFixed(2)); }
 
 function homeCostText(p) {
@@ -524,25 +88,6 @@ function homeCostText(p) {
 /* ---------- the model: every session, grouped and filtered, in the order the page shows it ---------- */
 
 /* Every session of a state payload with its project, repo and whether it sits in the project folder, and the projects with their repo groups. */
-function homeScan(st) {
-  const all = [];
-  const projects = [];
-  for (const p of ((st && st.projects) || [])) {
-    const groups = [];
-    const add = (key, label, repo, folder, sessions) => {
-      const items = (sessions || []).map((s) => ({ ...s, project: p.name, repo: repo ? repo.name : (s.repo || '?'), folder }));
-      for (const it of items) all.push(it);
-      groups.push({ key, label, repo, folder, items });
-    };
-    if (p.root) add('root', 'project folder', p.root, true, p.root.sessions);
-    for (const r of (p.repos || [])) add(r.name, r.name, r, r.name === 'root' || !!r.root, r.sessions);
-    const orphans = new Map();
-    for (const s of (p.orphan_sessions || [])) { const k = s.repo || '?'; if (!orphans.has(k)) orphans.set(k, []); orphans.get(k).push(s); }
-    for (const [k, list] of orphans) add('x:' + k, `removed repo ${k}`, null, k === 'root', list);
-    projects.push({ p, groups });
-  }
-  return { all, projects };
-}
 
 /* opts {group: project|state|agent, filter: waiting|...|'', collapsed: Set}. Returns {all, counts, blocks, mode, filter}: blocks are
    {key, kind: project|state|agent|older, name, count, total, groups: [{key, label, repo, folder, items, showHead}], collapsed, ...}; the 'older'
@@ -658,45 +203,6 @@ function awayDigest(st, sinceEpoch, limEvents, prevTasks) {
   out.limits = episodes.size;
   out.total = out.done + out.needs + out.errored + out.jobs + out.prs + out.limits + out.blocked;
   return out;
-}
-
-function homeSeenTasks() { try { const v = JSON.parse(homeGet(HOME_SEEN_TASKS_KEY) || 'null'); return v && typeof v === 'object' ? v : null; } catch (_) { return null; } }
-
-/* The previous visit is read once per document, before anything writes ccboard:seen; the strip only exists for a gap of 10 minutes or more. */
-function homeAwayInit(nowSec) {
-  if (homeAway.since !== undefined) return;
-  const seen = homeEpoch(homeGet(HOME_SEEN_KEY));
-  homeAway.since = seen || null;
-  homeAway.active = !!seen && nowSec - seen >= AWAY_MIN_S;
-  homeAway.prevTasks = homeSeenTasks();
-}
-
-function homeSeenWrite(nowSec, st) {
-  homeSet(HOME_SEEN_KEY, String(Math.floor(nowSec)));
-  if (st && Array.isArray(st.tasks)) { const m = {}; for (const t of st.tasks) m[t.id] = t.column; homeSet(HOME_SEEN_TASKS_KEY, JSON.stringify(m)); }
-  homeAway.lastWrite = nowSec;
-}
-
-/* Wired on the first render: the moment the tab is hidden the last-seen time is saved, so the gap is counted from there. */
-function homeAwayWire() {
-  if (homeAway.wired || typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
-  homeAway.wired = true;
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && typeof state !== 'undefined' && state && !ui.offline) homeSeenWrite(Date.now() / 1000, state);
-  });
-}
-
-/* Called by every render (Home's update and renderBanner, so on any page): captures 'since' once, notices a long gap inside this document (a laptop
-   that slept, a tab hidden for hours) and records that the board is being looked at, at most every 30 s while visible. */
-function homeAwayTouch(st) {
-  const now = Date.now() / 1000;
-  homeAwayInit(now);
-  homeAwayWire();
-  if (homeAway.lastWrite && now - homeAway.lastWrite >= AWAY_MIN_S && homeAway.since !== homeAway.lastWrite) {
-    homeAway.since = homeAway.lastWrite; homeAway.active = true; homeAway.dismissed = false; homeAway.lim = null; homeAway.limFor = 0; homeAway.prevTasks = homeSeenTasks();
-  }
-  if ((typeof document !== 'undefined' && document.hidden) || !st || ui.offline) return;
-  if (now - homeAway.lastWrite >= AWAY_WRITE_S) homeSeenWrite(now, st);
 }
 
 /* One fetch of the limit episodes per 'since', at mount; an error leaves the strip without them. */
@@ -817,7 +323,6 @@ function homeLaunchTarget(p) {
 }
 
 /* A new session in a place: the launcher sheet (launch(), components.js) with the project and the repo filled in, so + session is one tap to Start & open. */
-function homeNewSession(p, r) { return launch({ mode: 'session', project: p, repo: r }); }
 
 /* + task on a project block: the same sheet in task mode, in the repo a task went to last, else where the project works most. */
 function homeNewTask(p) {
@@ -830,43 +335,7 @@ function homeCreate(kind) {
   else if (kind === 'project' && typeof Shell !== 'undefined' && Shell && typeof Shell.newProject === 'function') Shell.newProject();
 }
 
-function homeRowOpts(kind) {
-  return { rich: true, perm: true, showProject: kind !== 'project', noWhere: kind === 'project' };
-}
 
-function homeGroupNode(g, kind, getProject) {
-  const name = el('span', { class: 'pg-name mono' });
-  const branch = el('span', { class: 'pg-branch dim mono' });
-  const dot = el('span', { class: 'dot hidden' });
-  const cost = el('span', { class: 'pg-cost dim mono' });
-  const add = el('button', { class: 'minimal small pg-add', type: 'button', 'aria-label': 'New session in this repo', title: 'new session here' }, ic('plus'));
-  const head = el('div', { class: 'pgroup-head' }, name, branch, dot, cost, add);
-  const list = el('div', { class: 'pg-list' });
-  const node = el('div', { class: 'pgroup' }, head, list);
-  const cur = { g };
-  add.addEventListener('click', () => {
-    const r = cur.g.repo;
-    const p = getProject();
-    if (r && p) homeNewSession(p, r);
-  });
-  const rows = makeKeyedList(list, { key: (s) => s.tmux, create: (s) => sessionCard(s, homeRowOpts(kind)), patch: (n, s) => n.ccPatch(s) });
-  node.ccPatch = (g2) => {
-    cur.g = g2;
-    head.classList.toggle('hidden', !g2.showHead);
-    patchLinkedName(name, g2.label, g2.repo);
-    const r = g2.repo;
-    setTextIfChanged(branch, r && r.state === 'ok' && r.branch ? r.branch : '');
-    dot.classList.toggle('hidden', !(r && r.state === 'ok'));
-    dot.classList.toggle('dirty', !!(r && r.dirty));
-    dot.setAttribute('title', r && r.dirty ? 'uncommitted changes' : 'clean');
-    const p = getProject();
-    setTextIfChanged(cost, r && p ? (repoCost(p, r) || '') : '');
-    add.classList.toggle('hidden', !(r && (r.state === 'ok' || r.state === 'unknown' || g2.folder)));
-    rows.update(g2.items);
-  };
-  node.ccPatch(g);
-  return node;
-}
 
 function homeBlockNode(b) {
   const toggle = el('button', { class: 'minimal small pb-toggle', type: 'button', 'aria-expanded': 'true' });
@@ -949,6 +418,7 @@ function homePatchInbox(st) {
 }
 
 function homeOpenSchedules() {
+  if (typeof renderJobs !== 'function' && typeof Lazy !== 'undefined') return Lazy.run('taskui', homeOpenSchedules, 'schedules');
   const sec = el('section', { id: 'jobs', class: 'jobs-sheet' });
   openSheet({ title: 'Schedules', body: sec });
   renderJobs();
@@ -990,11 +460,11 @@ function homeRender(st) {
   const s = st || (typeof state !== 'undefined' ? state : null);
   if (!r || !s) return;
   Pages.dropSkeleton();
-  if (r.usageHost) r.usageHost.classList.remove('hidden');
+  if (r.usageHost) { r.usageHost.classList.remove('hidden'); homeUsageWatch(r); }
   const pending = s.settings_pending || {};
   if (pending.count || r.settingsPending) {
     const paint = () => { if (homePage.refs === r) settingsHomePending(r, state.settings_pending || {}); };
-    if (typeof settingsHomePending === 'function') paint(); else if (typeof lazyRun === 'function') lazyRun('settings', paint);
+    if (typeof settingsHomePending === 'function') paint(); else if (typeof lazyRun === 'function') lazyRun('restartnotice', paint);
   }
   homeAwayTouch(s);
   homeAwayFetchLim();
@@ -1100,8 +570,27 @@ registerPage('home', {
     sessionTailStopAll();
     const r = homePage.refs;
     if (r && r.usage && typeof r.usage.destroy === 'function') { try { r.usage.destroy(); } catch (e) { console.error('ccboard usage card', e); } }
+    if (r && r.usageObserver) r.usageObserver.disconnect();
     homePage.refs = null;
     homePage.cache = null;
     stopAgeTicker();
   },
 });
+
+/* The usage card is below the session list. Fetch its component as it approaches
+   the viewport, including empty boards where it is visible immediately. */
+function homeUsageWatch(r) {
+  if (r.usage || r.usageWatching || typeof Lazy === 'undefined') return;
+  r.usageWatching = true;
+  const load = () => {
+    if (r.usageObserver) { r.usageObserver.disconnect(); r.usageObserver = null; }
+    Lazy.load('widgets').then(() => {
+      if (homePage.refs !== r || r.usage) return;
+      r.usage = Widgets.usageCard(r.usageHost);
+      if (typeof state !== 'undefined' && state) r.usage.update(state);
+    }, (err) => { r.usageWatching = false; Lazy.fail('the usage card', err); });
+  };
+  if (typeof IntersectionObserver === 'undefined') { load(); return; }
+  r.usageObserver = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) load(); }, { root: $('#main'), rootMargin: '200px' });
+  r.usageObserver.observe(r.usageHost);
+}

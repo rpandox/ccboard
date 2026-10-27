@@ -1029,7 +1029,7 @@ test('the project page has a quiet Epics link that opens the Epics tab', () => {
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'project.js'), 'utf8');
   assert.match(src, /class: 'btn minimal small pj-epics', href: '#\/tasks\?tab=epics'/);
   assert.match(src, /el\('span', \{ class: 'spacer' \}\), epics, quad, more\)/);
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages/project.css'), 'utf8');
   assert.match(css, /#page \.pj-epics \{ align-self:center; \}/);
   assert.match(css, /@media \(max-width:599px\) \{[\s\S]*?#page \.pj-epics \{ order:2; \}/);
 });

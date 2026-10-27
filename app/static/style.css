@@ -344,3 +344,6 @@ html.force-coarse a.bdg-hooks { min-height:28px; }
 .bdg-queued { display:inline-flex; align-items:center; flex:0 0 auto; min-height:18px; padding:0 7px; border:1px solid var(--line); border-radius:9px;
   color:var(--dim); font-size:11px; line-height:16px; white-space:nowrap; }
 .bdg-queued.hidden { display:none; }
+
+/* The shared More button is used by task cards and terminal composers. */
+.bp5-dark .bp5-button.tk-more:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:var(--tk-h); min-height:var(--tk-h); padding:0 6px; justify-content:center; font-weight:600; }

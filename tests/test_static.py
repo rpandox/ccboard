@@ -505,6 +505,9 @@ def test_tokens_css_has_no_data_uris_or_remote_urls():
 def test_html_head_carries_tokens_theme_color_and_font_preloads(page):
     tags = html_tags(STATIC / page)
     sheets = [a["href"] for t, a, _ in tags if t == "link" and a.get("rel") == "stylesheet"]
+    if page == "index.html":
+        from tests.test_static_perf import _manifest
+        sheets = _manifest()["app"]["css"]
     assert "/static/tokens.css" in sheets and "/static/style.css" in sheets, f"{page}: tokens.css and style.css must both be linked ({sheets})"
     assert sheets.index("/static/tokens.css") < sheets.index("/static/style.css"), f"{page}: tokens.css must come before style.css ({sheets})"
     themes = [a.get("content", "").lower() for t, a, _ in tags if t == "meta" and a.get("name") == "theme-color"]
@@ -529,12 +532,8 @@ from collections import Counter  # noqa: E402
 
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "toasts")
-SCRIPT_ORDER = ["/static/" + n for n in (            # the first-paint set (issue #103): the shell and the pages the shell reads from (Home, Inbox, Widgets, Tasks, Agents, Search, the session peek, the placeholders). Everything else is a lazy bundle (app/static/lazy.js)
-    "core.js", "nodes.js", "components.js", "keymap.js", "live.js", "lazy.js", "shell.js", "router.js",       # nodes.js (Ref, definition-only; issue #137) right after core.js: every key below is built through it
-    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/agents.js", "pages/search.js",
-    "pages/session.js", "pages/placeholders.js", "main.js")]
-STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
-               "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css", "/static/termkit.css"]
+SCRIPT_ORDER = ["/static/boot.js"]
+STYLE_ORDER = ["/static/skeleton.css"]
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
@@ -1289,7 +1288,7 @@ def test_demo_usage_summary_fixture_matches_build_and_agrees_with_the_state_fixt
 @pytest.mark.parametrize("name", DEMO_FILES)
 def test_demo_api_maps_a_path_to_every_fixture(name):
     """api() in demo mode reads /static/demo/<name>.json: the table in core.js must name every fixture or the file is dead weight."""
-    assert f"name = '{name[:-len('.json')]}';" in (STATIC / "core.js").read_text(encoding="utf-8")
+    assert f"name = '{name[:-len('.json')]}';" in (STATIC / "demo-api.js").read_text(encoding="utf-8")
 
 
 def test_demo_team_fixture_has_the_shape_of_the_real_team_state_and_every_state_word():
@@ -1418,7 +1417,7 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
     assert not any("/demo/" in p for p in main.shell_paths())
     sw = lite_client.get("/sw.js", headers=DEMO_HEADERS).text
     m = re.search(r"JSON\.parse\('([^']*)'\)", sw)
-    assert m and not any("demo" in p for p in json.loads(m.group(1))), "the served worker precaches a demo fixture"
+    assert m and not any("/demo/" in p for p in json.loads(m.group(1))), "the served worker precaches a demo fixture"
 
 
 # ---------- the Memory proxy (v0.5.20, issue #4): the browser never talks to the claude-mem worker ----------
@@ -1427,7 +1426,7 @@ WORKER_PORT_RE = re.compile(r"(?<![0-9])377[0-9]{2}(?![0-9])")       # code: any
 WORKER_URL_RE = re.compile(r":377[0-9]{2}(?![0-9])")                  # demo JSON: only an address (an observation id may be 37712)
 # 127.0.0.1 is allowed in app/static only where it is not the worker: a preview toast naming the dev server's own loopback port, and
 # doctor fixture details about other loopback services. Each entry is (file, a substring of the allowed line).
-LOOPBACK_ALLOWED = {("components.js", "preview at ${r.url}"), ("demo/doctor.json", "ttyd 1.7.7"), ("demo/doctor.json", "listening on 127.0.0.1:8080"),
+LOOPBACK_ALLOWED = {("components-tasks.js", "preview at ${r.url}"), ("demo/doctor.json", "ttyd 1.7.7"), ("demo/doctor.json", "listening on 127.0.0.1:8080"),
                     ("demo/doctor.json", "ntfy answers at http://127.0.0.1:2586"),
                     ("demo/nodes-auth.json", "127.0.0.1")}                  # the Device check (issue #136) is about the board's own loopback bind and the Serve command that proxies to it
 
@@ -1472,7 +1471,7 @@ def test_demo_memory_states_cover_every_degraded_state():
     for k in ("down", "not_started", "degraded"):
         assert v[k]["status"] == 503 and v[k]["body"]["up"] is False and v[k]["body"]["state"] == k and v[k]["body"]["reason"]
     assert v["stale"]["body"]["stale"] is True and v["incompatible"]["body"]["state"] == "incompatible"
-    assert "demoMemFlag" in (STATIC / "core.js").read_text(encoding="utf-8")
+    assert "demoMemFlag" in (STATIC / "demo-api.js").read_text(encoding="utf-8")
 
 
 def test_demo_memory_health_has_the_tile_fields():
@@ -1803,7 +1802,7 @@ def test_fake_tty_has_no_external_url_and_no_network_call(name):
 
 def test_every_demo_fixture_is_read_by_a_route_and_none_names_a_host():
     """v0.5.21 (#29): demo mode is the QA harness, so a fixture no code reads is dead weight, and a kept one never names the box."""
-    core = (STATIC / "core.js").read_text(encoding="utf-8")
+    core = (STATIC / "demo-api.js").read_text(encoding="utf-8")
     # Opt-in pool fixtures are read by the lazy launcher, never by first paint.
     core += (STATIC / "launcher.js").read_text(encoding="utf-8")
     names = sorted(p.stem for p in DEMO_DIR.glob("*.json"))
@@ -1882,4 +1881,4 @@ def test_node_lines_keep_their_pieces_apart():
     nodes_css = (STATIC / "pages" / "nodes.css").read_text()
     assert re.search(r"#page \.nd-set-line \{[^}]*display:flex;[^}]*gap:", nodes_css)
     assert re.search(r"#page \.nd-head-state \{[^}]*gap:", nodes_css)
-    assert re.search(r"#page \.badge > \.nd-glyph \{[^}]*margin-right:", (STATIC / "pages.css").read_text())
+    assert re.search(r"#page \.badge > \.nd-glyph \{[^}]*margin-right:", (STATIC / "pages/node-base.css").read_text())

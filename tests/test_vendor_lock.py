@@ -17,7 +17,7 @@ LOCK = ROOT / "tests" / "vendor_lock.json"
 
 def _current() -> dict[str, str]:
     return {p.relative_to(VENDOR).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(VENDOR.rglob("*")) if p.is_file() and "__pycache__" not in p.parts}
+            for p in sorted(VENDOR.rglob("*")) if p.is_file() and "__pycache__" not in p.parts and p.name != "blueprint-used.css"}
 
 
 def test_vendor_files_never_change_bytes_under_the_same_name():
@@ -34,5 +34,7 @@ def test_vendor_files_never_change_bytes_under_the_same_name():
 def test_lock_covers_the_served_immutable_set():
     from app import main
     assert main.is_immutable_static("/static/vendor/blueprint/blueprint.css")
+    # Generated subset is app code, checked for reproducibility in test_static_perf.
+    assert not main.is_immutable_static("/static/vendor/blueprint/blueprint-used.css")
     for name in json.loads(LOCK.read_text()):
         assert main.is_immutable_static("/static/vendor/" + name), name

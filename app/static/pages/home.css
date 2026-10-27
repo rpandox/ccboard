@@ -1,0 +1,48 @@
+/* ---------- home (v0.5.5: pages/home.js: summary line, away strip, schedules strip, project blocks, rich rows from pages/agents.js) ---------- */
+
+/* the away strip */
+#page .away { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; margin:10px 0 0; padding:8px 8px 8px 12px; }
+#page .away .away-text { color:var(--fg-2); }
+#page .away .away-list { flex:1 1 auto; min-width:0; }
+#page .away .away-n { color:var(--fg); font-weight:600; }
+#page .away .away-n + .away-n::before { content:'·'; display:inline-block; margin:0 8px 0 2px; color:var(--dim); font-weight:400; }
+#page .away .away-x { margin-left:auto; }
+
+/* the inbox section Inbox.section builds into #inbox-home */
+#page .home-inbox { margin:12px 0 0; }
+
+/* the schedules strip */
+#page .sched { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:12px 0 0; padding:6px 0; border-top:1px solid var(--line-soft); border-bottom:1px solid var(--line-soft); font-size:12px; }
+#page .sched .sched-list { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; min-width:0; flex:1 1 auto; }
+#page .sched .sched-item { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-height:28px; padding:0 4px; border:0; background:none; color:var(--fg-2); font:12px/1.2 var(--font-ui); cursor:pointer; }
+#page .sched .sched-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:28ch; }
+@media (hover:hover) { #page .sched .sched-item:hover { color:var(--fg); } }
+@media (pointer:coarse) { #page .sched .sched-item { min-height:var(--tap); } }
+html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
+
+/* project (and state / agent) blocks */
+#page .pblocks { display:flex; flex-direction:column; gap:14px; margin-top:12px; }
+#page .pblock .pb-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:4px 2px; border-bottom:1px solid var(--line); min-width:0; }
+#page .pblock .pb-toggle { min-width:28px; padding:0 4px; }
+#page .pblock .pb-name { font-size:14px; font-weight:600; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; }
+#page .pblock a.pb-name { display:inline-flex; align-items:center; }
+@media (hover:hover) { #page .pblock a.pb-name:hover { color:var(--sig); text-decoration:underline; } }
+#page .pblock .pb-count, #page .pblock .pb-cost, #page .pblock .pb-git { font-size:12px; }
+#page .pblock .pb-add { margin-left:auto; }
+#page .pblock.has-attn > .pb-head { border-bottom-color:var(--warn); }
+#page .pblock.collapsed > .pb-head { border-bottom-color:var(--line-soft); }
+#page .pblock .pgroup-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:6px 2px 2px 12px; font-size:12px; }
+#page .pblock .pg-name { color:var(--fg-2); }
+#page .pblock .pg-add { margin-left:auto; }
+#page .pblock .pg-list { display:flex; flex-direction:column; }
+#page .pblock .pb-older-toggle { display:flex; align-items:center; justify-content:flex-start; width:100%; min-height:var(--tap); padding:0 4px; border:0; border-radius:0; background:none; box-shadow:none; color:var(--fg-2); font:600 13px/1 var(--font-ui); text-align:left; cursor:pointer; }
+@media (hover:hover) { #page .pblock .pb-older-toggle:hover { color:var(--fg); } }
+#page .pblock.older > .pb-body { display:flex; flex-direction:column; gap:14px; padding-top:10px; }
+#page .pblock.older .pblock { margin-left:8px; }
+#page .home-note { margin:14px 0; }
+#page .home-idle { margin:14px 0 6px; }                            /* "No sessions running": projects exist, nothing is live */
+#page .home-idle.hidden { display:none; }
+#page .home-idle .home-idle-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }
+#page .home-idle .home-idle-actions button { min-height:var(--tap); }
+#page .home-scan-slow { margin:10px 0 0; }                     /* #31: "scan slowed (box is busy)" above the project list, only while state.scan_slow */
+
