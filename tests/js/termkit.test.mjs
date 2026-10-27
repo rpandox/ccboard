@@ -2626,7 +2626,8 @@ test('composer.el is ONE row: .tk-docked is a flex row (no column), a one-row bo
   assert.match(css, /@media \(pointer:coarse\) \{ \.tk-docked \{ --tk-h:44px;/, '44 px on touch');
   assert.match(css, /html\.force-coarse \.tk-docked \{ --tk-h:44px; \}/);
   assert.match(css, /\.bp5-dark \.bp5-button\.tk-send:not\(\[class\*=bp5-intent-\]\) \{[^}]*min-height:var\(--tk-h\)/, 'Send is a bordered button as tall as the row');
-  assert.match(css, /\.bp5-dark \.bp5-button\.tk-more:not\(\[class\*=bp5-intent-\]\) \{[^}]*min-height:var\(--tk-h\)/);
+  // More is shared with task cards, so its base style must exist before termkit loads.
+  assert.match(fs.readFileSync(path.join(KIT, 'style.css'), 'utf8'), /\.bp5-dark \.bp5-button\.tk-more:not\(\[class\*=bp5-intent-\]\) \{[^}]*min-height:var\(--tk-h\)/);
 });
 
 // ---- tune
@@ -3215,8 +3216,8 @@ test('termkit.css: the menu is at least 240 px wide, the tune popover 320, touch
 
 test('termkit.css is linked from both pages right after the stylesheets they already had, and nothing in termkit.js writes a style attribute', () => {
   const links = (file) => [...fs.readFileSync(path.join(KIT, file), 'utf8').matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.equal(links('index.html').at(-1), '/static/termkit.css');
-  assert.equal(links('index.html').at(-2), '/static/charts.css');
+  assert.deepEqual(links('index.html'), ['/static/skeleton.css']);
+  assert.match(fs.readFileSync(path.join(KIT, 'lazy.js'), 'utf8'), /termkit: \{[^\n]*termkit\.css/);
   assert.equal(links('term.html').at(-1), '/static/termkit.css');
   assert.equal(links('term.html').at(-2), '/static/term.css');
   const js = fs.readFileSync(path.join(KIT, 'termkit.js'), 'utf8');

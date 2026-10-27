@@ -62,7 +62,7 @@ test('#/team parses and builds like the other lazy address: ROUTES keeps its twe
   assert.equal(w.run("parseHash('#/team/x').unknown"), true, 'only the bare address');
   assert.deepEqual(plain(w.run('ROUTES.map((r) => r.id)')), ['home', 'inbox', 'tasks', 'agents', 'project', 'quad', 'usage', 'memory', 'onboarding', 'settings', 'search', 'session']);
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /teamview: \{ needs: \['team'\], js: \['\/static\/pages\/team\.js'\], css: \[\{ href: '\/static\/pages\/team-view\.css', rank: 17 \}\]/);
+  assert.match(lazy, /teamview: \{ needs: \['team'\], js: \['\/static\/pages\/team\.js'\], css: \[\{ href: '\/static\/pages\/team-view\.css', rank: 117 \}\]/);
   assert.match(lazy, /team: 'teamview' \}/);
 });
 
@@ -310,7 +310,9 @@ function lazyWorld({ state, team = null }) {
   const insert = head.insertBefore.bind(head);
   head.appendChild = (n) => { const r = append(n); onInsert(n); return r; };
   head.insertBefore = (n, ref) => { const r = insert(n, ref); onInsert(n); return r; };
-  for (const src of INDEX_SCRIPTS) if (src !== '/static/main.js') w.load(src.slice('/static/'.length));
+  w.load('lazy.js');
+  for (const src of plain(w.get('LAZY_BUNDLES.app.js'))) w.load(src.slice('/static/'.length));
+  for (const file of ['pages/agents.js', 'page-selection.js', 'page-keys.js', 'session-groups.js', 'inbox-cards.js', 'pages/inbox.js', 'pages/widgets.js', 'pages/home.js', 'components-tasks.js', 'task-views.js', 'pages/tasks.js', 'pages/search.js', 'pages/session.js', 'keymap.js']) w.load(file);
   w.ctx.__calls = [];
   w.ctx.__team = team;
   w.run(`api = async (method, path, body) => { __calls.push({ method, path, body }); if (path === '/api/team/state') return JSON.parse(JSON.stringify(__team)); return { ok: true }; }; poll = async () => {};`);

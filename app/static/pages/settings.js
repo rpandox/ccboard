@@ -47,136 +47,6 @@ function settingsOptionsLink(group) {
   return el('a', { href: buildHash('settings', {}, { sec: 'options', group }), text: 'see Options' });
 }
 
-function settingsRestartCommand(command) {
-  return command ? el('div', { class: 'doc-cmdline' }, el('code', { class: 'doc-cmd', text: command }), copyButton(command, 'the restart command')) : null;
-}
-
-const settingsRestart = { info: null, active: false, sending: false, force: false, message: '', at: 0, boot: null, timer: null };
-
-function settingsRestartPaint() {
-  document.querySelectorAll('.set-restart-control').forEach(root => settingsRestartFill(root));
-}
-
-function settingsRestartFill(root) {
-  const m = settingsRestart, info = m.info || {};
-  root.textContent = '';
-  if (!info.method) return;
-  if (info.method === 'none') {
-    root.append(el('p', { text: info.why }), settingsRestartCommand(info.hint));
-    return;
-  }
-  if (!m.active && !m.sending) {
-    const control = confirmButton('settings-restart', 'Restart board', settingsRestartSend, false, settingsRestartArm);
-    root.append(control);
-  }
-  for (const line of info.blockers || []) root.append(el('p', { class: 'set-restart-blocker', text: line }));
-  if (m.message) root.append(el('p', { role: 'status', text: m.message }));
-  if (m.active) root.append(el('p', { role: 'status', text: `Restarting. Back in about ${m.seconds} seconds. ${Math.floor((Date.now() - m.at) / 1000)} seconds since the tap.` }));
-  if (m.message && !m.active) root.append(settingsRestartCommand(info.logs), settingsRestartCommand(info.hint));
-}
-
-async function settingsRestartArm() {
-  const m = settingsRestart;
-  m.force = false;
-  settingsRestartPaint();
-  if (ui.confirm !== 'settings-restart' || (typeof demoOn === 'function' && demoOn())) return;
-  try {
-    const data = await api('GET', '/api/settings/options?readiness=1');
-    if (ui.confirm === 'settings-restart' && !m.sending && !m.active && !m.force && data.restart) {
-      m.info = data.restart; settingsRestartPaint();
-    }
-  } catch (_) { /* Confirm checks readiness again on the server before accepting the restart. */ }
-}
-
-function settingsRestartControl(info) {
-  if (info) settingsRestart.info = info;
-  const root = el('div', { class: 'set-restart-control' });
-  settingsRestartFill(root);
-  return root;
-}
-
-async function settingsRestartSend() {
-  const m = settingsRestart;
-  if (m.active || m.sending) return;
-  m.sending = true; m.message = 'Requesting restart…'; settingsRestartPaint();
-  const demo = typeof demoOn === 'function' && demoOn();
-  let deadline;
-  try {
-    const answer = demo ? { boot_id: state.boot?.id || 'demo', expect_seconds: 2 } : await Promise.race([
-      api('POST', '/api/settings/restart', { force: m.force }),
-      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('No response')), 10000); }),
-    ]);
-    m.boot = answer.boot_id; m.seconds = answer.expect_seconds; m.at = Date.now();
-    m.active = true; m.message = ''; m.force = false;
-    pageToast('Restarting board', 'ok');
-    m.timer = setTimeout(() => settingsRestartPoll(demo), 1000);
-  } catch (e) {
-    const body = e.body || {};
-    if (body.reason === 'busy') {
-      m.info.blockers = body.blockers || []; m.force = true; ui.confirm = 'settings-restart';
-      m.message = 'Review these warnings, then Confirm Restart board to continue, or Cancel.';
-    } else {
-      m.message = body.reason === 'rate' ? (body.message || `Wait ${body.retry_after || 60} seconds, then try again.`) : 'Restart was not confirmed. Check the commands below, or try again.';
-      if (body.command || body.hint) m.info.hint = body.command || body.hint;
-    }
-  } finally { clearTimeout(deadline); m.sending = false; settingsRestartPaint(); }
-}
-
-async function settingsRestartPoll(demo = false) {
-  const m = settingsRestart;
-  clearTimeout(m.timer);
-  if (!m.active) return;
-  if (Date.now() - m.at >= 90000) {
-    m.active = false; m.message = `No new board process after 90 seconds. Check ${m.info?.launch_log || 'the logs'} and run the restart command, or try again.`;
-    settingsRestartPaint(); return;
-  }
-  let deadline;
-  try {
-    const next = demo ? { ...state, boot: { id: 'demo-' + Date.now() }, settings_pending: { count: 0 } } : await Promise.race([
-      api('GET', '/api/state'), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('offline')), 4000); }),
-    ]);
-    if (next.boot?.id && next.boot.id !== m.boot) {
-      m.active = false; m.message = ''; m.info.blockers = []; state = next;
-      if (demo) {
-        m.demoBoot = next.boot;
-        if (!settingsDemoOptions) settingsDemoOptions = m.options || await demoApi('GET', '/api/settings/options');
-        settingsDemoOptions.pending = [];
-        for (const row of settingsDemoOptions.options) { row.running = row.value; row.pending = false; }
-      }
-      updateCurrentPage(state); settingsRestartPaint(); pageToast('Board restarted', 'ok');
-      return;
-    }
-  } catch (e) { m.message = e.status === 401 || e.status === 403 ? 'Sign in again with bin/ccboard-open, then reload this page.' : 'Offline, retrying.'; }
-  finally { clearTimeout(deadline); }
-  settingsRestartPaint();
-  m.timer = setTimeout(() => settingsRestartPoll(demo), 1000);
-}
-
-function settingsRestartDemoState(st) {
-  return settingsRestart.demoBoot ? { ...st, boot: settingsRestart.demoBoot, settings_pending: { count: 0 } } : st;
-}
-
-function settingsRestartBanner(pending, home = false) {
-  const labels = pending.labels || [];
-  const names = labels.slice(0, 3).join(', ') + (pending.count > 3 ? ' and ' + (pending.count - 3) + ' more' : '');
-  return el('div', { class: 'callout warn settings-restart ' + (home ? 'home-settings-pending' : 'set-pending'), role: 'status' },
-    el('p', { text: (pending.count === 1 ? 'A saved setting waits' : 'Saved settings wait') + ' for a restart' + (names ? ': ' + names : '') + '.' }),
-    settingsRestartCommand(pending.restart_hint),
-    pending.restart?.docker_notice ? el('p', { text: pending.restart.docker_notice }) : null,
-    settingsRestartControl(pending.restart),
-    home ? el('a', { href: '#/settings?sec=options', text: 'Open Settings > Options' }) : null);
-}
-
-function settingsHomePending(r, pending) {
-  pending = { ...pending, restart: state.restart };
-  const sig = JSON.stringify(pending);
-  if (r.settingsPendingSig === sig) return;
-  r.settingsPendingSig = sig;
-  if (r.settingsPending) r.settingsPending.remove();
-  r.settingsPending = pending.count ? settingsRestartBanner(pending, true) : null;
-  if (r.settingsPending) r.summary.parentNode.insertBefore(r.settingsPending, r.summary);
-}
-
 function settingsPendingSummary(data) {
   const keys = data.pending || [];
   return { count: keys.length, keys, labels: keys.map(key => data.options.find(o => o.key === key)?.label).filter(Boolean), restart_hint: data.restart_hint, restart: data.restart };
@@ -314,7 +184,6 @@ function settingsDemoWidens(row, next) {
   return model(old) !== model(value);
 }
 
-let settingsDemoOptions = null;
 async function demoSettingsOptions(body) {
   if (!settingsDemoOptions) settingsDemoOptions = settingsDemoWorkerState(await demoApi('GET', '/api/settings/options'));
   const refuse = (status, reason, detail = {}) => { const e = demoError(status, reason); e.body = { reason, ...detail }; throw e; };
@@ -495,7 +364,8 @@ function settingsWorkerForm(p, data) {
   for (const f of fields.values()) { f.control.addEventListener('input', draft); f.control.addEventListener('change', draft); }
   save.disabled = !data.page_widen;
   root.append(next, error, el('div', { class: 'row' }, save));
-  if (typeof EpicWorker !== 'undefined') {
+  const refs = settingsPage.refs;
+  if (typeof EpicWorker !== 'undefined') mountBundle('worker', () => {
     EpicWorker.pageWiden = data.page_widen;
     const live = EpicWorker.build({ mode: 'settings', form: true, onChange: () => paintLive() });
     const paintLive = () => live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
@@ -504,7 +374,7 @@ function settingsWorkerForm(p, data) {
     p.ccWorkerPaint = paintLive;
     live.paint(EpicWorker.pick(state), { page_widen: data.page_widen });
     root.append(el('h3', { text: 'Running worker' }), el('p', { class: 'dim', text: 'Stop and Start act now. Saving the form only changes the next restart.' }), live.root);
-  }
+  }, () => settingsPage.refs === refs);
   return root;
 }
 
@@ -1419,16 +1289,19 @@ function settingsNdPaintThis(host, st) {
    when the tab opens); the panel is built once and painted in place, so a poll never recreates the button under a finger. */
 function settingsNdPaintWorker(ui, st) {
   if (typeof EpicWorker === 'undefined') return;
-  if (!ui.worker) {
-    ui.worker = EpicWorker.build({ mode: 'settings', onChange: () => { settingsNd.rev++; settingsFill('nodes', true); } });
-    ui.workerHost.append(ui.worker.root);
-    ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
-  }
-  ui.worker.paint(EpicWorker.pick(st), { page_widen: EpicWorker.pageWiden });
+  const refs = settingsPage.refs;
+  mountBundle('worker', () => {
+    if (!ui.worker) {
+      ui.worker = EpicWorker.build({ mode: 'settings', onChange: () => { settingsNd.rev++; settingsFill('nodes', true); } });
+      ui.workerHost.append(ui.worker.root);
+      ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
+    }
+    ui.worker.paint(EpicWorker.pick(st), { page_widen: EpicWorker.pageWiden });
+  }, () => settingsPage.refs === refs);
 }
 
 function settingsNdWorkerOpen() {
-  const have = typeof EpicWorker !== 'undefined';
+  const have = typeof EpicWorker !== 'undefined' && (typeof Lazy === 'undefined' || Lazy.done('worker'));
   const demo = typeof demoOn === 'function' && demoOn();
   if (settingsNd.workerAsked || (have && EpicWorker.pageWiden !== undefined && !(demo && !EpicWorker.fixture))) return;
   const warm = async () => {
@@ -2107,7 +1980,7 @@ function settingsNdDispose() {
 /* Settings > Team (issue #197): team.js draws the panel. It is a lazy bundle, so the first visit shows a line and asks for it; the panel then watches the board's team view while it is the open
    tab (a switch, a read that finished) and stops when another tab is opened or the page goes away. */
 function settingsTeam(p) {
-  if (typeof Team !== 'undefined') { Team.settingsPanel(p); return; }
+  if (typeof Team !== 'undefined') { const refs = settingsPage.refs; mountBundle('team', () => Team.settingsPanel(p), () => settingsPage.refs === refs); return; }
   p.textContent = '';
   p.append(el('p', { class: 'dim set-note', role: 'status', text: 'Loading the team settings…' }));
   settingsTeamOpen();
@@ -2115,7 +1988,7 @@ function settingsTeam(p) {
 
 function settingsTeamOpen() {
   if (settingsPage.teamStop) return;
-  if (typeof Team === 'undefined') {
+  if (typeof Team === 'undefined' || (typeof Lazy !== 'undefined' && !Lazy.done('team'))) {
     if (typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.team || settingsPage.teamAsked) return;
     settingsPage.teamAsked = true;
     Lazy.load('team').then(() => { settingsPage.teamAsked = false; if (settingsPage.refs) { settingsFill('team', true); if (settingsPage.active === 'team') settingsTeamOpen(); } },
@@ -2209,18 +2082,21 @@ function settingsMemBlock() {
   const why = el('span', { class: 'dim' });
   const err = el('span', { class: 'v bad', role: 'status' });
   const sends = el('ul', { class: 'set-mem-sends dim' });
-  const tile = typeof memoryHealthTile === 'function' && typeof state !== 'undefined' && state && state.memory ? memoryHealthTile(state.memory, { link: true }) : null;     // v0.5.20 health tile (pages/memory.js)
-  if (typeof memoryHealthTile !== 'function' && typeof state !== 'undefined' && state && state.memory && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {      // memory.js is lazy (lazy.js): only a box with claude-mem loads it for the tile
-    Lazy.load('memory').then(() => { if (settingsPage.refs && typeof memoryHealthTile === 'function') settingsFill('box', true); }, () => { /* no tile */ });
-  }
   const hasViewer = typeof state !== 'undefined' && state && state.config && typeof state.config.mem_viewer_url === 'string' && /^https:\/\//.test(state.config.mem_viewer_url);
   const wrap = el('div', { class: 'set-mem' },
-    tile,
-    tile && !hasViewer ? el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (docs/security.md says who can reach it).' }) : null,
     el('label', { class: 'set-check set-pref' }, box,
       el('span', { class: 'set-pref-t' }, el('b', { text: 'Save finished tasks to claude-mem' }), el('span', { class: 'dim', text: SETTINGS_MEM_NOTE }))),
     why, err,
     el('details', { class: 'set-mem-what' }, el('summary', { text: 'What is sent' }), sends));
+  if (typeof state !== 'undefined' && state?.memory && (typeof Lazy !== 'undefined' || typeof memoryHealthTile === 'function')) {
+    const refs = settingsPage.refs;
+    mountBundle('memory', () => {
+      const tile = memoryHealthTile(state.memory, { link: true });
+      if (!tile) return;
+      wrap.insertBefore(tile, wrap.firstChild);
+      if (!hasViewer) wrap.insertBefore(el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (docs/security.md says who can reach it).' }), tile.nextSibling);
+    }, () => settingsPage.refs === refs, () => { /* no tile */ });
+  }
   function paint() {
     box.checked = st.prefs.writeback === true;
     box.disabled = st.available === false;
@@ -3647,14 +3523,16 @@ function settingsAppMode() {
 
 function settingsInstallPrompt() { return typeof Shell !== 'undefined' && Shell.installPrompt ? Shell.installPrompt : null; }
 
-/* The shortcut list is the keyboard layer's help dialog (keymap.js Keymap.openHelp(), drawn by palette.js Palette.openHelp()); the button shows only when one of them exists. */
+/* The shortcut list is available before its lazy bundle has loaded, too. */
 function settingsHelpAvailable() {
-  return (typeof Keymap !== 'undefined' && typeof Keymap.openHelp === 'function') || (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function');
+  return (typeof Lazy !== 'undefined' && typeof Lazy.run === 'function') ||
+    (typeof Keymap !== 'undefined' && typeof Keymap.openHelp === 'function') || (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function');
 }
 
 function settingsOpenShortcuts() {
   if (typeof Keymap !== 'undefined' && typeof Keymap.openHelp === 'function' && Keymap.openHelp()) return;
   if (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function') Palette.openHelp();
+  else if (typeof Lazy !== 'undefined') Lazy.run('palette', () => Palette.openHelp(), 'keyboard shortcuts');
 }
 
 /* Session metadata only. Fetch on opening App; demo mode never contacts the board. */

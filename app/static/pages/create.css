@@ -1,0 +1,63 @@
+/* ---------- v0.5.13: create from anywhere (the Home block's + task, the quad's empty tile) ---------- */
+#page .pblock .pb-add-task { margin-left:0; }
+#page .pblock .pb-add.hidden + .pb-add-task { margin-left:auto; }                    /* a project that can take a task but no session: the lone button keeps the right edge */
+
+/* ---------- v0.5.13: the launcher sheet (launcher.js openLauncher; slice A). Sections are labelled fields; the segmented controls are the sheet's .seg-ctl on one full-width track ---------- */
+.lx-form .lx-k, .lx-form .field-label { margin:0; font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); }
+.lx-form .lx-agentbox { display:flex; flex-direction:column; gap:12px; min-width:0; }
+#sheet .lx-seg { display:flex; width:100%; max-width:100%; }
+#sheet .lx-seg .seg-btn { flex:1 1 auto; min-width:0; padding:0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
+#sheet .lx-seg .seg-btn:disabled, #sheet .lx-seg .seg-btn[disabled] { opacity:.45; cursor:not-allowed; }
+#sheet .lx-agent .seg-btn { font-weight:500; }
+#sheet .lx-chips .seg-btn[aria-pressed=true].hue-blue, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-violet, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-green, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-slate { color:var(--hue); background:var(--hue-bg); border-color:var(--hue-bd); }
+.lx-form .lx-model { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.lx-form .lx-presets { align-items:center; }
+.lx-form .lx-pchip { display:inline-flex; align-items:stretch; }
+.lx-form .lx-pchip .chip-btn:first-child { border-top-right-radius:0; border-bottom-right-radius:0; }
+.lx-form .lx-pchip .lx-pdrop { min-width:var(--tap); padding:0 6px; border-left-width:0; border-top-left-radius:0; border-bottom-left-radius:0; color:var(--dim); }
+#sheet .lx-presets .chip-btn[aria-pressed=true] { border-color:var(--sig); color:var(--fg); background:rgba(77,208,225,.14); }
+.lx-form .lx-presets .lx-save { border-style:dashed; color:var(--dim); }
+.lx-form .lx-ptail { display:inline-flex; flex-wrap:nowrap; align-items:stretch; gap:6px; }                  /* the last preset and the save chip wrap as one: the save chip is never alone on a line */
+.lx-form .lx-saverow { display:flex; flex:1 1 100%; align-items:center; gap:6px; }
+.lx-form .lx-saverow input { flex:1 1 auto; min-width:0; }
+.lx-form .lx-promptbox { display:flex; flex-direction:column; align-items:stretch; gap:4px; min-width:0; }
+.lx-form .lx-promptbox .nl { display:none; align-self:flex-end; }
+@media (pointer:coarse) { .lx-form .lx-promptbox .nl { display:inline-flex; } }
+html.force-coarse .lx-form .lx-promptbox .nl { display:inline-flex; }
+.lx-form .lx-hint, .lx-form .lx-lede { margin:4px 0 0; font-size:12px; }
+.lx-form .lx-why { display:none; }                                                              /* why Codex or Shell is off: a title shows it to a mouse, this line shows it on touch */
+@media (pointer:coarse) { .lx-form .lx-why:not(:empty) { display:block; } }
+html.force-coarse .lx-form .lx-why:not(:empty) { display:block; }
+.lx-form .lx-wt { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.lx-form .lx-adv > .field, .lx-form .lx-adv > .grid, .lx-form .lx-adv > .checks, .lx-form .lx-adv > .lx-wt, .lx-form .lx-adv > div { margin-top:10px; }
+.lx-form .lx-others { margin-top:10px; }
+.lx-form .lx-cmdbox { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.lx-form .lx-cmdhead { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.lx-form pre.lx-cmd { margin:0; padding:8px 10px; max-height:140px; overflow:auto; border:1px solid var(--line); border-radius:2px; background:var(--bg); color:var(--fg-2); font:12px/1.5 var(--font-mono); font-variant-ligatures:none; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; }
+.lx-form pre.lx-cmd .lx-t { white-space:nowrap; }                                                  /* a token never breaks (not after its --); the spaces between tokens are the wrap points */
+/* the checkbox rows (Fast mode, Ultracode, worktree, fork, Close the session, the bypass 'I understand') are 44 px on touch, as the import list's rows are */
+@media (pointer:coarse) { .lx-form .checks label { min-height:var(--tap); } }
+html.force-coarse .lx-form .checks label { min-height:var(--tap); }
+.lx-form .lx-danger { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--bad); border-radius:2px; background:var(--bad-bg); }
+.lx-form .lx-danger > .bp5-icon { flex:none; margin-top:2px; color:var(--bad-fg); }
+.lx-form .lx-danger-b { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:8px; }
+.lx-form .lx-danger-t { color:var(--fg); font-size:13px; line-height:1.45; }
+.lx-form .lx-ack { display:flex; flex-direction:column; gap:2px; }
+.lx-form .lx-ack .checks label { color:var(--fg); font-weight:600; }
+.job-fable { display:flex; flex-direction:column; gap:2px; }
+.job-fable .checks label { color:var(--fg); font-weight:600; }
+@media (pointer:coarse) { .job-fable .checks label { min-height:var(--tap); } }
+html.force-coarse .job-fable .checks label { min-height:var(--tap); }
+.lx-form .lx-foot { align-items:center; }
+.lx-form .lx-acct { flex:1 1 100%; display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; min-width:0; font-size:12px; }
+.lx-form .lx-acct-t { min-width:0; overflow-wrap:anywhere; }
+.lx-form .lx-acct .lx-switch { margin-left:auto; }
+.lx-form .lx-custom { margin:0; }
+/* v0.5.20: work from a GitHub issue. The launcher's quiet note under the issue select, the untrusted-author callout, and the task card's comment row. */
+.lx-form .lx-issue { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.lx-form .lx-issue-meta, .lx-form .lx-issue-note { margin:0; overflow-wrap:anywhere; }
+.lx-form .lx-issue-reset { vertical-align:baseline; }
+/* work an epic started on this board (issue #149): its phase in words with a glyph; a lost claim is a state of its own (amber is attention, never the only signal) */
+
+.lx-form .lx-mem { min-width:0; }
+

@@ -928,7 +928,7 @@ test('the header has a quiet Quad link to #/quad?p=<project>, on every tab and e
 });
 
 test('pages.css: the project header\'s Quad link sits beside the ... menu, also on a phone (order, not hidden)', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages/project.css'), 'utf8');
   assert.match(css, /#page \.pj-more, #page \.pj-quad \{ align-self:center; \}/);
   assert.match(css, /@media \(max-width:599px\) \{[\s\S]*?#page \.pj-more, #page \.pj-quad \{ order:2; \}/);
   assert.doesNotMatch(css, /\.pj-quad[^{]*\{[^}]*display:none/, 'no width hides it: the quad has a one-up mode under 840 px');

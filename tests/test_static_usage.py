@@ -100,10 +100,11 @@ def index_assets():
 
 def test_index_links_charts_css_after_pages_css():
     need("charts.css")
-    styles = index_assets().styles
-    assert styles.count("/static/charts.css") == 1, f"index.html must link /static/charts.css exactly once, found {styles}"
-    assert "/static/pages.css" in styles and styles.index("/static/charts.css") > styles.index("/static/pages.css"), \
-        "charts.css comes after pages.css (it may refine a page rule, never the other way round)"
+    from tests.test_static_perf import _manifest
+    manifest = _manifest()
+    assert "/static/charts.css" not in index_assets().styles
+    assert manifest["usage"]["css"] == ["/static/charts.css"]
+    assert manifest["usage"]["ranks"][0] > max(manifest["app"]["ranks"])
 
 
 def test_usage_scripts_are_one_lazy_bundle_charts_js_first():
@@ -114,7 +115,7 @@ def test_usage_scripts_are_one_lazy_bundle_charts_js_first():
     for name in ("/static/charts.js", "/static/pages/usage.js"):
         assert name not in s, f"{name} is a lazy bundle: index.html must not load it up front, found {s}"
     lazy = text_of("lazy.js")
-    m = re.search(r"usage: \{ js: \[([^\]]*)\]", lazy)
+    m = re.search(r"usage: \{[^\n]*js: \[([^\]]*)\]", lazy)
     assert m, "lazy.js has no usage bundle"
     assert re.findall(r"'([^']+)'", m.group(1)) == ["/static/charts.js", "/static/pages/usage.js"], "charts.js (Charts) is defined before usage.js reads it"
     assert re.search(r"usage: 'usage'", lazy), "the usage route points at its bundle"
@@ -270,7 +271,7 @@ def test_sw_shell_carries_the_usage_assets(lite_client):
     assert r.status_code == 200
     m = re.search(r"JSON\.parse\('([^']*)'\)", r.text)
     assert m, "SHELL = JSON.parse('...') not found in the served worker"
-    shell = json.loads(m.group(1))
+    shell = [u.split("?", 1)[0] for u in json.loads(m.group(1))]
     for must in ("/static/charts.css", "/static/charts.js", "/static/pages/usage.js",
                  "/static/vendor/uplot/uPlot.min.css", "/static/vendor/uplot/uPlot.iife.min.js"):
         assert must in shell, f"{must} is missing from the service-worker SHELL: the Usage page would not open offline"
@@ -379,7 +380,7 @@ def test_core_maps_the_events_path_to_its_own_fixture():
     """/api/series/events must reach series_events.json: the '/api/series' prefix test in demoApi would otherwise answer it with series.json,
     whose `events` are limit episodes ({key:'5h'}), and the Gantt would draw them as sessions. Add, BEFORE the '/api/series' line in core.js:
         else if (bare.startsWith('/api/series/events')) name = 'series_events';"""
-    core = blank_js(text_of("core.js"))
+    core = blank_js(text_of("demo-api.js"))
     ev = re.search(r"""bare\.startsWith\(\s*['"]/api/series/events['"]\s*\)\s*\)\s*name\s*=\s*['"]series_events['"]""", core)
     assert ev, "core.js demoApi has no `bare.startsWith('/api/series/events')) name = 'series_events'` line"
     plain = re.search(r"""bare\.startsWith\(\s*['"]/api/series['"]\s*\)\s*\)\s*name\s*=\s*['"]series['"]""", core)

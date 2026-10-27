@@ -135,7 +135,6 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 /* Until the first summary is in (pages/usage.js drops .ubooting), the sections under Accounts keep their place but stay unpainted: as skeletons they would be on screen and then jump
    down by the height Accounts gains, which is most of the page's layout shift (Lighthouse CLS 0.7-0.8). visibility, not display: the Limits chart must be able to measure its box. */
 #page .usage-page.ubooting .ugrid > .usec:not([data-sec="accounts"]) { visibility:hidden; }
-#page .unote { margin:6px 0 0; }
 #page .usage-page .page-head .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px 12px; }     /* the dollar basis and the range side by side, wrapping at 390 px */
 #page .ufoot { margin:14px 0 0; font-size:12px; line-height:1.45; }
 #page .uest { margin:8px 0 0; font-size:12px; line-height:1.5; color:var(--fg-2); }
@@ -153,7 +152,6 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .ufresh-row .ufresh-btn { flex:0 0 auto; max-width:100%; }
 #page .ufresh-row .ufresh-note { margin:0; font-size:13px; flex:0 1 auto; min-width:0; }
 #page .ufresh-row .ufresh-note.hidden { display:none; }
-#page .unote.warn { color:var(--warn); }
 #page .utotals { margin:0 0 8px; font-size:12px; color:var(--fg-2); }
 #page .uslot .nonideal.empty, #page .ubody > .nonideal.empty { min-height:140px; }
 #page .uerr { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }

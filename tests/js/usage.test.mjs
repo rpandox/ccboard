@@ -319,7 +319,7 @@ test('r cycles the range (24h, 7d, 30d) when the keymap is loaded, and only on t
   assert.equal(q(w, 'button[data-range="7d"]').getAttribute('aria-pressed'), 'true');
   assert.equal(w.localStorage.getItem('ccboard:charts:range'), '7d');
   w.run('pages.usage.unmount()');
-  assert.equal(w.get('Keymap').list.length, 0, 'unmount unbinds r');
+  assert.equal(w.get('Keymap').list.filter(b => b.group === 'Usage').length, 0, 'unmount unbinds r');
 });
 
 // ---------------------------------------------------------------- cost
@@ -687,7 +687,7 @@ test('unmount calls Charts.destroyAll, stops the timer, removes the listener and
   assert.equal(w.get('__charts.destroyAll'), 1);
   assert.deepEqual(cleared, [1], 'the interval was cleared');
   assert.equal(w.get('Usage.cur'), null);
-  assert.equal(w.get('Keymap').list.length, 0);
+  assert.equal(w.get('Keymap').list.filter(b => b.group === 'Usage').length, 0);
   assert.equal((w.document.listeners.visibilitychange || []).length, 0, 'the visibility listener is gone');
   release();
   await tick(); await tick();

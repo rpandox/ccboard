@@ -15,6 +15,7 @@ function kWorld() {
   w.load('core.js');
   w.load('charts.js');
   w.load('keymap.js');
+  w.run('Keymap.reset()'); // this fixture tests its own chart bindings
   w.run(`globalThis.ResizeObserver = class { constructor() {} observe() {} disconnect() {} };`);
   return w;
 }

@@ -206,20 +206,22 @@ function nodeWorkerSection() {
       const demo = typeof demoOn === 'function' && demoOn();
       const want = !!(card && card.epic_worker && typeof card.epic_worker === 'object') || demo;
       if (!want) { if (sec.parentNode) sec.remove(); return; }
-      if (typeof EpicWorker === 'undefined' || (demo && !EpicWorker.fixture)) {
+      if (typeof EpicWorker === 'undefined' || (typeof Lazy !== 'undefined' && !Lazy.done('worker')) || (demo && !EpicWorker.fixture)) {
         if (asked || typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.worker) return;
         asked = true;
         const warm = () => (typeof EpicWorker !== 'undefined' ? EpicWorker.warm() : null);
-        (typeof EpicWorker !== 'undefined' ? Promise.resolve(warm()) : Lazy.load('worker').then(warm)).then(() => { if (typeof EpicWorker !== 'undefined') { asked = false; again(); } }, () => { asked = false; });      // a bundle that ran without defining EpicWorker is not asked for again in a loop
+        mountBundle('worker', async () => { await warm(); if (typeof EpicWorker !== 'undefined') { asked = false; again(); } }, () => true, () => { asked = false; });      // a bundle that ran without defining EpicWorker is not asked for again in a loop
         return;
       }
-      const v = EpicWorker.fromCard(card);
-      if (!v) { if (sec.parentNode) sec.remove(); return; }
-      if (!panel) { panel = EpicWorker.build({ mode: 'node' }); body.append(panel.root); }
-      if (!sec.parentNode) slot.append(sec);
-      const age = Nodes.ageOf(rec);
-      const extra = card && v.at && NodeView.epoch(card.now) !== null && NodeView.epoch(v.at) !== null ? Math.max(0, NodeView.epoch(card.now) - NodeView.epoch(v.at)) : 0;
-      panel.paint(v, { ageText: age === null ? '' : `${nhSpan(age + extra)} ago` });
+      mountBundle('worker', () => {
+        const v = EpicWorker.fromCard(card);
+        if (!v) { if (sec.parentNode) sec.remove(); return; }
+        if (!panel) { panel = EpicWorker.build({ mode: 'node' }); body.append(panel.root); }
+        if (!sec.parentNode) slot.append(sec);
+        const age = Nodes.ageOf(rec);
+        const extra = card && v.at && NodeView.epoch(card.now) !== null && NodeView.epoch(v.at) !== null ? Math.max(0, NodeView.epoch(card.now) - NodeView.epoch(v.at)) : 0;
+        panel.paint(v, { ageText: age === null ? '' : `${nhSpan(age + extra)} ago` });
+      });
     },
   };
 }

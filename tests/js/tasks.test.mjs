@@ -1314,7 +1314,7 @@ test('a started task has no Move: no m key, no long press', async () => {
 });
 
 test('the stylesheet takes the iOS callout and the text selection away from a movable card, and the touch rules have their force-coarse twins', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages/tasks.css'), 'utf8');
   assert.match(css, /\.task\[data-movable\]\s*\{[^}]*-webkit-touch-callout:\s*none/);
   assert.match(css, /html\.force-coarse \.task\[data-movable\]\s*\{[^}]*user-select:\s*none/);
   assert.match(css, /\.tk-lane-btn\.bp5-button\s*\{[^}]*min-height:\s*52px/, 'the 52 px lane buttons');

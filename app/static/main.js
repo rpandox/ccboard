@@ -59,12 +59,18 @@ function watchLaunches() {
   });
 }
 
-registerServiceWorker();
+// Precache every asset after the first route and state have painted; never compete with their requests.
+function registerWorkerAfterPaint() {
+  if (!('serviceWorker' in navigator)) return;
+  if (!mountedId) { setTimeout(registerWorkerAfterPaint, 250); return; }
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(registerServiceWorker, 1500)));
+}
 installLifecycleListeners();
 markStandalone();
 // The keyboard layer goes in before the shell: its listener then runs first, so a key it handles ('/' and '[' too) is already
 // defaultPrevented when the shell's own fallback listener sees it, and nothing fires twice.
 if (typeof Keymap !== 'undefined') Keymap.install();
+else if (typeof Lazy !== 'undefined') Lazy.watchKeys();
 if (typeof Lazy !== 'undefined') Lazy.watchLinks();                // a pointer over a link to a lazy page starts loading it (lazy.js)
 if (typeof installShell === 'function') installShell();           // shell.js: topbar, sidebar, bottom nav, drawer, keys
 // Without shell.js (a partial deploy, a test page) the poll still needs a render() and the legacy header hooks: never shadow the shell's own.
@@ -73,5 +79,7 @@ if (typeof renderHeader !== 'function') window.renderHeader = () => {};
 if (typeof renderUsage !== 'function') window.renderUsage = () => {};
 rewriteLegacyHash();                                              // #s=<tmux> (old ntfy links) becomes #/s/<tmux> in place
 watchLaunches();
-route();
-startStatePolling().then(openSharedText, openSharedText);         // the poll's promise settles after the first state (or the offline fallback) is painted
+// Fetch the route while the first state arrives, keeping the startup skeleton stable.
+if (typeof Lazy !== 'undefined') Lazy.warm(parseHash(location.hash).id);
+const firstStateReady = () => { route(); openSharedText(); registerWorkerAfterPaint(); };
+startStatePolling().then(firstStateReady, firstStateReady);         // the poll's promise settles after the first state (or the offline fallback) is painted

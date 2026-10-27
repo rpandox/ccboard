@@ -1,0 +1,14 @@
+/* ---------- v0.5.13: the diff and pull request sheet (home.js openTaskModal, was the legacy #modal) ---------- */
+/* sections with small-caps labels (--dim, 10.5 px, 600, .07em) and hairlines between them; the diff keeps its own scroll box */
+.tm-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-width:0; overflow-wrap:anywhere; }
+.tm-sec { margin:12px 0 0; padding-top:10px; border-top:1px solid var(--line-soft); min-width:0; }
+.tm-k { margin:0 0 6px; font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); }
+.tm-line { font-size:12px; overflow-wrap:anywhere; }
+.tm-line:empty { display:none; }
+.tm-tabs:empty { display:none; }
+#sheet .tm-seg { display:flex; width:100%; max-width:100%; }                          /* one full-width track (the sheet's own .seg-btn rules carry an id: these match them) */
+#sheet .tm-seg .seg-btn { flex:1 1 auto; min-width:0; padding:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
+.tm-sec .diffbox { margin:8px 0 0; position:relative; }                          /* diff2html lays its line numbers out absolutely: without a positioned box they stay put when the sheet scrolls and land over the next section */
+.tm-form { margin:0; }
+.tm-form textarea { min-height:110px; }
+

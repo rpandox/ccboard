@@ -20,9 +20,11 @@ const settle = async (until, max = 200) => {
   return until ? !!until() : true;
 };
 
+let realm = 0;
+
 /** The first-paint set of index.html (shell.js included, main.js left out) in a world whose head fetches lazy files from app/static. */
-function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false } = {}) {
-  const w = makeWorld({ companions: false, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
+function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false, cold = false } = {}) {
+  const w = makeWorld({ companions: false, setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; }, setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; }, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
   const dom = installDom(w);
   const doc = w.document;
   const head = new dom.El('head');
@@ -31,30 +33,45 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
   const charts = new dom.El('link');
   charts.setAttribute('rel', 'stylesheet');
   charts.setAttribute('href', '/static/charts.css');
-  head.append(charts);
+  // Styles are ranked by the loader now; there is no eager charts anchor.
   const find = doc.querySelector;
   doc.querySelector = (s) => find(s) || head.querySelector(s);
-  const net = { scripts: [], sheets: [], fail: new Set(fail) };
+  const net = { scripts: [], sheets: [], preloads: [], held: new Map(), hold: new Set(), fail: new Set(fail) };
   const onInsert = (n) => {
     if (n.tagName === 'SCRIPT') {
-      const src = n.src;
+      const src = n.src.split('?')[0];
       net.scripts.push(src);
-      (slow ? (f) => setTimeout(f, slow) : setImmediate)(() => {
+      const finish = () => {
         if (net.fail.has(src)) { n.onerror(); return; }
-        w.load(src.slice('/static/'.length));
+        try { w.load(src.slice('/static/'.length).split('?')[0]); } catch (e) { (net.errors ||= []).push(e); }
         n.onload();
-      });
+      };
+      if (net.hold.has(src)) net.held.set(src, finish);
+      else (slow ? (f) => setTimeout(f, slow) : setImmediate)(finish);
+    } else if (n.tagName === 'LINK' && n.getAttribute('rel') === 'preload') {
+      net.preloads.push(n.getAttribute('href'));
+      setImmediate(() => n.onload()); // Downloads bytes; never executes the script.
     } else if (n.tagName === 'LINK' && n.getAttribute('data-lazy')) {
       const href = n.getAttribute('href');
       net.sheets.push(href);
-      setImmediate(() => { if (net.fail.has(href)) n.onerror(); else n.onload(); });
+      const finish = () => { if (net.fail.has(href)) n.onerror(); else n.onload(); };
+      if (net.hold.has(href)) net.held.set(href, finish);
+      else setImmediate(finish);
     }
   };
   const append = head.appendChild.bind(head);
   const insert = head.insertBefore.bind(head);
   head.appendChild = (n) => { const r = append(n); onInsert(n); return r; };
   head.insertBefore = (n, ref) => { const r = insert(n, ref); onInsert(n); return r; };
-  for (const src of INDEX_SCRIPTS) if (src !== '/static/main.js') w.load(src.slice('/static/'.length));
+  // V8 caches unresolved global lookups across vm contexts with identical source.
+  // Each browser page has its own realm; keep these cold-load fixtures isolated too.
+  w.run(fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8') + `\n// realm ${++realm}`);
+  for (const src of plain(w.get('LAZY_BUNDLES.app.js'))) try { w.load(src.slice('/static/'.length).split('?')[0]); } catch (e) { (net.errors ||= []).push(e); }
+  if (!cold) {
+    // Historical component fixtures: explicit dependencies, without page-specific bundles.
+    // The cold-route tests below exercise the actual first-view graph without these helpers.
+    for (const file of ['settings-restart.js', 'tabs.js', 'pages/agents.js', 'page-selection.js', 'page-keys.js', 'session-groups.js', 'inbox-cards.js', 'pages/inbox.js', 'pages/widgets.js', 'pages/home.js', 'components-tasks.js', 'task-views.js', 'pages/tasks.js', 'pages/search.js', 'pages/session.js', 'keymap.js', 'shell-dock.js']) w.load(file);
+  }
   w.ctx.__calls = [];
   w.run(`api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; }; poll = async () => {};`);
   w.ctx.__st = state;
@@ -77,7 +94,7 @@ test('index.html loads only the shell set: no lazy script is in it, and with jus
     lazy.push(file[1]);
   }
   assert.ok(lazy.length >= 12, 'the manifest was found');
-  const L = lazyWorld();
+  const L = lazyWorld({ cold: true });
   for (const name of LAZY_GLOBALS) assert.equal(L.w.run(`typeof ${name}`), 'undefined', `${name} is not defined by the first-paint set`);
   assert.equal(L.w.run('typeof openLauncher'), 'function', 'the launcher entry points are stubs');
   assert.equal(L.w.run('typeof Lazy'), 'object');
@@ -167,12 +184,12 @@ test('the Tasks page with a mouse keeps the dispatch bar\'s room, loads dnd.js o
 
 const ROUTES = [
   { hash: '#/agents', id: 'agents', scripts: ['/static/pages/agents-page.js'], sheets: [] },
-  { hash: '#/usage', id: 'usage', scripts: ['/static/charts.js', '/static/pages/usage.js'], sheets: [] },
-  { hash: '#/settings', id: 'settings', scripts: ['/static/pages/agents-page.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], sheets: ['/static/pages/settings.css'] },
+  { hash: '#/usage', id: 'usage', scripts: ['/static/charts.js', '/static/pages/usage.js'], sheets: ['/static/charts.css'] },
+  { hash: '#/settings', id: 'settings', scripts: ['/static/nodes.js', '/static/pages/agents-page.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], sheets: ['/static/pages/node-base.css', '/static/pages/settings.css'] },
   { hash: '#/memory', id: 'memory', scripts: ['/static/pages/memory.js'], sheets: ['/static/pages/memory.css'] },
-  { hash: '#/quad', id: 'quad', scripts: ['/static/termkit.js', '/static/pages/quad.js'], sheets: ['/static/pages/quad.css'] },
-  { hash: '#/p/ccboard', id: 'project', scripts: ['/static/tree.js', '/static/pages/project.js'], sheets: [] },
-  { hash: '#/onboarding/project', id: 'onboarding', scripts: ['/static/launcher.js', '/static/launcher-node.js', '/static/pages/onboarding.js'], sheets: ['/static/launcher.css', '/static/pages/onboarding.css'] },
+  { hash: '#/quad', id: 'quad', scripts: ['/static/termkit.js', '/static/pages/quad.js'], sheets: ['/static/termkit.css', '/static/shell-dock.css', '/static/pages/quad.css'] },
+  { hash: '#/p/ccboard', id: 'project', scripts: ['/static/tree.js', '/static/shell-tree.js', '/static/pages/project.js'], sheets: ['/static/pages/project.css', '/static/pages/home.css'] },
+  { hash: '#/onboarding/project', id: 'onboarding', scripts: ['/static/launcher.js', '/static/launcher-node.js', '/static/pages/onboarding.js'], sheets: ['/static/pages/create.css', '/static/launcher.css', '/static/pages/onboarding.css'] },
 ];
 
 for (const r of ROUTES) {
@@ -215,7 +232,7 @@ test('#/epic/<owner>/<repo>/<n> is a lazy route: epic.js and epic.css load once,
   assert.ok(await settle(() => L.mounted() === 'epic'), 'epic mounted');
   assert.deepEqual(L.net.scripts, ['/static/pages/epic.js', '/static/pages/epic-new.js']);          // the New epic sheet (issue #158) comes with the epic bundle
   assert.deepEqual(L.net.sheets, ['/static/pages/epic.css']);
-  assert.deepEqual(L.hrefs(), ['/static/pages/epic.css', '/static/charts.css'], 'the sheet goes in before charts.css');
+  assert.deepEqual(L.hrefs(), ['/static/pages/epic.css'], 'the sheet goes in before charts.css');
   assert.equal(L.w.document.body.getAttribute('data-page'), 'epic');
   L.w.location.hash = '#/inbox';                                        // leaves the page: its timer and listener go
   const T = lazyWorld({ fine: false });
@@ -231,7 +248,7 @@ test('page sheets go in before charts.css, in the order pages.css had their rule
     L.w.location.hash = h;
     assert.ok(await settle(() => L.mounted() === h.slice(2)), `${h} mounted ${L.mounted()} ${JSON.stringify(L.net.scripts)}`);
   }
-  assert.deepEqual(L.hrefs(), ['/static/pages/settings.css', '/static/pages/quad.css', '/static/pages/memory.css', '/static/charts.css']);
+  assert.deepEqual(L.hrefs(), ['/static/shell-dock.css', '/static/pages/node-base.css', '/static/pages/settings.css', '/static/pages/quad.css', '/static/pages/memory.css', '/static/termkit.css']);
 });
 
 test('a script that cannot be fetched leaves an error state with a Retry, not a blank page; Retry loads again and mounts', async () => {
@@ -261,7 +278,7 @@ test('a sheet that cannot be fetched is an error state too: the page never mount
   assert.ok(await settle(() => L.w.document.querySelector('#page .load-error')));
   assert.equal(L.mounted(), null);
   assert.notEqual(L.w.run('typeof Memory'), 'undefined', 'the script itself did run');
-  assert.deepEqual(L.hrefs(), ['/static/charts.css'], 'the failed sheet is not left in the head');
+  assert.deepEqual(L.hrefs(), [], 'the failed sheet is not left in the head');
   L.net.fail.clear();
   L.w.location.hash = '#/inbox';
   L.w.location.hash = '#/memory';
@@ -292,7 +309,7 @@ test('a cold deep link shows Loading… after a beat when the load is slow and n
   assert.ok(!/Loading…/.test(page.textContent), 'not at once: a fast load never flashes it');
   assert.ok(await settle(() => /Loading…/.test(page.textContent), 1000000), 'the hint shows after about 250 ms');
   assert.equal(L.mounted(), null);
-  assert.ok(await settle(() => L.mounted() === 'settings', 100000));
+  assert.ok(await settle(() => L.mounted() === 'settings', 1000000));
   assert.ok(!/Loading…/.test(page.textContent), 'the hint is gone once the page is up');
 });
 
@@ -306,8 +323,8 @@ test('an unknown address and the pages of the first-paint set never ask the load
 
 test('the launcher entry points are stubs that load launcher.js once and then call the real function', async () => {
   const L = lazyWorld();
-  assert.equal(L.w.run('openLauncher({ mode: "session" })'), true);
-  assert.equal(L.w.run('taskDispatchSheet({ id: 1 })'), true);
+  assert.equal(typeof L.w.run('openLauncher({ mode: "session" })').then, 'function');
+  assert.equal(typeof L.w.run('taskDispatchSheet({ id: 1 })').then, 'function');
   assert.ok(await settle(() => L.w.run('typeof launcherSchema') === 'function'));
   assert.deepEqual(L.net.scripts, ['/static/launcher.js', '/static/launcher-node.js'], 'one fetch for both');
   assert.equal(L.w.run('openLauncher.toString().includes("lazyLoad")'), false, 'the real openLauncher replaced the stub');
@@ -368,7 +385,7 @@ test('a board never used, with no project: Home loads the wizard (and the launch
   assert.equal(L.mounted(), 'home');
   assert.ok(await settle(() => L.mounted() === 'onboarding'));
   assert.deepEqual(L.net.scripts, ['/static/launcher.js', '/static/launcher-node.js', '/static/pages/onboarding.js']);
-  assert.deepEqual(L.net.sheets, ['/static/launcher.css', '/static/pages/onboarding.css']);
+  assert.deepEqual(L.net.sheets, ['/static/pages/create.css', '/static/launcher.css', '/static/pages/onboarding.css']);
   assert.match(L.w.location.hash, /^#\/onboarding/);
   const calm = lazyWorld({ state: fixtureState() });
   calm.w.location.hash = '#/';
@@ -382,13 +399,13 @@ test('a box with claude-mem: the project page loads the memory bundle (script an
   L.w.location.hash = '#/p/ccboard';
   assert.ok(await settle(() => L.mounted() === 'project'));
   assert.ok(await settle(() => L.w.run('typeof memoryGotchasMount') === 'function'));
-  assert.deepEqual(L.net.scripts, ['/static/tree.js', '/static/pages/project.js', '/static/pages/memory.js']);
-  assert.deepEqual(L.net.sheets, ['/static/pages/memory.css']);
+  assert.deepEqual(L.net.scripts, ['/static/tree.js', '/static/shell-tree.js', '/static/pages/project.js', '/static/pages/memory.js']);
+  assert.deepEqual(L.net.sheets, ['/static/pages/project.css', '/static/pages/home.css', '/static/pages/memory.css']);
   const bare = lazyWorld({ state: fixtureState() });
   bare.w.location.hash = '#/p/ccboard';
   assert.ok(await settle(() => bare.mounted() === 'project'));
   await settle(null, 30);
-  assert.deepEqual(bare.net.scripts, ['/static/tree.js', '/static/pages/project.js']);
+  assert.deepEqual(bare.net.scripts, ['/static/tree.js', '/static/shell-tree.js', '/static/pages/project.js']);
 });
 
 test('the Usage page\'s rename pencil loads Settings on first use and then opens its one rename sheet', async () => {
@@ -428,7 +445,7 @@ test('a pointer over the Agents link warms the page, and Settings brings the Cod
   const S = lazyWorld();
   S.w.location.hash = '#/settings';
   assert.ok(await settle(() => S.mounted() === 'settings'));
-  assert.equal(S.net.scripts[0], '/static/pages/agents-page.js', 'settings needs the agents bundle first');
+  assert.ok(S.net.scripts.indexOf('/static/pages/agents-page.js') < S.net.scripts.indexOf('/static/pages/settings.js'), 'settings waits for agents; independent prerequisites may load together');
   assert.equal(S.w.run('typeof agentsExtLoad'), 'function');
 });
 
@@ -516,4 +533,484 @@ test('the project page brings its own task board: makeTaskBoard is in project.js
   assert.equal(L.w.run('typeof makeTaskBoard'), 'function');
   assert.ok(!read('components.js').includes('function makeTaskBoard'));
   assert.ok(read('pages/project.js').includes('function makeTaskBoard'));
+});
+
+
+// Cold route contracts: no historical companions and no page preloaded.
+for (const [hash, id] of [['#/', 'home'], ['#/inbox', 'inbox'], ['#/tasks', 'tasks'], ['#/agents', 'agents'], ['#/search?q=hello', 'search'], ['#/usage', 'usage'], ['#/p/ccboard', 'project'], ['#/settings', 'settings'], ['#/quad', 'quad'], ['#/memory', 'memory'], ['#/onboarding/project', 'onboarding'], ['#/s/ccboard--ccboard--s1', 'session'], ['#/n/build-box', 'node'], ['#/epic/example/website/147', 'epic'], ['#/team', 'team']]) {
+  test(`cold ${hash}: only its dependency graph loads, styles settle, and mount/update have no missing globals`, async () => {
+    const L = lazyWorld({ cold: true, hash, fine: false });
+    const errors = [];
+    L.w.ctx.console = { ...console, error: (...args) => errors.push(args.map(String).join(' ')) };
+    assert.equal(L.w.run(`typeof pages['${id}']`), 'undefined');
+    L.w.run('route()');
+    assert.equal(L.mounted(), null);
+    assert.ok(await settle(() => L.w.document.body.getAttribute('data-page') === id), `${id}: ${errors.join('; ')}`);
+    L.w.run('render(true)');
+    assert.deepEqual(errors, [], 'mount, first update and shared shell render must not hide missing dependencies');
+    assert.ok(L.w.document.querySelector('#page').children.length);
+    assert.equal(L.w.document.body.getAttribute('data-page-loading'), null);
+    assert.equal(new Set(L.net.scripts).size, L.net.scripts.length, 'one request per script');
+    if (id !== 'session' && id !== 'home') assert.ok(!L.net.scripts.includes('/static/pages/home.js'), 'shared helpers do not pull in Home');
+    if (id === 'home') {
+      for (const file of ['pages/inbox.js', 'pages/tasks.js', 'pages/agents-page.js', 'pages/search.js', 'pages/session.js', 'nodes.js', 'keymap.js', 'components-tasks.js', 'shell-dock.js']) assert.ok(!L.net.scripts.includes('/static/' + file), file);
+    }
+    L.w.run('takeDownPage()');
+  });
+}
+
+test('cold CSS failure cannot be hidden by a successful probe; retry mounts after the CSS arrives', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/agents', fail: ['/static/pages/session-row.css'] });
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.document.querySelector('.load-error')));
+  assert.equal(L.mounted(), null);
+  L.net.fail.clear();
+  L.w.document.querySelector('.load-error button').click();
+  assert.ok(await settle(() => L.mounted() === 'agents'));
+  assert.equal(L.net.scripts.filter((p) => p === '/static/pages/agents.js').length, 1);
+  assert.equal(L.net.sheets.filter((p) => p === '/static/pages/session-row.css').length, 2);
+  L.w.run('takeDownPage()');
+});
+
+test('cold keyboard: the first chord is queued through the loader and field typing stays alone', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/' });
+  L.w.run('Lazy.watchKeys()');
+  const gate = L.w.document.listeners.keydown.at(-1);
+  const event = (key, target = L.w.document.body) => ({ key, target, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} });
+  const typing = event('g', { tagName: 'INPUT' });
+  gate(typing);
+  assert.equal(typing.defaultPrevented, undefined);
+  assert.deepEqual(L.net.scripts, []);
+  gate(event('g')); gate(event('a'));
+  assert.ok(await settle(() => L.w.location.hash === '#/agents'));
+  assert.ok(await settle(() => L.mounted() === 'agents'));
+  assert.equal(L.net.scripts.filter((p) => p === '/static/keymap.js').length, 1);
+  L.w.run('takeDownPage()');
+});
+
+test('bootstrap gives the skeleton two animation frames before requesting the entry bundle', async () => {
+  const frames = [], scripts = [], loads = [];
+  const loader = { load: name => {
+    loads.push(name);
+    return Promise.resolve();
+  } };
+  const w = makeWorld({ companions: false, requestAnimationFrame: fn => frames.push(fn) });
+  w.document.head = { appendChild: s => scripts.push(s) };
+  w.run(read('boot.js').replaceAll('__ASSET_VERSION__', 'release-b'));
+  assert.equal(scripts.length, 0);
+  frames.shift()();
+  assert.equal(scripts.length, 0, 'no app request before the first rendering opportunity');
+  frames.shift()();
+  assert.equal(scripts[0].src, '/static/lazy.js?v=release-b');
+  assert.equal(scripts[0].defer, true);
+  assert.equal(scripts[0].async, false);
+  w.ctx.Lazy = loader;
+  scripts[0].onload();
+  assert.deepEqual(loads, ['main']);
+});
+
+test('the entry script preloads with app but cannot execute until all base CSS has loaded', async () => {
+  const L = lazyWorld({ cold: true });
+  // This fixture already defines app exports; mark it started so CSS is required.
+  L.w.run('lazyStarted.app = true');
+  const pending = [];
+  L.head.appendChild = n => { pending.push(n); return n; };
+  const load = L.w.run("Lazy.load('main')");
+  const preload = pending.find(n => n.getAttribute('rel') === 'preload' && n.getAttribute('href') === '/static/main.js');
+  assert.ok(preload);
+  assert.equal(preload.getAttribute('fetchpriority'), 'low', 'dependent bytes must not crowd out prerequisites');
+  await settle(null, 2);
+  assert.equal(pending.some(n => n.tagName === 'SCRIPT'), false);
+  const sheets = pending.filter(n => n.getAttribute('rel') === 'stylesheet');
+  assert.equal(sheets.length, 6);
+  for (const sheet of sheets.slice(1)) sheet.onload();
+  await settle(null, 2);
+  assert.equal(pending.some(n => n.tagName === 'SCRIPT'), false, 'even one outstanding base sheet blocks execution');
+  sheets[0].onload();
+  assert.ok(await settle(() => pending.some(n => n.tagName === 'SCRIPT')));
+  L.w.run('const firstStateReady = true');
+  pending.find(n => n.tagName === 'SCRIPT').onload();
+  await load;
+});
+
+test('cold Home renders pending settings without Settings and loads restart actions only on a tap', async () => {
+  const st = fixtureState();
+  st.settings_pending = { count: 1, labels: ['Task lanes'] };
+  st.restart = { method: 'docker', hint: 'docker compose restart ccboard', blockers: [] };
+  const L = lazyWorld({ cold: true, hash: '#/', state: st, fine: false });
+  L.w.run('route()');
+  assert.ok(await settle(() => L.mounted() === 'home'));
+  assert.ok(L.w.document.querySelector('.home-settings-pending'));
+  assert.ok(!L.net.scripts.includes('/static/pages/settings.js'));
+  assert.ok(!L.net.scripts.includes('/static/settings-restart-actions.js'));
+  L.w.document.querySelector('.set-restart-control button').click();
+  assert.ok(await settle(() => L.net.scripts.includes('/static/settings-restart-actions.js')));
+  assert.ok(await settle(() => L.w.run('typeof settingsRestartPoll') === 'function'));
+  assert.ok(!L.net.scripts.includes('/static/pages/settings.js'));
+  L.w.run('takeDownPage()');
+});
+
+test('the cold keyboard gate preserves native Enter, Space and Escape on controls', () => {
+  const L = lazyWorld({ cold: true });
+  L.w.run('Lazy.watchKeys()');
+  const gate = L.w.document.listeners.keydown.at(-1);
+  const target = L.w.document.createElement('button');
+  L.w.document.body.append(target);
+  for (const key of ['Enter', ' ', 'Escape']) {
+    const e = { key, target, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+    gate(e);
+    assert.equal(e.defaultPrevented, undefined, `${key} must retain its native action`);
+  }
+});
+
+test('cold dock: its first Open waits for the terminal sheet and implementation, and Close cancels an in-flight Open', async () => {
+  const L = lazyWorld({ cold: true, fine: false });
+  L.w.run('Shell.dockWide = () => true; Shell.dockOff = () => false');
+  assert.equal(L.w.run('typeof TermKit'), 'undefined');
+  assert.equal(L.w.run('typeof Shell.dockMount'), 'undefined');
+  assert.equal(L.w.run('Shell.openDock("shop--api--s1", { quiet: true })'), true);
+  L.w.run('Shell.closeDock()');
+  assert.ok(await settle(() => L.w.run('typeof Shell.dockMount') === 'function'));
+  assert.deepEqual(L.net.scripts, ['/static/termkit.js', '/static/shell-dock.js']);
+  assert.deepEqual(L.net.sheets, ['/static/termkit.css', '/static/shell-dock.css']);
+  assert.equal(L.w.run('Shell.dock.wanted'), '');
+  assert.equal(L.w.document.querySelector('#dock').children.length, 0);
+});
+
+
+test('the cold keyboard gate leaves browser modifier shortcuts and a pending chord Tab alone', () => {
+  const L = lazyWorld({ cold: true });
+  L.w.run('Lazy.watchKeys()');
+  const gate = L.w.document.listeners.keydown.at(-1);
+  for (const props of [{ key: 'J', ctrlKey: true, shiftKey: true }, { key: 'k', metaKey: true }]) {
+    const e = { ...props, target: L.w.document.body, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+    gate(e); assert.equal(e.defaultPrevented, undefined);
+  }
+  const e = { key: 'g', target: L.w.document.body, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+  gate(e);
+  const tab = { ...e, key: 'Tab', defaultPrevented: false };
+  gate(tab); assert.equal(tab.defaultPrevented, false);
+});
+
+test('cold Settings App keeps the shortcut button and loads its dialog on demand', async () => {
+  const L = lazyWorld({ cold: true });
+  await L.w.run("Lazy.load('settings')");
+  assert.equal(L.w.run('typeof Keymap'), 'undefined');
+  assert.equal(L.w.run('typeof Palette'), 'undefined');
+  assert.equal(L.w.run('settingsHelpAvailable()'), true);
+  L.w.run('settingsOpenShortcuts()');
+  assert.ok(await settle(() => L.w.run("typeof Palette !== 'undefined'")));
+  assert.ok(L.net.scripts.includes('/static/palette.js'));
+  assert.ok(await settle(() => L.w.document.querySelector('#helpdlg')?.open));
+});
+
+// Review regressions: use the browser's load event even when execution throws.
+test('review: failed nodes prerequisite retries all Settings members in order with complete exports', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/settings', fail: ['/static/nodes.js'] });
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.document.querySelector('.load-error')));
+  assert.equal(L.w.run("Lazy.done('settings')"), false);
+  assert.ok(L.net.preloads.includes('/static/nodes-pair.js'), 'dependent bytes are fetched while prerequisites load');
+  assert.ok(!L.net.scripts.includes('/static/nodes-pair.js'), 'a preload cannot execute against a failed prerequisite');
+  L.net.fail.clear();
+  L.w.document.querySelector('.load-error button').click();
+  assert.ok(await settle(() => L.mounted() === 'settings'));
+  assert.equal(L.w.run("Lazy.done('settings')"), true);
+  assert.equal(L.w.run('typeof NodeView.peer'), 'function');
+  assert.ok(L.w.run('NodeView.SCOPES.length') > 0);
+  assert.deepEqual(L.net.errors || [], [], 'dependents never execute against a failed prerequisite');
+  assert.ok(L.net.scripts.lastIndexOf('/static/nodes.js') < L.net.scripts.lastIndexOf('/static/nodes-pair.js'));
+  L.w.run('delete NodeView.peer');
+  assert.equal(L.w.run("Lazy.done('settings')"), false, 'a secondary export is required even after a successful load');
+  L.w.run('takeDownPage()');
+});
+
+test('review: mouse-opened Settings shortcuts install the keyboard exactly once', async () => {
+  const L = lazyWorld({ cold: true });
+  await L.w.run("Lazy.load('settings')");
+  L.w.run('settingsOpenShortcuts()');
+  assert.ok(await settle(() => L.w.document.querySelector('#helpdlg')?.open));
+  assert.equal(L.w.run('Keymap.installed'), true);
+  const help = L.w.run('Keymap.help().length');
+  assert.ok(help > 20);
+  L.w.run('Keymap.install(); settingsOpenShortcuts(); Keymap.install()');
+  assert.equal(L.w.run('Keymap.help().length'), help);
+  assert.equal(L.w.document.listeners.keydown.filter(f => f === L.w.get('Keymap.listener')).length, 1);
+});
+
+test('review: Usage mount queues r and an unmount cancels it before keyboard arrival', async () => {
+  for (const leave of [false, true]) {
+    const L = lazyWorld({ cold: true, hash: '#/usage' });
+    L.w.run('route()');
+    assert.ok(await settle(() => L.mounted() === 'usage'));
+    assert.equal(L.w.run('typeof Keymap'), 'undefined');
+    if (leave) L.w.run('takeDownPage()');
+    await L.w.run("Lazy.load('keyboard')");
+    assert.equal(L.w.run("Keymap.list.filter(b => b.group === 'Usage' && b.spec === 'r').length"), leave ? 0 : 1);
+    if (!leave) {
+      L.w.run("globalThis.cycles = 0; Usage.cycle = () => cycles++; Keymap.handle({key:'r',target:document.body,preventDefault(){}})");
+      assert.equal(L.w.get('cycles'), 1);
+      L.w.run('takeDownPage()');
+      assert.equal(L.w.run("Keymap.list.filter(b => b.group === 'Usage').length"), 0);
+    }
+  }
+});
+
+test('review: nodes loaded before keyboard retain g n and every remote-session action', async () => {
+  const L = lazyWorld({ cold: true });
+  await L.w.run("Lazy.load('nodeshub')");
+  assert.equal(L.w.run('typeof Keymap'), 'undefined');
+  await L.w.run("Lazy.load('keyboard')");
+  assert.equal(L.w.run("Keymap.list.filter(b => b.spec === 'g n').length"), 1);
+  L.w.run(`globalThis.remoteActions = []; Nodes.peek = Object.fromEntries(['focus','ack','allow','deny','open'].map(n => [n, () => {remoteActions.push(n);return true}]))`);
+  for (const key of ['r', 'a', 'y', 'd', 'o']) L.w.run(`Keymap.handle({key:'${key}',target:document.body,preventDefault(){}})`);
+  assert.deepEqual(plain(L.w.get('remoteActions')), ['focus', 'ack', 'allow', 'deny', 'open']);
+});
+
+for (const [file, action, args] of [
+  ['account-actions.js', 'accountSwitch', "{name:'Work'}"],
+  ['account-actions.js', 'acctProblemDismiss', ''],
+  ['quick-editor.js', 'quickReplyEditor', '{items:[]}'],
+]) test(`review: 404 ${file} from ${action} is caught and displays a working Retry`, async () => {
+  const L = lazyWorld({ cold: true, fail: ['/static/' + file] });
+  const result = await L.w.run(`${action}(${args})`);
+  assert.equal(result, false);
+  const alert = L.w.document.querySelector('.toast.bad');
+  assert.ok(alert);
+  assert.match(alert.textContent, /Could not load/);
+  assert.equal(alert.querySelector('button').textContent, 'Retry');
+  L.net.fail.clear();
+  alert.querySelector('button').click();
+  assert.ok(await settle(() => L.w.run(`!${action}.lazyStub`)));
+  assert.equal(L.net.scripts.filter(p => p === '/static/' + file).length, 2);
+  await settle(null, 20);
+});
+
+test('review: all scripts declare an export probe and a load event without exports is rejected', async () => {
+  const L = lazyWorld({ cold: true });
+  assert.deepEqual(plain(L.w.run('Object.values(LAZY_BUNDLES).flatMap(b => b.js || []).filter(src => !LAZY_EXPORTS[src])')), []);
+  L.w.load = () => {}; // Browser successfully fetches an empty/corrupted script.
+  await assert.rejects(L.w.run("Lazy.load('quickeditor')"), /missing export/);
+  assert.equal(L.w.run("Lazy.done('quickeditor')"), false);
+});
+
+test('review: removing a dependent export invalidates its fulfilled load promise and Retry restores it', async () => {
+  const L = lazyWorld({ cold: true });
+  await L.w.run("Lazy.load('settings')");
+  L.w.run('delete NodeView.peer; delete NodeView.SCOPES');
+  assert.equal(L.w.run("Lazy.done('settings')"), false);
+  await L.w.run("Lazy.load('settings')");
+  assert.equal(L.w.run('typeof NodeView.peer'), 'function');
+  assert.ok(L.w.run('NodeView.SCOPES.length') > 0);
+  assert.equal(L.net.scripts.filter(p => p === '/static/nodes-pair.js').length, 2);
+});
+
+test('review: Lazy and core.loadAsset stamp every script and stylesheet with the boot release', async () => {
+  const L = lazyWorld({ cold: true });
+  L.w.document.documentElement.setAttribute('data-release', 'release-b');
+  const urls = [];
+  const append = L.head.appendChild.bind(L.head);
+  L.head.appendChild = n => { urls.push(n.src || n.getAttribute('href')); return append(n); };
+  await L.w.run("Lazy.load('widgets')");
+  assert.ok(urls.includes('/static/pages/widgets.js?v=release-b'));
+  assert.ok(urls.includes('/static/pages/widgets.css?v=release-b'));
+  await L.w.run("Lazy.load('agents')");
+  assert.ok(L.net.preloads.includes('/static/pages/agents-page.js?v=release-b'), 'preloads share the release-scoped script URL');
+  // loadAsset uses append, not appendChild; intercept that independent path.
+  L.head.append = n => { urls.push(n.src || n.getAttribute('src') || n.getAttribute('href')); n.onload(); };
+  await L.w.run("loadAsset('/static/vendor/diff2html.min.css'); loadAsset('/static/vendor/diff2html-ui-base.min.js')");
+  assert.ok(urls.slice(-2).every(u => u.endsWith('?v=release-b')));
+});
+
+test('LCP: batch preloads start together but execution awaits each export and mounting awaits CSS', async () => {
+  const L = lazyWorld({ cold: true });
+  const pending = [];
+  L.head.appendChild = n => { pending.push(n); return n; };
+  let done = false;
+  const load = L.w.run("Lazy.load('sessionrows')").then(() => { done = true; });
+  await settle(() => pending.some(n => n.tagName === 'SCRIPT'));
+  const sources = ['/static/pages/agents.js', '/static/page-selection.js', '/static/session-groups.js'];
+  assert.deepEqual(pending.filter(n => n.getAttribute('rel') === 'preload').map(n => n.getAttribute('href')), sources);
+  for (const [i, src] of sources.entries()) {
+    assert.ok(await settle(() => pending.filter(n => n.tagName === 'SCRIPT').length === i + 1));
+    const script = pending.filter(n => n.tagName === 'SCRIPT')[i];
+    assert.equal(script.src, src);
+    assert.equal(script.async, false);
+    L.w.load(src.slice('/static/'.length)); script.onload();
+  }
+  await settle(null, 2);
+  assert.equal(done, false, 'exports alone cannot skip the pending stylesheet');
+  pending.find(n => n.getAttribute('rel') === 'stylesheet').onload();
+  await load;
+  assert.equal(L.w.run("Lazy.done('sessionrows')"), true);
+});
+
+test('Home keeps the Team line above Nodes even when Team arrives first', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/' });
+  L.w.run(`
+    teamUse = () => {
+      const r = homePage.refs;
+      if (!r.team) {
+        r.team = el('p', {class: 'tm-homeline', text: 'Team'});
+        r.away.parentNode.insertBefore(r.team, r.away.nextSibling);
+      }
+      return true;
+    };
+    Nodes.use = fn => { if (typeof Nodes.slot === 'function') fn(); };
+    route();
+  `);
+  assert.ok(await settle(() => L.mounted() === 'home'));
+  await L.w.run("Lazy.load('nodeshub')");
+  L.w.run('render(true); render(true)');
+  const root = L.w.document.querySelector('#page');
+  const team = root.querySelector('.tm-homeline'), strip = root.querySelector('.nd-strip');
+  assert.ok(team && strip);
+  assert.ok(root.children.indexOf(team) < root.children.indexOf(strip));
+  assert.equal(root.querySelectorAll('.nd-strip').length, 1);
+  L.w.run('takeDownPage()');
+});
+
+test('LCP: a parallel failure waits for outstanding members before Retry and reuses their successful exports', async () => {
+  const L = lazyWorld({ cold: true });
+  const pending = [];
+  L.head.appendChild = n => { pending.push(n); return n; };
+  let failed = false;
+  const load = L.w.run("Lazy.load('sessionrows')").catch(() => { failed = true; });
+  await settle(() => pending.some(n => n.tagName === 'SCRIPT'));
+  pending.find(n => n.getAttribute('rel') === 'stylesheet').onerror();
+  await settle(null, 2);
+  assert.equal(failed, false, 'Retry must not overlap scripts from this attempt');
+  for (let i = 0; i < 3; i++) {
+    assert.ok(await settle(() => pending.filter(n => n.tagName === 'SCRIPT').length > i));
+    const script = pending.filter(n => n.tagName === 'SCRIPT')[i];
+    L.w.load(script.src.slice('/static/'.length)); script.onload();
+  }
+  await load;
+  assert.equal(failed, true);
+  assert.equal(L.w.run("Lazy.done('sessionrows')"), false);
+  pending.length = 0;
+  const retry = L.w.run("Lazy.load('sessionrows')");
+  await settle(() => pending.length);
+  assert.deepEqual(pending.map(n => n.tagName), ['LINK'], 'successful scripts are not executed twice');
+  pending[0].onload();
+  await retry;
+  assert.equal(L.w.run("Lazy.done('sessionrows')"), true);
+});
+
+
+test('verification: cold Settings holds the remaining batch after nodes-pair fails and Retry registers and mounts it', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/settings', fail: ['/static/nodes-pair.js'] });
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.document.querySelector('.load-error')));
+  assert.equal(L.w.run("Lazy.done('settings')"), false);
+  assert.equal(L.w.run('typeof pages.settings'), 'undefined');
+  for (const src of ['/static/pages/doctor.js', '/static/pages/settings.js']) {
+    assert.ok(!L.net.scripts.includes(src), `${src} must be held after the failed prerequisite`);
+  }
+  L.net.fail.clear();
+  L.w.document.querySelector('.load-error button').click();
+  assert.ok(await settle(() => L.mounted() === 'settings'));
+  assert.equal(L.w.run("Lazy.done('settings')"), true);
+  assert.equal(L.w.run('typeof pages.settings.mount'), 'function');
+  assert.deepEqual(L.net.scripts.filter(s => ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'].includes(s)),
+    ['/static/nodes-pair.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js']);
+  assert.deepEqual(L.net.errors || [], []);
+  L.w.run('takeDownPage(); delete pages.settings');
+  assert.equal(L.w.run('typeof settingsPage'), 'object');
+  assert.equal(L.w.run("Lazy.done('settings')"), false, 'early declaration cannot replace registration');
+});
+
+test('verification: Home → Inbox → Home cannot mount widget DOM while widgets.css is outstanding', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/' });
+  L.net.hold.add('/static/pages/widgets.css');
+  L.w.run('route()');
+  assert.ok(await settle(() => L.w.run("typeof Widgets.usageCard === 'function'") && L.net.held.has('/static/pages/widgets.css')));
+  const first = L.w.get('homePage.refs');
+  assert.equal(first.usageHost.children.length, 0);
+  L.w.location.hash = '#/inbox';
+  assert.ok(await settle(() => L.mounted() === 'inbox'));
+  L.w.location.hash = '#/';
+  assert.ok(await settle(() => L.mounted() === 'home'));
+  const second = L.w.get('homePage.refs');
+  assert.notEqual(second, first);
+  assert.equal(L.w.run("Lazy.done('widgets')"), false);
+  assert.equal(second.usageHost.children.length, 0, 'remount must obey the same CSS barrier');
+  L.net.held.get('/static/pages/widgets.css')();
+  assert.ok(await settle(() => second.usageHost.children.length > 0));
+  assert.equal(L.w.run("Lazy.done('widgets')"), true);
+  assert.equal(first.usageHost.children.length, 0, 'late completion must not mount the abandoned host');
+  assert.equal(L.net.scripts.filter(s => s === '/static/pages/widgets.js').length, 1);
+  L.w.run('takeDownPage()');
+});
+
+for (const chord of ['g n', 'g u', 'c t', 'g x n', 'g Tab n']) {
+  test(`verification: slow keymap preserves every event in ${chord}`, async () => {
+    const L = lazyWorld({ cold: true });
+    await L.w.run("Lazy.load('nodeshub')");
+    L.w.run("globalThis.actions = []; Nodes.enabled = () => true; Nodes.goFirst = () => { actions.push('nodes'); return true; }; Shell.openCreate = kind => { actions.push(kind); return true; }; Lazy.watchKeys()");
+    L.net.hold.add('/static/keymap.js');
+    const gate = L.w.document.listeners.keydown.at(-1);
+    for (const key of chord.split(' ')) gate({ key, target: L.w.document.body, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} });
+    assert.ok(await settle(() => L.net.held.has('/static/keymap.js')));
+    L.net.held.get('/static/keymap.js')();
+    assert.ok(await settle(() => L.w.run("Lazy.done('keyboard')")));
+    await settle(null, 2);
+    assert.deepEqual(plain(L.w.get('actions')), chord === 'g n' ? ['nodes'] : chord === 'c t' ? ['task'] : []);
+    if (chord === 'g u') assert.equal(L.w.location.hash, '#/usage');
+    L.w.run('takeDownPage()');
+  });
+}
+
+for (const feature of ['nodeshub', 'teamview']) {
+  test(`verification: ${feature} first mount and remount wait for their CSS through the shared feature gate`, async () => {
+    const L = lazyWorld({ cold: true });
+    const css = feature === 'nodeshub' ? '/static/pages/nodes.css' : '/static/pages/team-view.css';
+    const ready = feature === 'nodeshub' ? 'Nodes.ready' : "typeof TeamView !== 'undefined' && TeamView.ready";
+    L.net.hold.add(css);
+    L.w.run("state.nodes_enabled = true; state.team = { shared: true }; globalThis.featureHost = el('div'); document.body.append(featureHost)");
+    const invoke = feature === 'nodeshub' ? "Nodes.use(() => featureHost.append(NodeView.chip('node')))" : "teamUse(() => featureHost.append(el('p', {text:'team'})))";
+    L.w.run(invoke);
+    assert.ok(await settle(() => L.w.run(ready) && L.net.held.has(css)));
+    assert.equal(L.w.get('featureHost').children.length, 0);
+    L.w.run(invoke);
+    assert.equal(L.w.get('featureHost').children.length, 0, 'a defined JS export is not the CSS barrier');
+    L.net.held.get(css)();
+    assert.ok(await settle(() => L.w.get('featureHost').children.length === 2));
+    assert.equal(L.w.run(`Lazy.done('${feature}')`), true);
+  });
+}
+
+for (const expired of ['between keys', 'before install']) {
+  test(`verification: slow keyboard respects chord timeout ${expired}`, async () => {
+    const L = lazyWorld({ cold: true });
+    await L.w.run("Lazy.load('nodeshub')");
+    L.net.hold.add('/static/keymap.js');
+    L.w.run("globalThis.clock = 1000; Date.now = () => clock; globalThis.navigations = 0; Nodes.enabled = () => true; Nodes.goFirst = () => { navigations++; return true; }; Lazy.watchKeys()");
+    const gate = L.w.document.listeners.keydown.at(-1);
+    const event = key => ({ key, target: L.w.document.body, preventDefault() {}, stopImmediatePropagation() {} });
+    gate(event('g'));
+    L.w.run('clock += 801');
+    if (expired === 'between keys') gate(event('n'));
+    assert.ok(await settle(() => L.net.held.has('/static/keymap.js')));
+    L.net.held.get('/static/keymap.js')();
+    assert.ok(await settle(() => L.w.run("Lazy.done('keyboard')")));
+    await settle(null, 2);
+    if (expired === 'before install') L.w.run("Keymap.handle({ key: 'n', target: document.body, preventDefault() {} })");
+    assert.equal(L.w.get('navigations'), 0);
+    assert.equal(L.w.get('Keymap.pending'), null);
+  });
+}
+
+test('verification: repeated dock Open cannot bypass the stylesheet after the implementation arrives', async () => {
+  const L = lazyWorld({ cold: true, fine: false });
+  L.w.run('Shell.dockWide = () => true; Shell.dockOff = () => false');
+  L.net.hold.add('/static/shell-dock.css');
+  L.w.run('Shell.openDock("shop--api--s1", { quiet: true })');
+  assert.ok(await settle(() => L.w.run("typeof Shell.dockMount === 'function'") && L.net.held.has('/static/shell-dock.css')));
+  L.w.run('Shell.closeDock(); Shell.openDock("shop--api--s1", { quiet: true })');
+  assert.equal(L.w.document.querySelector('#dock').children.length, 0);
+  assert.equal(L.w.run("Lazy.done('shelldock')"), false);
+  L.net.held.get('/static/shell-dock.css')();
+  assert.ok(await settle(() => L.w.document.querySelector('#dock').children.length > 0));
+  L.w.run('Shell.closeDock()');
 });

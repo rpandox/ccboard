@@ -295,7 +295,7 @@ test('the node page has no Worker section while the node\'s card carries none (o
 test('the node page asks for the bundle once when the card has the worker and the script is not here', async () => {
   const r = rec('build-box', { card: { ...rec('build-box').card, now: new Date().toISOString(), epic_worker: view() } });
   const { w } = hubWorld({ state: boardState(), nodes: [r] });
-  w.run('globalThis.Lazy = { bundles: { worker: {} }, load: async (n) => { __loads.push(n); }, pending: () => [] }');
+  w.run('globalThis.Lazy = { done: () => false, bundles: { worker: {} }, load: async (n) => { __loads.push(n); }, pending: () => [] }');
   w.ctx.__loads = [];
   await openNode(w, r);
   await openNode(w, r);
@@ -370,7 +370,7 @@ test('the bundle is lazy: index.html carries none of it, and lazy.js lists exact
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.ok(!html.includes('nodes-worker') && !html.includes('worker.css'));
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /worker: \{ js: \['\/static\/nodes-worker\.js'\], css: \[\{ href: '\/static\/pages\/worker\.css', rank: 18 \}\]/);
+  assert.match(lazy, /worker: \{ js: \['\/static\/nodes-worker\.js'\], css: \[\{ href: '\/static\/pages\/worker\.css', rank: 118 \}\]/);
 });
 
 test('the sentence under the headline uses this page\'s clock and does not repeat the headline', async () => {

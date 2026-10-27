@@ -1,0 +1,42 @@
+/* the usage card */
+#page .ucard { margin:12px auto; padding:12px 14px; background:var(--card); border:1px solid var(--line); border-radius:2px; }
+#page .uc-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; }
+#page .uc-head h2 { margin:0; font-size:15px; font-weight:600; }
+#page .uc-backup { display:inline-flex; align-items:center; padding:1px 8px; border:1px solid var(--line); border-radius:10px; font:12px/1.5 var(--font-mono); color:var(--dim); text-decoration:none; }
+#page .uc-backup.bad { border-color:var(--bad); color:var(--bad); }
+@media (pointer:coarse) { #page .uc-backup { min-height:var(--tap); } }
+html.force-coarse #page .uc-backup { min-height:var(--tap); }
+#page .uc-gauges { display:flex; flex-wrap:wrap; gap:8px 22px; margin:10px 0 4px; }
+#page .gauge { display:flex; align-items:center; gap:8px; flex:1 1 230px; min-width:0; }
+#page .g-label { min-width:2ch; font:600 12px/1 var(--font-mono); color:var(--fg-2); }
+#page .g-bar { position:relative; flex:1 1 80px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
+#page .g-bar i { display:block; height:100%; background:var(--ok); }
+#page .gauge.warn .g-bar i { background:var(--warn); }
+#page .gauge.bad .g-bar i { background:var(--bad); }
+#page .g-val { min-width:4ch; text-align:right; font-size:12px; color:var(--fg); }
+#page .g-reset { white-space:nowrap; }
+#page .uc-burn { margin:2px 0 4px; font:12px/1.4 var(--font-mono); }
+#page .uc-charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px 22px; margin-top:10px; }
+#page .uc-fig { margin:0; min-width:0; }
+#page .uc-cap { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:4px; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+#page .uc-cap-v { text-transform:none; letter-spacing:0; color:var(--fg-2); }
+#page .uc-plot svg { display:block; width:100%; height:44px; overflow:visible; }
+#page .uc-bars .uc-plot svg { height:56px; }
+#page .sp-line { fill:none; stroke:var(--sig); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+#page .sp-guide { stroke:var(--warn); stroke-opacity:.4; stroke-width:1; stroke-dasharray:3 3; }
+#page .sp-base, #page .cb-base { stroke:var(--line); stroke-width:1; }
+#page .cb { fill:var(--sig); }
+#page .cb.zero { fill:url(#uc-hatch); stroke:var(--dim-2); stroke-width:1; }              /* a day without spend: hatched, never an empty gap */
+#page .cb-hatch-line { stroke:var(--dim-2); stroke-width:1; }
+@media (hover:hover) { #page .cb:hover { fill:var(--fg-2); } #page .cb.zero:hover { fill:url(#uc-hatch); } }
+#page .uc-days { display:grid; grid-template-columns:repeat(7, 1fr); margin-top:3px; text-align:center; font:10px/1.2 var(--font-mono); color:var(--dim); }
+
+/* the Home usage card links to the Usage page (v0.5.17): gauges are anchors, 'Usage →' is the card's more link */
+#page a.gauge { color:inherit; text-decoration:none; }
+@media (hover:hover) { #page a.gauge:hover .g-val { text-decoration:underline; } }
+#page .uc-tools { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
+#page .uc-more { font:12px/1.5 var(--font-mono); white-space:nowrap; text-decoration:none; }
+@media (pointer:coarse) { #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); } #page a.gauge { min-height:var(--tap); } }
+html.force-coarse #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); }
+html.force-coarse #page a.gauge { min-height:var(--tap); }
+

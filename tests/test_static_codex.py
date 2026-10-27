@@ -63,7 +63,7 @@ def test_demo_series_carries_the_codex_windows_of_both_demo_accounts():
 
 def test_core_shifts_the_demo_series_reset_times_to_now():
     """A Codex window that ends after the fixture's moment must not read as 'rolled over' hours later: demoApi moves the series' meta.resets_at by the elapsed time (series.json carries demo.epoch)."""
-    core = blank_js((STATIC / "core.js").read_text(encoding="utf-8"))
+    core = blank_js((STATIC / "demo-api.js").read_text(encoding="utf-8"))
     assert re.search(r"name === 'series' && data && data\.demo && data\.demo\.epoch", core), "core.js demoApi has no clock shift for the series fixture"
     assert re.search(r"resets_at: m\.resets_at \+ dt", core)
 

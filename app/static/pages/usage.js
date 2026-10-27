@@ -572,12 +572,12 @@ Usage.paintMem = function (P) {
   if (sig === P.memSig) return;
   P.memSig = sig;
   host.textContent = '';
-  const tile = m && typeof memoryHealthTile === 'function' ? memoryHealthTile(m, { compact: true, link: true }) : null;
-  if (m && typeof memoryHealthTile !== 'function' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {      // memory.js is lazy (lazy.js): only a box with claude-mem loads it for the tile
-    Lazy.load('memory').then(() => { if (typeof memoryHealthTile === 'function') { P.memSig = null; Usage.paintMem(P); } }, () => { /* no tile */ });
-  }
-  if (tile) host.append(tile);
-  host.classList.toggle('hidden', !tile);
+  host.classList.add('hidden');
+  if (m && (typeof Lazy !== 'undefined' || typeof memoryHealthTile === 'function')) mountBundle('memory', () => {
+    const tile = memoryHealthTile(m, { compact: true, link: true });
+    if (tile) host.append(tile);
+    host.classList.toggle('hidden', !tile);
+  }, () => Usage.alive(P) && P.refs?.mem === host && P.memSig === sig, () => { P.memSig = null; });
 };
 
 /* ---------- range and stack ---------- */
@@ -1845,8 +1845,8 @@ registerPage('usage', {
       P.onVisible = () => { if (Usage.alive(P) && !Usage.hidden() && P.stale) { P.stale = false; Usage.paintGauges(P); Usage.load(P, { fresh: true }); } };
       document.addEventListener('visibilitychange', P.onVisible);
     }
-    if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'function') {
-      P.unbind = Keymap.bindKey('r', () => Usage.cycle(P), { when: () => Usage.alive(P) && typeof currentRoute === 'function' && !!currentRoute() && currentRoute().id === 'usage', help: 'Cycle the Usage range (24h, 7d, 30d)', group: 'Usage' });
+    if (typeof KeyBindings !== 'undefined') {
+      P.unbind = KeyBindings.bind('r', () => Usage.cycle(P), { when: () => Usage.alive(P) && typeof currentRoute === 'function' && !!currentRoute() && currentRoute().id === 'usage', help: 'Cycle the Usage range (24h, 7d, 30d)', group: 'Usage' });
     }
   },
   update(st) {

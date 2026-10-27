@@ -737,7 +737,7 @@ test('opening an epic remembers that this viewer has epics, so the Tasks page sh
 
 // ---------------------------------------------------------------- entry point: the Tasks page's Epics tab
 
-const LAZY_STUB = "globalThis.Lazy = { run: (n, fn) => fn(), wants: () => false, load: () => Promise.resolve(), pending: () => [], later() {}, warm() {} };";
+const LAZY_STUB = "globalThis.Lazy = { done: () => true, run: (n, fn) => fn(), wants: () => false, load: () => Promise.resolve(), pending: () => [], later() {}, warm() {} };";
 
 /** A world on the Tasks page with the epic bundle "loaded" (Lazy stubbed to run at once). `issue` puts a GitHub issue on one task, the sign the tab keys on. */
 async function tasksWorld({ issue = true, extra = {}, hash = '#/tasks', list = clone(FX.list), storage = null } = {}) {
@@ -1029,7 +1029,7 @@ test('the project page has a quiet Epics link that opens the Epics tab', () => {
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'project.js'), 'utf8');
   assert.match(src, /class: 'btn minimal small pj-epics', href: '#\/tasks\?tab=epics'/);
   assert.match(src, /el\('span', \{ class: 'spacer' \}\), epics, quad, more\)/);
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages/project.css'), 'utf8');
   assert.match(css, /#page \.pj-epics \{ align-self:center; \}/);
   assert.match(css, /@media \(max-width:599px\) \{[\s\S]*?#page \.pj-epics \{ order:2; \}/);
 });

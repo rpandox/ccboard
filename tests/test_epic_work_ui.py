@@ -9,7 +9,7 @@ from app import nodes_epics, nodes_work
 
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
 EPIC_JS = (STATIC / "pages" / "epic.js").read_text(encoding="utf-8")
-COMPONENTS_JS = (STATIC / "components.js").read_text(encoding="utf-8")
+COMPONENTS_JS = (STATIC / "components-tasks.js").read_text(encoding="utf-8")
 
 
 def _js_has(src: str, sentence: str) -> bool:

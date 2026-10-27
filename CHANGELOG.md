@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.119 - 2026-10-27
+
+### Changed
+- Paint a static skeleton before loading the app, then load each route's scripts and styles on demand. Split shared session helpers, task cards, sidebar folders, terminal dock, keyboard shortcuts and editors into their own files (#333, #103, #30 rule 4).
+- Replace the first-view full Blueprint stylesheet with a reproducible selector subset. Keep the full vendor file unchanged, and pin the Home route's complete JavaScript plus CSS dependency budget in tests. The service worker precaches the new files and updates its content-based cache version automatically.
+
+Upgrade: nothing to do.
+
 ## v0.5.118 - 2026-10-26
 
 ### Fixed

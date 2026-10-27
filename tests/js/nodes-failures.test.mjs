@@ -306,6 +306,6 @@ test('the first-paint scripts of index.html stay under the budget and none of th
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   let total = 0;
   for (const m of html.matchAll(/<script[^>]*src="\/static\/([^"?]+)/g)) total += fs.statSync(path.join(STATIC, m[1])).size;
-  assert.ok(total <= 560000, `first paint is ${total} bytes`);
+  assert.ok(total <= 1150, `first paint is ${total} bytes`);
   for (const f of ['nodes-hub.js', 'nodes-pair.js', 'pages/node.js']) assert.ok(!html.includes(f), `${f} is lazy`);
 });

@@ -15,7 +15,7 @@ SHELL_EXTS = {".js", ".css", ".woff2", ".webmanifest", ".png"}
 def shell_in(sw_text):
     m = re.search(r"JSON\.parse\('([^']*)'\)", sw_text)
     assert m, "SHELL = JSON.parse('...') not found in the served worker"
-    return json.loads(m.group(1))
+    return [u.split("?", 1)[0] for u in json.loads(m.group(1))]
 
 
 def static_copy(tmp_path, monkeypatch):
@@ -34,7 +34,7 @@ def test_sw_is_generated_from_the_shell(lite_client):
     assert r.status_code == 200 and "javascript" in r.headers["content-type"]
     assert r.headers["cache-control"] == "no-cache"
     assert "__" not in r.text                       # no placeholder survives the substitution
-    assert "'ccboard-shell-" + main.ASSET_VERSION + "'" in r.text and len(main.ASSET_VERSION) == 12
+    assert "const RELEASE = '" + main.ASSET_VERSION + "'" in r.text and len(main.ASSET_VERSION) == 12
     # the board serves what it computed at start: compare with the import-time constants only (a static file edited
     # mid-run must not fail this; the hashing and rendering rules are covered on frozen copies below)
     assert shell_in(r.text) == shell_in(main.SW_JS.decode())
@@ -73,7 +73,7 @@ def test_shell_skips_demo_pycache_and_unsafe_names(tmp_path, monkeypatch):
     assert files.isdisjoint({"demo/data.js", "pages/demo/x.js", "__pycache__/c.js", "notes.txt"})
     shell = main.shell_paths()
     assert "/static/pages/ok_1-2.js" in shell
-    assert not any(c in p for p in shell for c in "'\\ \"") and not any("demo" in p for p in shell)
+    assert not any(c in p for p in shell for c in "'\\ \"") and not any("/demo/" in p for p in shell)
     assert "/static/pages/it's.js" not in shell and "/static/pages/a b.png" not in shell     # carried in no quotes at all
     body = main.render_sw().decode()
     assert "__" not in body and shell_in(body) == shell
@@ -143,7 +143,7 @@ def _scripts(html_name):
     return found
 
 
-TERM_SCRIPTS = ["/static/core.js", "/static/components.js", "/static/termkit.js", "/static/term.js"]
+TERM_SCRIPTS = ["/static/core.js", "/static/components.js", "/static/quick-editor.js", "/static/termkit.js", "/static/term.js"]
 
 
 def test_script_order_core_first_main_last():
@@ -152,13 +152,19 @@ def test_script_order_core_first_main_last():
     core.js (el/api), components.js (composer), termkit.js (TermKit, definition-only), term.js (starts the page)."""
     from tests.test_static import SCRIPT_ORDER
     idx = _scripts("index.html")
-    assert idx[0] == "/static/core.js" and idx[-1] == "/static/main.js", idx
-    assert idx[:4] == ["/static/core.js", "/static/nodes.js", "/static/components.js", "/static/keymap.js"], idx       # nodes.js (Ref, definition-only; issue #137) right after core.js
-    assert idx.index("/static/router.js") < idx.index("/static/pages/home.js") < idx.index("/static/main.js"), idx
-    assert idx.index("/static/pages/inbox.js") + 1 == idx.index("/static/pages/widgets.js") < idx.index("/static/pages/tasks.js"), \
-        "pages/widgets.js (Widgets, definition-only) loads right after pages/inbox.js"
-    assert idx.index("/static/live.js") + 1 == idx.index("/static/lazy.js") < idx.index("/static/router.js"), \
-        "lazy.js (Lazy, definition-only; issue #103) loads after live.js and before router.js, which asks it for a route's bundle"
+    from tests.test_static_perf import _manifest, first_view_measurement
+    manifest = _manifest()
+    assert idx == ["/static/boot.js"]
+    app = manifest["app"]["js"]
+    assert app[:3] == ["/static/core.js", "/static/refs.js", "/static/components.js"]
+    assert app[-1] == "/static/router.js"
+    assert manifest["main"]["js"] == ["/static/main.js"]
+    executed = first_view_measurement()["executed"]
+    # Observe boot's real execution, excluding only its two bootstrap scripts.
+    startup = executed[:executed.index("/static/main.js") + 1]
+    assert startup == ["/static/boot.js", "/static/lazy.js", *app, "/static/main.js"]
+    assert startup[2] == "/static/core.js" and startup[-1] == "/static/main.js"
+    assert len(startup) == len(set(startup)), f"duplicate startup execution: {startup}"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     for lazy_file in ("launcher.js", "palette.js", "dnd.js", "tree.js", "termkit.js", "charts.js", "pages/project.js", "pages/settings.js", "pages/doctor.js",
@@ -296,14 +302,13 @@ def test_maskable_icon_in_the_shell_and_screenshots_left_out_on_purpose(lite_cli
         "screenshots still count towards the asset version"
 
 
-def test_sw_precaches_past_the_http_cache_and_serves_vendor_cache_first(lite_client):
-    """/static/vendor/** and *.woff2 are served immutable for a year under unversioned URLs: only this versioned shell cache
-    may decide when they change, so the worker must never read them through the browser's HTTP cache."""
+def test_sw_precaches_past_the_http_cache_and_serves_exact_release_cache_first(lite_client):
     sw = lite_client.get("/sw.js", headers=H).text
     assert "cache: 'reload'" in sw
-    assert "path.startsWith('/static/vendor/')" in sw and "cacheFirst(req)" in sw
-    assert "fetch(new Request(req.url, { cache: 'reload' }))" in sw
-    assert "res.status >= 500" in sw, "a 5xx from the proxy during a deploy serves the cached shell instead of a 502 page"
+    assert "releaseAsset(req, version)" in sw
+    assert "c.match(req)" in sw
+    assert "res.status < 500" in sw, "a proxy 5xx falls back to the installed shell"
+    assert "c.match('/?v=' + RELEASE)" in sw
 
 
 def test_cache_policy_vendor_and_fonts_immutable_the_app_no_cache(lite_client):
@@ -448,7 +453,7 @@ def test_widgets_js_is_a_shell_asset_a_build_id_input_and_no_route(lite_client, 
     from app import main
     assert "/static/pages/widgets.js" in shell_in(main.SW_JS.decode()), "widgets.js is not in the generated service-worker shell"
     assert "/static/pages/widgets.js" in shell_in(lite_client.get("/sw.js", headers=H).text)
-    src = (STATIC_ROOT / "pages" / "widgets.js").read_text()
+    src = (STATIC_ROOT / "widgets-core.js").read_text() + (STATIC_ROOT / "pages" / "widgets.js").read_text()
     assert not re.search(r"registerPage\s*\(", _blank_js(src)), "widgets.js is not a page"
     assert re.search(r"^const Widgets\s*=", src, re.M), "one namespace: const Widgets = {...}"
     for fn in ("usageCard", "limitBanner"):

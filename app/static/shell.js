@@ -488,151 +488,13 @@ Shell.sideNewTask = function (name) {
   return Shell.openCreate('task', { project: name });
 };
 
-/* ---------- directories under the current project: the repos and the project folder open into lazily loaded folders ---------- */
-
-/* The project the page is about: the project route's, or the project of a session peek. */
-Shell.currentProject = function () {
-  const r = typeof currentRoute === 'function' ? currentRoute() : null;
-  if (!r) return '';
-  if (r.id === 'project') return (r.params && r.params.project) || '';
-  if (r.id === 'session') {
-    const parts = String((r.params && r.params.tmux) || '').split('--');
-    return parts.length === 3 ? parts[0] : '';
-  }
-  return '';
-};
-
-/* 'd:<project>/<repo>/<path>' -> {project, repo, path} (names never hold a slash, so the first two segments are the project and the repo). */
-Shell.parseDirKey = function (key) {
-  const rest = String(key).slice(2);
-  const a = rest.indexOf('/');
-  const b = rest.indexOf('/', a + 1);
-  return { project: rest.slice(0, a), repo: rest.slice(a + 1, b), path: rest.slice(b + 1) };
-};
-
-Shell.dirKey = function (project, repo, path) { return `d:${project}/${repo}/${path || ''}`; };
-
-/* The kids of a project node: its sessions as before; for the current project the repos (and the project folder) become directory nodes. */
-Shell.projKids = function (p, level) {
-  if (Shell.currentProject() !== p.name) return p.kids;
-  const out = [];
-  for (const k of p.kids) {
-    if (k.kind !== 'repo') { out.push(k); continue; }
-    if (k.state === 'cloning' || k.state === 'clone-failed') { out.push(k); continue; }       // nothing to browse yet: the plain link
-    out.push({ key: Shell.dirKey(p.name, k.name, ''), kind: 'dir', project: p.name, repo: k.name, path: '', name: k.name, linked: k.linked, target: k.target, glyph: 'repo', level: level + 1, hasKids: true, dirty: false });
-  }
-  if (p.folder) out.push({ key: Shell.dirKey(p.name, 'root', ''), kind: 'dir', project: p.name, repo: 'root', path: '', name: 'project folder', glyph: 'folder', level: level + 1, hasKids: true, dirty: false });
-  return out;
-};
-
-Shell.loadDir = function (k, fresh) {
-  if (typeof Tree === 'undefined' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.tree) {      // tree.js is a lazy bundle (lazy.js): the first folder to open loads it
-    if (!Shell.dirLoading.has(k.key)) Lazy.run('tree', () => Shell.loadDir(k, fresh), 'the file tree');
-    return;
-  }
-  if (typeof Tree === 'undefined' || !Tree || typeof Tree.children !== 'function' || Shell.dirLoading.has(k.key)) return;
-  Shell.dirLoading.add(k.key);
-  Tree.children(k.project, k.repo, k.path, { repos: true, fresh: !!fresh }).then(
-    (data) => {
-      const entries = (data && data.entries) || [];
-      Shell.dirs.set(k.key, { entries });
-      let pruned = false;                                                              // an open key that turned out to be a file (a ?path= to a file) goes
-      for (const e of entries) if (e.type === 'file' && Shell.open.delete(Shell.dirKey(k.project, k.repo, k.path ? `${k.path}/${e.name}` : e.name))) pruned = true;
-      if (pruned) Shell.saveOpen();
-    },
-    (e) => {
-      if (!Shell.dirs.has(k.key) || !Shell.dirs.get(k.key).entries) Shell.dirs.set(k.key, { error: (e && e.message) || 'could not load' });
-      const st = e && (e.status || (/\b(400|403|404)\b|not found|not a ccboard|unsafe|bad path/i.test(String(e.message || '')) ? 404 : 0));
-      if ((st === 400 || st === 403 || st === 404) && Shell.open.delete(k.key)) Shell.saveOpen();   // a folder that cannot exist is forgotten, not retried every load
-    }).then(() => {
-    Shell.dirLoading.delete(k.key);
-    Shell.patchTrees();
-  });
-};
-
-/* The rows inside an open directory node: its sub-directories from the cached listing (asked for when it is not there yet). */
-Shell.dirItems = function (k) {
-  const hit = Shell.dirs.get(k.key);
-  if (!hit) { Shell.loadDir(k, false); return [{ key: 'note:' + k.key, kind: 'note', text: 'loading…' }]; }
-  if (hit.error) return [{ key: 'note:' + k.key, kind: 'note', text: 'could not load: ' + hit.error }];
-  const out = [];
-  for (const e of hit.entries) {
-    const topRepo = e.type === 'repo' && k.repo === 'root' && !k.path;                 // the project folder's own repos are top-level nodes already
-    if (e.type !== 'dir' && !(e.type === 'repo' && !topRepo)) continue;
-    const path = k.path ? `${k.path}/${e.name}` : e.name;
-    const repo = k.repo;                                                                 // a nested repo opens in place through the same repo name
-    out.push({ key: Shell.dirKey(k.project, repo, path), kind: 'dir', project: k.project, repo, path, name: e.name,
-      glyph: e.type === 'repo' ? 'repo' : 'dir', level: k.level + 1, hasKids: e.has_children !== false, dirty: !!e.dirty });
-  }
-  if (!out.length) out.push({ key: 'note:' + k.key, kind: 'note', text: 'no subfolders' });
-  return out;
-};
-
-Shell.dirNode = function () {
-  const tw = el('span', { class: 'tw', 'aria-hidden': 'true' }, ic('chevron-right'));
-  const glyph = el('span', { class: 'tn-g' });
-  const name = el('span', { class: 'tn-name' });
-  const dot = el('span', { class: 'tn-dot dirty hidden', title: 'uncommitted changes inside', 'aria-hidden': 'true' });
-  const row = el('a', { class: 'tn-row d-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2', 'data-route': 'tree-dir' }, tw, glyph, name, dot);
-  const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
-  const node = el('div', { class: 'tn dirn' }, row, kids);
-  node._d = { row, glyph, name, dot, kids, g: null };
-  return node;
-};
-
-/* Is this directory the one the Files tab shows (its repo, ?tab=files and ?path= equal to it)? */
-Shell.dirCurrent = function (k) {
-  const r = typeof currentRoute === 'function' ? currentRoute() : null;
-  if (!r || r.id !== 'project' || !r.params || r.params.project !== k.project || r.params.repo !== k.repo) return false;
-  const q = r.query || {};
-  return q.tab === 'files' && (q.path || '') === k.path;
-};
-
-Shell.patchDir = function (node, k) {
-  const d = node._d;
-  const open = Shell.open.has(k.key);
-  node.setAttribute('data-key', k.key);
-  node.classList.toggle('open', open && k.hasKids);
-  d.row.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.repo }, k.path ? { tab: 'files', path: k.path } : { tab: 'files' }));
-  d.row.setAttribute('aria-level', String(k.level));
-  Shell.setVar(d.row, '--lvl', String(k.level));
-  d.row.classList.toggle('leaf', !k.hasKids);
-  if (k.hasKids) d.row.setAttribute('aria-expanded', open ? 'true' : 'false'); else d.row.removeAttribute('aria-expanded');
-  d.row.classList.toggle('cur', Shell.dirCurrent(k));
-  if (Shell.dirCurrent(k)) d.row.setAttribute('aria-selected', 'true'); else d.row.removeAttribute('aria-selected');
-  if (d.g !== k.glyph) { d.g = k.glyph; d.glyph.textContent = ''; d.glyph.append(ic(k.glyph === 'repo' ? 'git-repo' : 'folder-close')); }
-  patchLinkedName(d.name, k.name, k);
-  d.row.setAttribute('title', k.path || (k.repo === 'root' ? 'the project folder' : k.repo));
-  d.dot.classList.toggle('hidden', !k.dirty);
-  const showKids = open && k.hasKids;
-  d.kids.classList.toggle('hidden', !showKids);
-  if (showKids) Shell.sync(d.kids, Shell.dirItems(k), Shell.kidNode, Shell.patchKid);
-  else if (d.kids.firstChild) d.kids.textContent = '';
-};
-
-/* The current project's node opens (and so do the repo and the folders down to the ?path= of the Files tab) when the page is entered; open
-   directories refresh their listing then. Called on every route change and once when the shell is installed. */
+/* The directory browser is only used on project and session routes. */
+Shell.projKids = function (p) { return p.kids; };
 Shell.openCurrent = function () {
   const r = typeof currentRoute === 'function' ? currentRoute() : null;
-  if (r && r.id === 'project' && r.params && r.params.project) {
-    const proj = r.params.project;
-    let changed = false;
-    const add = (key) => { if (!Shell.open.has(key)) { Shell.open.add(key); changed = true; } };
-    add('p:' + proj);
-    if (r.params.repo) {
-      add(Shell.dirKey(proj, r.params.repo, ''));
-      let acc = '';
-      const segs = String((r.query && r.query.path) || '').split('/').filter(Boolean);
-      if (!segs.some((s) => s === '..' || s === '.' || s === '.git')) {                   // a bad deep link never becomes a persisted key
-        for (const seg of segs) { acc = acc ? `${acc}/${seg}` : seg; add(Shell.dirKey(proj, r.params.repo, acc)); }   // a file's key is dropped again once its folder is listed (loadDir)
-      }
-    }
-    if (changed) Shell.saveOpen();
-    // open folders re-read their listing; the ?path= itself is left to its own node (it may be a file, which has none)
-    const here = r.params.repo ? Shell.dirKey(proj, r.params.repo, String((r.query && r.query.path) || '')) : '';
-    for (const key of Shell.open) if (key.startsWith(`d:${proj}/`) && key !== here) Shell.loadDir({ key, ...Shell.parseDirKey(key) }, true);
-  }
-  Shell.patchTrees();
+  if (r && (r.id === 'project' || r.id === 'session') && typeof Lazy !== 'undefined') {
+    Lazy.run('shelltree', () => Shell.openCurrent(), 'the sidebar folders');
+  } else Shell.patchTrees();
 };
 
 Shell.kidNode = function (k) {
@@ -1018,17 +880,7 @@ Shell.buildResizer = function (app) {
   return h;
 };
 
-/* ---------- the terminal dock (v0.5.9): the live terminal of one session beside any page, from 1024 px up ----------
-   One TermKit.termPane (full mode: it sizes the session like /term does) in #dock, with a drag handle on its left edge. The pane is created when the dock opens and destroyed
-   when it closes or stops being allowed (a window under 1024 px, ccboard:dock:off): a mounted full-mode client sizes the tmux session even when it is hidden, so a hidden dock
-   must not exist. localStorage: ccboard:dock = the session shown (restored on load), ccboard:dock:w = the width in px (absent = the CSS default min(44vw, 640px)),
-   ccboard:dock:off = '1' turns the dock off in this browser (a row's Open then opens /term/<name> in its own tab as before). Below 1440 px an open dock folds the sidebar to
-   the rail (body[data-sb=rail]) without writing ccboard:sb; asking for the full sidebar while the dock is open keeps it until the dock closes. The session peek (session.js)
-   goes to the sheet while the dock is on, so the two never share #dock.
-   The quad page (#/quad) and the dock are exclusive: the quad owns the window (its tiles are the terminals, and a tile's width must not change under it), so the dock is
-   suspended while the quad is the page (Shell.dockSuspend, called by Quad.mount; Shell.dockResume by its destroy; mountedId === 'quad' is the same test the router makes):
-   the pane goes (D.wanted keeps the session, ccboard:dock stays), no Open link opens it (they open a tab), and it comes back when the person leaves the quad. */
-
+/* Dock policy stays synchronous; pane/actions load on first use. */
 Shell.DOCK_MIN = 320;
 Shell.DOCK_MAX = 960;
 Shell.DOCK_AT = 1024;                    // the dock exists from this window width
@@ -1038,67 +890,34 @@ Shell.LONG_PRESS = 500;
 Shell.TERM_HREF = /^\/term\/([^/?#]+)\/?$/;
 Shell.dock = { tmux: '', pane: null, last: '', wanted: '', w: 0, keep: false, restored: false, resizer: null, press: null, held: false };
 
-Shell.mqNow = function (query) {
-  try { return !!(window.matchMedia && window.matchMedia(query).matches); } catch (_) { return false; }
-};
-
 Shell.dockStore = {
   get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
   set(k, v) { try { if (v === null || v === undefined) localStorage.removeItem(k); else localStorage.setItem(k, String(v)); } catch (_) { /* storage may be unavailable */ } },
 };
 
+Shell.mqNow = function (query) {
+  try { return !!(window.matchMedia && window.matchMedia(query).matches); } catch (_) { return false; }
+};
 Shell.dockOff = function () { return Shell.dockStore.get('ccboard:dock:off') === '1'; };
 
-/* Wide enough for a dock (1024 px up); the media query the shell already watches, else asked now. */
 Shell.dockWide = function () { return Shell.mq && Shell.mq.d ? !!Shell.mq.d.matches : Shell.mqNow('(min-width: 1024px)'); };
 
-/* Does this window have room for the sidebar and the dock together (1440 px up)? */
 Shell.dockRoomy = function () { return Shell.mq && Shell.mq.x ? !!Shell.mq.x.matches : Shell.mqNow('(min-width: 1440px)'); };
 
-/* The dock exists in this window and this browser: wide enough, not switched off, and the terminal kit is loaded. session.js asks this to send the peek elsewhere. */
 Shell.dockOn = function () { return !Shell.dockOff() && Shell.dockWide() && (Shell.kitReady() || Shell.kitLazy()); };
 
-/* termkit.js is a lazy bundle (lazy.js): the dock opens it on first use. kitReady: it is here; kitLazy: it is not, but can be had. */
 Shell.kitReady = function () { return typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit.termPane === 'function'; };
+
 Shell.kitLazy = function () { return typeof TermKit === 'undefined' && typeof Lazy !== 'undefined' && !!Lazy.bundles && !!Lazy.bundles.termkit; };
 
 Shell.dockOpen = function () { return !!Shell.dock.pane; };
 
-/* Should an Open link or button open the dock? Not on a coarse primary pointer in a window under 1180 px (an iPad in portrait, a small tablet): the dock would leave the
-   page about 525 px at 1024, and the pages are laid out for 840 and more. There an Open link opens the terminal page as before; mod+j and "Add to dock" still open the dock
-   on purpose (and a dock opened that way comes back on the next load), with its width capped at 38 vw by default (shell.css) and a 44 px grabber to change it. */
 Shell.dockAuto = function () {
   let coarse = false;
   try { coarse = typeof coarsePointer === 'function' ? !!coarsePointer() : false; } catch (_) { coarse = false; }
   return !(coarse && (Number(window.innerWidth) || 0) < Shell.DOCK_COMPACT);
 };
-
-/* Does the quad page own the window? Then the dock is suspended. D.held is the quad's own say (Shell.dockSuspend); mountedId === 'quad' is the router's (the session peek is an
-   overlay: it never changes mountedId, so a peek over the quad is still the quad). During the quad's unmount mountedId is still 'quad': Shell.dockResume reconciles after it. */
 Shell.dockHeld = function () { return !!Shell.dock.held || (typeof mountedId !== 'undefined' && mountedId === 'quad'); };
-
-/* Quad.mount, before it measures its column: the dock lets go of the window (its pane is taken down at once, the sidebar goes back to its own rule). */
-Shell.dockSuspend = function () {
-  Shell.dock.held = true;
-  if (Shell.mq) Shell.applyMode(); else Shell.dockSync();
-  return true;
-};
-
-/* The quad is gone: the dock comes back (the saved session, when there is room). The router moves mountedId after the old page's unmount, so the mode pass is deferred one tick. */
-Shell.dockResume = function () {
-  Shell.dock.held = false;
-  setTimeout(() => { if (!Shell.dockHeld() && Shell.mq) Shell.applyMode(); }, 0);
-  return true;
-};
-
-/* Why the dock will not open, as a sentence (a toast on mod+j; the Open links simply navigate). */
-Shell.dockWhy = function () {
-  const say = (t) => { if (typeof toast === 'function') toast(t, { kind: 'info' }); };
-  if (!Shell.kitReady() && !Shell.kitLazy()) say('The terminal kit is not loaded: reload the board');
-  else if (Shell.dockOff()) say('The terminal dock is off in this browser (localStorage ccboard:dock:off)');
-  else if (!Shell.dockWide()) say('The terminal dock needs a window 1024 px wide or more');
-  else if (Shell.dockHeld()) say('The Quad page shows the terminals itself: the dock is back when you leave it');
-};
 
 Shell.clampDockW = function (n) {
   const v = Number(n);
@@ -1107,229 +926,8 @@ Shell.clampDockW = function (n) {
   const max = Math.max(Shell.DOCK_MIN, Math.min(Shell.DOCK_MAX, room));
   return Math.round(Math.min(max, Math.max(Shell.DOCK_MIN, v)));
 };
+Shell.dockForcesRail = function () { const D = Shell.dock; return !!D.pane && !D.keep && !Shell.dockRoomy(); };
 
-/* --dock-w lives on #app (shell.css reads it on #dock), set through the CSSOM: never a style attribute. 0 = back to the CSS default. */
-Shell.setDockWidth = function (w, persist) {
-  const app = $('#app');
-  const px = Shell.clampDockW(w);
-  Shell.dock.w = px;
-  if (app) {
-    if (px) Shell.setVar(app, '--dock-w', px + 'px');
-    else { try { app.style.removeProperty('--dock-w'); } catch (_) { /* no CSSOM */ } }
-  }
-  const r = Shell.dock.resizer;
-  if (r) {
-    if (px) r.setAttribute('aria-valuenow', String(px)); else r.removeAttribute('aria-valuenow');
-  }
-  if (persist) Shell.dockStore.set('ccboard:dock:w', px ? px : null);
-  return px;
-};
-
-/* Back to the default width: the saved value is removed (not overwritten), so the viewport-relative default applies again. */
-Shell.resetDockWidth = function () { return Shell.setDockWidth(0, true); };
-
-Shell.buildDockResizer = function () {
-  const app = $('#app');
-  const h = el('div', { class: 'dock-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the terminal dock', tabindex: '0',
-    'aria-valuemin': String(Shell.DOCK_MIN), 'aria-valuemax': String(Shell.DOCK_MAX), title: 'Drag to resize the dock (double-click or double-tap resets)' });
-  let drag = null;
-  const end = () => {
-    if (!drag) return;
-    drag = null;
-    if (app) app.classList.remove('dock-dragging');
-    if (Shell.dock.w) Shell.setDockWidth(Shell.dock.w, true);
-  };
-  h.addEventListener('pointerdown', (e) => {
-    if (e.button) return;
-    e.preventDefault();
-    const dock = $('#dock');
-    drag = { grab: (dock ? dock.getBoundingClientRect().left : e.clientX) - e.clientX, moved: false };     // where on the strip it was taken
-    try { h.setPointerCapture(e.pointerId); } catch (_) { /* no pointer capture: the move events still arrive over the strip */ }
-    if (app) app.classList.add('dock-dragging');
-  });
-  h.addEventListener('pointermove', (e) => {
-    if (!drag || !app) return;
-    drag.moved = true;
-    Shell.setDockWidth(app.getBoundingClientRect().right - (e.clientX + drag.grab), false);
-  });
-  let lastTap = 0;
-  h.addEventListener('pointerup', (e) => {                              // a double tap on the grabber resets the width (a touch screen sends no dblclick here)
-    if (drag && !drag.moved && e && (e.pointerType === 'touch' || e.pointerType === 'pen')) {
-      const now = Date.now();
-      if (now - lastTap < 350) { lastTap = 0; Shell.resetDockWidth(); } else lastTap = now;
-    }
-  });
-  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) h.addEventListener(t, end);
-  h.addEventListener('dblclick', () => Shell.resetDockWidth());
-  h.addEventListener('keydown', (e) => {
-    const step = e.shiftKey ? 48 : 16;
-    const cur = Shell.dock.w || (() => { const d = $('#dock'); const r = d ? d.getBoundingClientRect() : null; return r && r.width > 0 ? Math.round(r.width) : 450; })();
-    let w = null;
-    if (e.key === 'ArrowLeft') w = cur + step;                       // the dock is on the right: left grows it
-    else if (e.key === 'ArrowRight') w = cur - step;
-    else if (e.key === 'Home') w = Shell.DOCK_MIN;
-    else if (e.key === 'End') w = Shell.DOCK_MAX;
-    else if (e.key === 'Enter') { e.preventDefault(); Shell.resetDockWidth(); return; }
-    if (w === null) return;
-    e.preventDefault();
-    Shell.setDockWidth(w, true);
-  });
-  return h;
-};
-
-/* The session the dock offers when nothing was asked for (mod+j with nothing open and nothing remembered): the one that needs you, else an errored, working, idle one,
-   the latest first (the sidebar's order); '' when there is no live session. */
-Shell.dockPick = function (st) {
-  if (!st) return '';
-  const m = Shell.model(st);
-  const all = [];
-  for (const p of [...m.main, ...m.older]) for (const k of p.kids) if (k.kind === 'sess' && k.state !== 'ended' && !k.node) all.push(k);      // the dock shows this board's terminals only
-  all.sort((a, b) => ((a.needs ? 0 : 1) - (b.needs ? 0 : 1)) || ((SHELL_STATE_RANK[a.state] ?? 5) - (SHELL_STATE_RANK[b.state] ?? 5)) || (b.at - a.at) || a.tmux.localeCompare(b.tmux));
-  return all.length ? all[0].tmux : '';
-};
-
-/* The session's row in a state payload, or null. */
-Shell.dockRow = function (st, tmux) {
-  if (!st || typeof rosterSessions !== 'function') return null;
-  return rosterSessions(st).find((s) => s.tmux === tmux && Ref.nodeOf(s) === null) || null;      // the same name on another node is not this terminal
-};
-
-/* Paint the open pane from the state (called by renderShell on every render). */
-Shell.patchDock = function (st) {
-  const D = Shell.dock;
-  if (!D.pane || !st) return;
-  try { D.pane.update(Shell.dockRow(st, D.tmux), st); } catch (e) { console.error('ccboard dock', e); }
-};
-
-/* {project, repo} (state objects) of the place a session name project--repo--name is in, or null when the board does not know it (yet). */
-Shell.placeOf = function (tmux) {
-  const st = typeof state === 'undefined' ? null : state;
-  const parts = String(tmux || '').split('--');
-  if (!st || parts.length < 3) return null;
-  const p = (st.projects || []).find((x) => x.name === parts[0]);
-  const r = p ? (parts[1] === 'root' ? p.root : (p.repos || []).find((x) => x.name === parts[1])) : null;
-  return p && r ? { project: p, repo: r } : null;
-};
-
-/* The dock's +: a new session in the place of the one the dock shows (launch(), components.js: the launcher sheet with that project and repo filled in, one tap to Start & open).
-   When the board no longer knows the place, the repo picker. */
-Shell.dockNew = function (tmux) {
-  const place = Shell.placeOf(tmux || Shell.dock.tmux);
-  if (place) return launch({ mode: 'session', project: place.project, repo: place.repo });
-  return Shell.openCreate('session');
-};
-
-/* The + among the pane's own header buttons (termkit.js builds those; it has no callback for this one), first, before reconnect. */
-Shell.dockAddButton = function (pane, tmux) {
-  const btns = pane && pane.head && typeof pane.head.querySelector === 'function' ? pane.head.querySelector('.tp-btns') : null;
-  if (!btns) return null;
-  const add = el('button', { class: 'icon minimal tp-btn', type: 'button', 'data-act': 'new', 'aria-label': 'New session in this repo', title: 'New session in this repo', onclick: () => Shell.dockNew(tmux) }, ic('plus'));
-  btns.insertBefore(add, btns.firstChild);
-  return add;
-};
-
-/* A session of another node in the dock (issue #144; key '<handle>/<tmux>'): the same tail tile as the quad's (Nodes.tailTile, pages/node.js), never a terminal: no framed page, no socket. The hub
-   bundle may still be on its way; the tile mounts when it is here (false now). Not remembered across a reload. */
-Shell.dockRemote = function (key, o) {
-  const D = Shell.dock;
-  const host = $('#dock');
-  const k = Ref.splitKey(key);
-  if (!host || !k || k.node === null) return false;
-  if (typeof Nodes === 'undefined' || !Nodes.enabled()) { if (typeof toast === 'function') toast('That session is on a node that is not paired on this board', { kind: 'bad' }); return false; }
-  if (D.pane && D.tmux === key) { if (o && o.focus) D.pane.focus(); return true; }
-  if (!Nodes.ready || typeof Nodes.tailTile !== 'function') { Nodes.use(() => { if (!Shell.dock.pane && !Shell.dockHeld() && !Shell.dockOff()) Shell.dockRemote(key, o); }); return false; }
-  if (!Nodes.get(k.node)) { if (typeof toast === 'function') toast('That node is not paired on this board', { kind: 'bad' }); return false; }
-  const tile = Nodes.tailTile(k.node, k.tmux, { head: true, onClose: () => Shell.closeDock() });
-  if (!tile) return false;
-  Shell.dockUnmount(true);
-  if (!D.resizer) D.resizer = Shell.buildDockResizer();
-  host.textContent = '';
-  host.append(D.resizer, tile.root);
-  host.classList.add('has-term');
-  host.classList.remove('hidden');
-  D.pane = { root: tile.root, head: tile.head, update() {}, focus: () => tile.focus(), destroy: () => tile.destroy() };
-  D.tmux = key;
-  D.last = key;
-  if (D.w) D.resizer.setAttribute('aria-valuenow', String(D.w));
-  if (Shell.mq) Shell.applyMode();
-  if (o && o.focus) tile.focus();
-  return true;
-};
-
-/* DOM only (no mode pass): put a pane for `tmux` into #dock, replacing the one there. */
-Shell.dockMount = function (tmux, o) {
-  const D = Shell.dock;
-  const host = $('#dock');
-  if (!host) return false;
-  if ((Ref.splitKey(tmux) || {}).node) return Shell.dockRemote(tmux, o);
-  const typing = TermKit.typingTarget();                              // a composer that has the keyboard keeps it, however the dock was opened
-  let pane = null;
-  try {                                                               // built detached first: a name that cannot be shown leaves the dock as it was
-    pane = TermKit.termPane(tmux, {
-      mode: 'full',
-      restoreFocus: typing,
-      holdFocus: !o.focus || !!typing,                                // opened by a restore, a route or a key: nothing may land in the terminal unasked
-      onClose: () => Shell.closeDock(),
-      onPopOut: (t) => Shell.popOutDock(t),
-      onAddToQuad: (t) => Shell.quadAdd(t),
-    });
-  } catch (e) {
-    if (typeof toast === 'function') toast('Not a terminal session name', { kind: 'bad' });
-    return false;
-  }
-  Shell.dockAddButton(pane, tmux);
-  Shell.dockUnmount(true);
-  if (!D.resizer) D.resizer = Shell.buildDockResizer();
-  host.textContent = '';
-  host.append(D.resizer, pane.root);
-  host.classList.add('has-term');
-  host.classList.remove('hidden');
-  D.pane = pane;
-  D.tmux = tmux;
-  D.last = tmux;
-  if (D.w) D.resizer.setAttribute('aria-valuenow', String(D.w));
-  if (typeof state !== 'undefined' && state) Shell.patchDock(state);
-  return true;
-};
-
-/* DOM only: take the pane down (the iframe goes to about:blank first, see termPane.destroy) and hide #dock. */
-Shell.dockUnmount = function (keepHost) {
-  const D = Shell.dock;
-  if (D.pane) { try { D.pane.destroy(); } catch (e) { console.error('ccboard dock', e); } }
-  D.pane = null;
-  D.tmux = '';
-  const host = $('#dock');
-  if (!host) return;
-  host.textContent = '';
-  host.classList.remove('has-term');
-  if (!keepHost) host.classList.add('hidden');
-};
-
-/* Show `tmux` in the dock. opts.focus: the person asked (a click on Open, mod+j): the terminal takes the keyboard unless a text field has it; without it (a restore) the
-   terminal never takes focus by itself. opts.quiet: no toast when the dock is not available. true when the dock shows the session. */
-Shell.openDock = function (tmux, opts) {
-  const o = opts || {};
-  const D = Shell.dock;
-  if (typeof tmux !== 'string' || !tmux) return false;
-  if (!Shell.dockOn() || Shell.dockHeld()) { if (!o.quiet) Shell.dockWhy(); return false; }          // the quad owns the window: no dock over it
-  if (!$('#dock')) return false;
-  if ((Ref.splitKey(tmux) || {}).node) return Shell.dockRemote(tmux, o);                              // another node's session: its tail tile, not a terminal
-  if (!Shell.kitReady()) {                                                                            // the terminal kit loads now; the dock opens when it is here (true: it is on its way)
-    Lazy.load('termkit').then(() => { if (Shell.kitReady() && !Shell.dockHeld() && !Shell.dockOff()) Shell.openDock(tmux, o); }, (e) => { if (!o.quiet) Lazy.fail('the terminal', e); });
-    return true;
-  }
-  if (D.pane && D.tmux === tmux) {
-    if (o.focus && !TermKit.typingTarget()) D.pane.focus();
-    return true;
-  }
-  if (!Shell.dockMount(tmux, o)) return false;
-  Shell.dockStore.set('ccboard:dock', tmux);
-  if (Shell.mq) Shell.applyMode();
-  if (o.focus && !TermKit.typingTarget()) D.pane.focus();
-  return true;
-};
-
-/* The one call for "open this session's terminal": the dock when it is on (true), else its own page through openPage (false). For the keys and the palette. */
 Shell.openTerm = function (tmux) {
   const rk = Ref.splitKey(tmux);
   if (rk && rk.node) { if (typeof Nodes !== 'undefined' && typeof Nodes.openTerm === 'function') Nodes.openTerm(rk.node, rk.tmux); return false; }      // another node's terminal opens on that node (issue #144), never as /term/<handle>/<name> here
@@ -1337,110 +935,10 @@ Shell.openTerm = function (tmux) {
   if (typeof tmux === 'string' && tmux) { const url = '/term/' + encodeURIComponent(tmux); if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener'); }
   return false;
 };
-
-/* Close the dock and forget it (the saved session goes too, the full sidebar the person asked for goes back to the rule); mod+j brings back the one that was shown. */
-Shell.closeDock = function () {
-  const D = Shell.dock;
-  Shell.dockUnmount(false);
-  D.keep = false;
-  D.wanted = '';
-  Shell.dockStore.set('ccboard:dock', null);
-  if (Shell.mq) Shell.applyMode();
-  return true;
-};
-
-/* mod+j: close the dock when it is open; else open the last one shown, else the one that needs you most. */
-Shell.toggleDock = function () {
-  const D = Shell.dock;
-  if (D.pane) { Shell.closeDock(); return true; }
-  if (!Shell.dockOn() || Shell.dockHeld()) { Shell.dockWhy(); return false; }
-  const t = D.last || Shell.dockPick(typeof state === 'undefined' ? null : state);
-  if (!t) { if (typeof toast === 'function') toast('No live session to show', { kind: 'info' }); return false; }
-  return Shell.openDock(t, { focus: true });
-};
-
-/* The window crossed 1024 px or the dock was switched off: the pane goes (it must not hold a hidden full-mode client) and comes back with the room. Runs inside applyMode. */
-Shell.dockSync = function () {
-  const D = Shell.dock;
-  const on = Shell.dockOn();
-  const held = Shell.dockHeld();
-  if (D.pane && (!on || held)) { D.wanted = D.tmux; Shell.dockUnmount(false); }              // below 1024 px, switched off, or the quad page: the pane goes, ccboard:dock stays
-  else if (!D.pane && D.wanted && on && !held) {
-    if (!Shell.kitReady()) { Lazy.load('termkit').then(() => { if (Shell.kitReady() && Shell.mq) Shell.applyMode(); }, () => { /* the dock stays wanted; the next mode pass asks again */ }); return; }
-    const t = D.wanted; D.wanted = ''; Shell.dockMount(t, {});
-  }
-};
-
-/* ccboard:dock:off from outside (a setting, a test): true turns the dock off and closes it. */
-Shell.setDockOff = function (off) {
-  Shell.dockStore.set('ccboard:dock:off', off ? '1' : null);
-  if (off && Shell.dock.pane) Shell.closeDock();
-  else if (Shell.mq) Shell.applyMode();
-};
-
-/* Does the open dock hold the sidebar at the rail? (below 1440 px, unless the person asked for the full sidebar while it is open) */
-Shell.dockForcesRail = function () { const D = Shell.dock; return !!D.pane && !D.keep && !Shell.dockRoomy(); };
-
-/* First state after load: the session the dock showed last time comes back, when it is still alive. */
-Shell.restoreDock = function (st) {
-  const D = Shell.dock;
-  const t = Shell.dockStore.get('ccboard:dock');
-  if (!t) return false;
-  const row = Shell.dockRow(st, t);
-  if (!row || row.state === 'ended') { Shell.dockStore.set('ccboard:dock', null); return false; }
-  if (Shell.dockHeld()) { D.wanted = Shell.dockOff() ? '' : t; return false; }                          // a load straight onto the quad: the dock comes back when it is left
-  if (!Shell.dockOn()) { D.wanted = !Shell.dockOff() && !Shell.dockWide() ? t : ''; return false; }       // a narrow window keeps it for the width that fits
-  return Shell.openDock(t, { quiet: true });
-};
-
-/* Pop out: the session in its own window (/term/), and the dock lets go of it: two full clients on one session would fight over its size. */
-Shell.popOutDock = function (tmux) {
-  const t = tmux || Shell.dock.tmux;
-  if (!t) return false;
-  const rk = Ref.splitKey(t);
-  if (rk && rk.node) { if (typeof Nodes !== 'undefined' && typeof Nodes.openTerm === 'function') Nodes.openTerm(rk.node, rk.tmux); return true; }      // the tail tile stays; the terminal opens on its node
-  const url = '/term/' + encodeURIComponent(t);
-  if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener');
-  Shell.closeDock();
-  return true;
-};
-
-/* The quad's saved slots (ccboard:quad:all = {layout, slots[], ...}), as far as they can be read: [] when there are none. */
-Shell.quadSlots = function () {
-  try {
-    const v = JSON.parse(Shell.dockStore.get('ccboard:quad:all') || 'null');
-    if (v && Array.isArray(v.slots)) return v.slots.filter((x) => typeof x === 'string' && x).slice(0, 4);
-  } catch (_) { /* an unreadable entry is no slots */ }
-  return [];
-};
-
-/* Add a session to the quad view and go there; the dock lets go of the session (the quad shows it). The quad page owns its saved slots, so when pages/quad.js is
-   loaded this is Quad.addToQuad(tmux, project) (the project scope of the quad that is up, else the board-wide one). Without it (a partial deploy) the session is handed
-   over as ?s= instead: the saved slots plus this one (a full quad gives up its last slot), with l=4 once there are more than two; the address wins over what is
-   saved and the page writes it back. */
-Shell.quadAdd = function (tmux) {
-  if (typeof tmux !== 'string' || !tmux) return false;
-  if (typeof Quad !== 'undefined' && Quad && typeof Quad.addToQuad === 'function') {
-    if (Shell.dock.pane && Shell.dock.tmux === tmux) Shell.closeDock();
-    return !!Quad.addToQuad(tmux, Quad.current && Quad.current.project ? Quad.current.project : '');
-  }
-  const slots = Shell.quadSlots();
-  if (!slots.includes(tmux)) { if (slots.length >= 4) slots.pop(); slots.push(tmux); }
-  const query = { s: slots.join(',') };
-  if (slots.length > 2) query.l = '4';
-  if (Shell.dock.pane && Shell.dock.tmux === tmux) Shell.closeDock();
-  Shell.go(Shell.hash('quad', {}, query));
-  return true;
-};
-
-/* A click on a link to /term/<session>, from 1024 px up and with the dock on, opens the dock instead of a new tab. Left button, no modifier (those keep the browser's own
-   behaviour), not held for LONG_PRESS ms (a long press navigates, as it always did), not the dock's own pop-out link. Without the dock the click is left alone.
-   Registered on <body> in the capture phase, so it also runs before core.js's installed-app handler, which would navigate this window to /term/ instead. */
 Shell.onTermPress = function (e) {
   const a = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('a[href]') : null;
   Shell.dock.press = a && Shell.TERM_HREF.test(a.getAttribute('href') || '') ? { a, t: Date.now() } : null;
 };
-
 Shell.onTermLink = function (e) {
   if (!e || e.defaultPrevented) return false;
   if (e.button !== undefined && e.button !== 0) return false;
@@ -1464,6 +962,41 @@ Shell.onTermLink = function (e) {
   if (sheet && typeof closeSheet === 'function') closeSheet();         // the peek sheet this link sat in would cover the dock
   return true;
 };
+Shell.placeOf = function (tmux) {
+  const st = typeof state === 'undefined' ? null : state;
+  const parts = String(tmux || '').split('--');
+  if (!st || parts.length < 3) return null;
+  const p = (st.projects || []).find((x) => x.name === parts[0]);
+  const r = p ? (parts[1] === 'root' ? p.root : (p.repos || []).find((x) => x.name === parts[1])) : null;
+  return p && r ? { project: p, repo: r } : null;
+};
+Shell.quadSlots = function () {
+  try {
+    const v = JSON.parse(Shell.dockStore.get('ccboard:quad:all') || 'null');
+    if (v && Array.isArray(v.slots)) return v.slots.filter((x) => typeof x === 'string' && x).slice(0, 4);
+  } catch (_) { /* an unreadable entry is no slots */ }
+  return [];
+};
+
+Shell.withDock = function (fn) { return mountBundle('shelldock', fn); };
+Shell.openDock = function (tmux, opts) {
+  if (typeof tmux !== 'string' || !tmux || !Shell.dockOn() || Shell.dockHeld() || !$('#dock')) return false;
+  Shell.dock.wanted = tmux;
+  Shell.withDock(() => { if (Shell.dock.wanted === tmux && !Shell.dockHeld()) Shell.openDock(tmux, opts); });
+  return true;
+};
+for (const name of ['toggleDock', 'setDockOff', 'popOutDock', 'quadAdd']) {
+  Shell[name] = (...args) => { Shell.withDock(() => Shell[name](...args)); return true; };
+}
+Shell.closeDock = function () { Shell.dock.wanted = ''; Shell.dockStore.set('ccboard:dock', null); return true; };
+Shell.dockSync = function () {};
+Shell.patchDock = function () {};
+Shell.restoreDock = function (st) {
+  if (Shell.dockStore.get('ccboard:dock')) Shell.withDock(() => Shell.restoreDock(typeof state !== 'undefined' && state || st));
+};
+Shell.setDockWidth = function (w) { Shell.setVar($('#app'), '--dock-w', w ? w + 'px' : ''); };
+Shell.dockSuspend = function () { Shell.dock.held = true; };
+Shell.dockResume = function () { Shell.dock.held = false; };
 
 /* ---------- create menu: repo picker sheet, then the launcher sheet (launch(), components.js) ---------- */
 
@@ -1606,6 +1139,7 @@ function installShell() {
   const drawer = $('#drawer');
   const bnav = $('#bnav');
   if (!bar || !side || !drawer || !bnav) return;
+  bar.textContent = '';
   Shell.load();
   Shell.refs = {};
   Shell.buildTopbar(bar);
@@ -1623,7 +1157,7 @@ function installShell() {
 
 /* The rate-limit callout (pages/widgets.js) lives in #banner, which renderBanner() empties on every render: it is put back right after. */
 Shell.limit = function (st) {
-  if (typeof Lazy !== 'undefined' && (st?.pools != null || Lazy.done('pools'))) Lazy.run('pools', () => paintPoolStrip(state));
+  if (typeof Lazy !== 'undefined' && (st?.pools != null || Lazy.done('pools'))) mountBundle('pools', () => paintPoolStrip(state));
   try { if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function') Widgets.limitBanner(st); }
   catch (e) { console.error('ccboard limit banner', e); }
 };

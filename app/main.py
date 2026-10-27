@@ -390,8 +390,9 @@ def shell_paths() -> list[str]:
 def render_sw(version: str | None = None) -> bytes:
     """The /sw.js body: the sw.js template with the build id and the shell list filled in."""
     js = (STATIC_DIR / "sw.js").read_text(encoding="utf-8")
-    js = js.replace("__ASSET_VERSION__", version or asset_version())
-    return js.replace("__SHELL_JSON__", json.dumps(shell_paths(), separators=(",", ":"))).encode("utf-8")
+    release = version or asset_version()
+    js = js.replace("__ASSET_VERSION__", release)
+    return js.replace("__SHELL_JSON__", json.dumps([u + "?v=" + release for u in shell_paths()], separators=(",", ":"))).encode("utf-8")
 
 
 ASSET_VERSION = asset_version()
@@ -409,6 +410,9 @@ def is_immutable_static(path: str) -> bool:
     decoded ('/static/vendor/%2e%2e/core.js' would serve core.js); HTML and JS of the app stay no-cache.
     """
     if not path.startswith("/static/") or ".." in path.split("/") or "//" in path:
+        return False
+    # Generated app CSS changes as app selectors change; revalidate under its stable name.
+    if path == "/static/vendor/blueprint/blueprint-used.css":
         return False
     return path.startswith("/static/vendor/") or path.endswith(".woff2")
 
@@ -648,6 +652,8 @@ async def auth_middleware(request: Request, call_next):
     if not csrf_ok(request.method, request.headers):
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     request.state.user = user
+    if (request.url.path == "/" or request.url.path.startswith("/static/")) and request.query_params.get("v", ASSET_VERSION) != ASSET_VERSION:
+        return Response("Release no longer available", status_code=409, headers={"Cache-Control": "no-store"})
     resp = await call_next(request)
     if not (settings.dev_bypass_user and request.url.path.startswith("/tty/")):
         # Only the dev harness's fake terminal (served under /tty/ while the dev bypass is on) goes without: the real /tty/ is
@@ -7096,9 +7102,26 @@ def api_logout():
 
 # ---------- static ----------
 
+def render_index() -> str:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__ASSET_VERSION__", ASSET_VERSION)
+    # Font filenames are immutable and CSS references them without a query.
+    # Keep preload URLs identical so each font is fetched only once.
+    def asset_url(match):
+        prefix, quote = match.groups()
+        return prefix + ("" if prefix.endswith(".woff2") else "?v=" + ASSET_VERSION) + quote
+    return re.sub(r'((?:src|href)="/static/[^"?]+)(")', asset_url, html)
+
+
+@app.get("/static/boot.js")
+def boot_script():
+    js = (STATIC / "boot.js").read_text(encoding="utf-8").replace("__ASSET_VERSION__", ASSET_VERSION)
+    return Response(js, media_type="application/javascript")
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    return Response(render_index(), media_type="text/html")
 
 
 @app.get("/term/{name}")

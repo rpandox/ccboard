@@ -349,7 +349,7 @@ test('the width is the CSS default until a drag: no --dock-w, no stored width', 
   d.Shell.openDock(S1);
   assert.equal(d.app.props['--dock-w'], undefined);
   assert.equal(stored(d.w, 'ccboard:dock:w'), null);
-  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  const css = ['shell.css', 'shell-dock.css'].map((f) => fs.readFileSync(path.join(STATIC, f), 'utf8')).join('\n');
   assert.match(css, /--dock-w:min\(44vw, 640px\)/, 'the default is min(44vw, 640px)');
   assert.match(css, /#dock:not\(\.hidden\) \{[^}]*width:var\(--dock-w\)/);
 });
@@ -948,7 +948,7 @@ test('the dock pane\'s context chip and a quad tile\'s are one reading: the same
 });
 
 test('shell.css: the dock default, the flex column of the terminal dock, the handle, and the 1023 px hide are all there; no inline styles anywhere in the new code', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  const css = ['shell.css', 'shell-dock.css'].map((f) => fs.readFileSync(path.join(STATIC, f), 'utf8')).join('\n');
   assert.match(css, /#dock\.has-term:not\(\.hidden\) \{[^}]*display:flex; flex-direction:column; overflow:hidden/);
   assert.match(css, /@media \(max-width:1023px\) \{ #dock \{ display:none !important; \} \}/);
   assert.match(css, /\.dock-resize \{[^}]*cursor:col-resize/);
@@ -965,11 +965,11 @@ test('shell.css: the dock default, the flex column of the terminal dock, the han
 test('termkit.js is a lazy bundle (lazy.js, issue #103): index.html no longer loads it, the dock opens it on first use and the quad bundle needs it; #dock is a hidden aside', () => {
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   const order = [...html.matchAll(/<script (?:defer )?src="([^"]+)"/g)].map((m) => m[1]);
-  assert.ok(order.length > 5, 'the script tags were found');
+  assert.deepEqual(order, ['/static/boot.js']);
   assert.ok(!order.includes('/static/termkit.js'), 'not in the first-paint script set');
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /termkit: \{ js: \['\/static\/termkit\.js'\]/);
-  assert.match(lazy, /quad: \{ needs: \['termkit'\]/);
+  assert.match(lazy, /termkit: \{[^\n]* js: \['\/static\/termkit\.js'\]/);
+  assert.match(lazy, /quad: \{ needs: \['termkit',[^\]]*\]/);
   assert.match(html, /<aside id="dock" class="hidden" aria-label="Terminal dock"><\/aside>/);
 });
 
@@ -1164,7 +1164,7 @@ test('index.html has no #modal (v0.5.13: the diff viewer is a sheet) and shell.c
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.doesNotMatch(html, /id="modal"/);
   for (const file of ['style.css', 'shell.css', 'pages.css']) assert.doesNotMatch(fs.readFileSync(path.join(STATIC, file), 'utf8'), /#modal\s*[{,]|\.modal-box/, `${file} has no #modal rules`);
-  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  const css = ['shell.css', 'shell-dock.css'].map((f) => fs.readFileSync(path.join(STATIC, f), 'utf8')).join('\n');
   assert.match(css, /dialog#sheet\.right\.wide \{ width:min\(1100px, 100vw\); \}/);
   assert.match(css, /\.tn-row \.tn-add \{/);
   assert.match(css, /@media \(pointer:coarse\) \{ \.tn-row \.tn-add \{ min-width:var\(--tap\); min-height:var\(--tap\); \} \}/, 'the task button is a .tn-add too: 44 px on touch');
@@ -1245,7 +1245,7 @@ test('the touch grabber: a double tap resets the width, a drag does not count as
 });
 
 test('touch geometry in the CSS: a 44 px grabber on a coarse pointer and under html.force-coarse, a 38 vw default, and the header controls on the touch tokens', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  const css = ['shell.css', 'shell-dock.css'].map((f) => fs.readFileSync(path.join(STATIC, f), 'utf8')).join('\n');
   const tokens = fs.readFileSync(path.join(STATIC, 'tokens.css'), 'utf8');
   assert.match(css, /@media \(pointer:coarse\) \{\s*#dock\.has-term \.dock-resize \{ display:block;[^}]*width:var\(--tap\); height:var\(--tap\);/, 'touch grabber, 44 px by the token');
   assert.match(css, /html\.force-coarse #dock\.has-term \.dock-resize \{ display:block;[^}]*width:var\(--tap\); height:var\(--tap\);/, 'and for the QA switch');

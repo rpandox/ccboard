@@ -659,8 +659,8 @@ Quad.mount = function (root, route) {
       I.nodesOn = true;
       // o on a focused tile of another node opens its terminal on that node (a plain key: inert in a field, in a dialog and inside a terminal, like every Keymap key; false leaves the key to the others).
       // Bound only on a board with paired nodes: a single-board quad has no such key and its help list is unchanged.
-      if (typeof Keymap !== 'undefined' && typeof Keymap.bindKey === 'function') {
-        try { I.offs.push(Keymap.bindKey('o', () => openRemote(), { when: () => !!remoteTarget(), help: 'Quad: open the terminal of a tile on another node', label: 'O', group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
+      if (typeof KeyBindings !== 'undefined') {
+        try { I.offs.push(KeyBindings.bind('o', () => openRemote(), { when: () => !!remoteTarget(), help: 'Quad: open the terminal of a tile on another node', label: 'O', group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
       }
       Nodes.M.subs.add(onNodes);                                       // a new reading of the nodes repaints the pick lists and the tiles
       I.pointerOff.push(() => Nodes.M.subs.delete(onNodes));
@@ -1999,11 +1999,11 @@ Quad.mount = function (root, route) {
     I.rootRO = new ResizeObserver(() => onWindowSize());
     I.rootRO.observe(I.host);
   }
-  if (typeof Keymap !== 'undefined' && typeof Keymap.bindKey === 'function') {
+  if (typeof KeyBindings !== 'undefined') {
     // help-only entries: the page's own capture listener above runs first and handles these keys (also inside the terminals, where Keymap is inert)
     for (const [spec, help, label] of [['mod+alt+1', 'Quad: focus tile 1 to 10 (0 is the tenth)', 'Ctrl+Alt+1…0'], ['mod+alt+z', 'Quad: zoom the active tile', 'Ctrl+Alt+Z'],
       ['mod+alt+k', 'Quad: the next session that needs you', 'Ctrl+Alt+K'], ['mod+alt+r', 'Quad: reload every tile', 'Ctrl+Alt+R'], ['mod+alt+f', 'Quad: full screen on or off, also inside a terminal', 'Ctrl+Alt+F']]) {
-      try { I.offs.push(Keymap.bindKey(spec, () => false, { help, label, group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
+      try { I.offs.push(KeyBindings.bind(spec, () => false, { help, label, group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
     }
   }
   relayout(true);

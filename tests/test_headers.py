@@ -113,6 +113,7 @@ def test_no_identity_no_static_and_no_cache_header_to_poison(lite_client):
 
 @pytest.mark.parametrize("path,expected", [
     ("/static/vendor/blueprint/blueprint.css", True),
+    ("/static/vendor/blueprint/blueprint-used.css", False),
     ("/static/vendor/diff2html-LICENSE", True),
     ("/static/vendor/fonts/inter-latin-wght-normal.woff2", True),
     ("/static/fonts/extra.woff2", True),                          # any woff2 under /static
@@ -175,3 +176,9 @@ def test_no_gzip_middleware_and_only_static_text_is_compressed(lite_client):
         assert r.status_code == 200 and "content-encoding" not in r.headers, url
     r = lite_client.get("/api/state", headers={**H, "Accept-Encoding": "gzip, br"})
     assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip" and r.json()["projects"] is not None
+
+
+def test_generated_blueprint_subset_revalidates(lite_client):
+    response = lite_client.get("/static/vendor/blueprint/blueprint-used.css", headers=H)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"

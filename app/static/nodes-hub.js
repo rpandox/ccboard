@@ -938,8 +938,8 @@ Nodes.goFirst = function () {
   return true;
 };
 
-if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'function') {
-  Keymap.bindKey('g n', () => { if (!Nodes.enabled()) return false; return Nodes.goFirst() || true; }, { help: 'Go to the first paired node', group: 'Go to' });
+if (typeof KeyBindings !== 'undefined') {
+  KeyBindings.bind('g n', () => { if (!Nodes.enabled()) return false; return Nodes.goFirst() || true; }, { help: 'Go to the first paired node', group: 'Go to' });
 }
 
 /* ---------- Settings, Nodes: the read model's line under a paired node's row ---------- */
@@ -1330,16 +1330,16 @@ function nsPermNode(c) {
 
 /* ---------- keys on a remote session's peek ---------- */
 
-if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'function') {
+if (typeof KeyBindings !== 'undefined') {
   /* The peek (pages/node.js) registers itself in Nodes.peek while a remote session is open. These are the keys the local peek has (Pages.target is empty on #/n/ pages), same letters:
      r focuses the send box, a acknowledges, y and d allow or deny the request waiting on that session, o opens the session on its own board. No help text: the help already lists them. */
   const on = () => !!Nodes.peek;
   const run = (name) => () => { const p = Nodes.peek; return p && typeof p[name] === 'function' ? p[name]() : false; };
-  Keymap.bindKey('r', run('focus'), { when: on });
-  Keymap.bindKey('a', run('ack'), { when: on });
-  Keymap.bindKey('y', run('allow'), { when: on });
-  Keymap.bindKey('d', run('deny'), { when: on });
-  Keymap.bindKey('o', run('open'), { when: on });
+  KeyBindings.bind('r', run('focus'), { when: on });
+  KeyBindings.bind('a', run('ack'), { when: on });
+  KeyBindings.bind('y', run('allow'), { when: on });
+  KeyBindings.bind('d', run('deny'), { when: on });
+  KeyBindings.bind('o', run('open'), { when: on });
 }
 
 /* Run fn(peek) as soon as the peek of this session has registered (a palette row navigates to it first): now, or within about half a second. */

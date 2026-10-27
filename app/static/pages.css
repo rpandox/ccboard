@@ -123,47 +123,6 @@ html.force-coarse #page summary { min-height:var(--tap); display:flex; align-ite
 /* long lists: rows far off screen skip layout and paint (the class is on the list, the rows are its children) */
 #page .cv-auto > .rrow, #page .cv-auto > .inbox-item { content-visibility:auto; contain-intrinsic-size:auto 92px; }
 
-/* ---------- command palette and shortcut help (palette.js): one modal dialog#helpdlg, class palette ---------- */
-dialog#helpdlg.palette { margin:max(8px, 9vh) auto 0; padding:0; width:min(640px, calc(100vw - 16px)); max-width:none; max-height:min(600px, calc(100vh - 16px - 9vh)); max-height:min(600px, calc(100dvh - 16px - 9vh));
-                         border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--fg); overflow:hidden; box-shadow:0 14px 44px rgba(0,0,0,.55); }
-dialog#helpdlg.palette[open] { display:flex; flex-direction:column; animation:pal-in .12s ease-out; }
-dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
-@keyframes pal-in { from { transform:translateY(-8px); opacity:.5; } to { transform:none; opacity:1; } }
-@media (prefers-reduced-motion:reduce) { dialog#helpdlg.palette[open] { animation:none; } }
-@media (max-width:599px) { dialog#helpdlg.palette { margin-top:calc(var(--sat) + 8px); } }
-
-.palette .pal-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
-.palette .pal-input { flex:1 1 auto; min-width:0; width:100%; height:40px; font:14px/1 var(--font-ui); }
-@media (pointer:coarse) { .palette .pal-input { font-size:16px; } }          /* 16 px: iOS Safari zooms into a smaller field */
-.palette .pal-list { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:2px 0 6px; }
-.palette .pal-group { padding:10px 14px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
-.palette .pal-item { display:flex; align-items:center; gap:10px; min-height:var(--tap); padding:4px 14px 4px 12px; border-left:2px solid transparent; cursor:pointer; -webkit-touch-callout:none; }
-.palette .pal-item.sel { background:rgba(77,208,225,.12); border-left-color:var(--sig); }
-.palette .pal-label { flex:0 0 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }   /* the name keeps its room; the hint is what gives */
-.palette .pal-hit { color:var(--sig); font-weight:700; }
-.palette .pal-hint { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.3 var(--font-mono); color:var(--dim); }
-.palette .pal-kbd { flex:none; margin-left:auto; padding:1px 6px; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--dim); font:11px/1.5 var(--font-mono); }
-.palette .pal-hint + .pal-kbd { margin-left:0; }
-.palette .pal-note { flex:none; font:11px/1.3 var(--font-mono); color:var(--dim); white-space:nowrap; }
-.palette .pal-act { flex:none; padding:1px 6px; border:1px solid var(--line); border-radius:3px; font:11px/1.5 var(--font-ui); color:var(--fg-2); }
-.palette .pal-item.off .pal-label, .palette .pal-item.off .pal-act { color:var(--dim); }
-.palette .pal-empty { padding:16px 14px; color:var(--dim); }
-.palette .pal-foot { flex:none; padding:7px 14px calc(7px + var(--sab)); border-top:1px solid var(--line); font:11px/1.4 var(--font-mono); color:var(--dim); }
-@media (hover:hover) { .palette .pal-item:hover:not(.sel) { background:var(--card); } }
-.palette .pal-input:focus-visible, .palette .help-head .bp5-button:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
-.palette .pal-input:focus, .palette .pal-input:focus-visible { box-shadow:none; }       /* Blueprint's inset focus shadow would be a second --sig ring inside the outline */
-dialog#helpdlg:focus { outline:none; }                                                  /* the help dialog holds the focus itself (palette.js openHelp), like the sheets */
-
-/* the shortcut list (Palette.openHelp) */
-.palette.help .help-head { justify-content:space-between; }
-.palette .help-title { margin:0; font-size:15px; font-weight:600; }
-.palette .help-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:4px 14px 14px; }
-.palette .help-group h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); font-weight:600; }
-.palette .help-row { display:flex; align-items:baseline; gap:12px; padding:3px 0; }
-.palette .help-keys { flex:none; width:clamp(104px, 28%, 170px); color:var(--dim); font:12px/1.6 var(--font-mono); }
-.palette .help-keys .pal-kbd { margin-left:0; }
-.palette .help-text { min-width:0; font-size:13px; color:var(--fg-2); }
-
 /* install hint (Home, browser tabs only): a neutral note, not a second accent; the text, How and the x share one row, also at 390 px */
 #page .install-hint { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; margin:0 0 10px; padding:8px 8px 8px 12px; background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sig-bd, var(--sig)); border-radius:2px; }
 #page .install-hint .ih-text { flex:1 1 0; min-width:0; font-size:13px; color:var(--fg-2); }
@@ -220,39 +179,6 @@ html.force-coarse #page .ib-send textarea.composer { font-size:16px; }
 #page .ib-head .ib-title { margin:0; font-size:15px; font-weight:600; }
 #page .inbox-list { margin-top:6px; }
 
-/* the usage card */
-#page .ucard { margin:12px auto; padding:12px 14px; background:var(--card); border:1px solid var(--line); border-radius:2px; }
-#page .uc-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; }
-#page .uc-head h2 { margin:0; font-size:15px; font-weight:600; }
-#page .uc-backup { display:inline-flex; align-items:center; padding:1px 8px; border:1px solid var(--line); border-radius:10px; font:12px/1.5 var(--font-mono); color:var(--dim); text-decoration:none; }
-#page .uc-backup.bad { border-color:var(--bad); color:var(--bad); }
-@media (pointer:coarse) { #page .uc-backup { min-height:var(--tap); } }
-html.force-coarse #page .uc-backup { min-height:var(--tap); }
-#page .uc-gauges { display:flex; flex-wrap:wrap; gap:8px 22px; margin:10px 0 4px; }
-#page .gauge { display:flex; align-items:center; gap:8px; flex:1 1 230px; min-width:0; }
-#page .g-label { min-width:2ch; font:600 12px/1 var(--font-mono); color:var(--fg-2); }
-#page .g-bar { position:relative; flex:1 1 80px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
-#page .g-bar i { display:block; height:100%; background:var(--ok); }
-#page .gauge.warn .g-bar i { background:var(--warn); }
-#page .gauge.bad .g-bar i { background:var(--bad); }
-#page .g-val { min-width:4ch; text-align:right; font-size:12px; color:var(--fg); }
-#page .g-reset { white-space:nowrap; }
-#page .uc-burn { margin:2px 0 4px; font:12px/1.4 var(--font-mono); }
-#page .uc-charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px 22px; margin-top:10px; }
-#page .uc-fig { margin:0; min-width:0; }
-#page .uc-cap { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:4px; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
-#page .uc-cap-v { text-transform:none; letter-spacing:0; color:var(--fg-2); }
-#page .uc-plot svg { display:block; width:100%; height:44px; overflow:visible; }
-#page .uc-bars .uc-plot svg { height:56px; }
-#page .sp-line { fill:none; stroke:var(--sig); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
-#page .sp-guide { stroke:var(--warn); stroke-opacity:.4; stroke-width:1; stroke-dasharray:3 3; }
-#page .sp-base, #page .cb-base { stroke:var(--line); stroke-width:1; }
-#page .cb { fill:var(--sig); }
-#page .cb.zero { fill:url(#uc-hatch); stroke:var(--dim-2); stroke-width:1; }              /* a day without spend: hatched, never an empty gap */
-#page .cb-hatch-line { stroke:var(--dim-2); stroke-width:1; }
-@media (hover:hover) { #page .cb:hover { fill:var(--fg-2); } #page .cb.zero:hover { fill:url(#uc-hatch); } }
-#page .uc-days { display:grid; grid-template-columns:repeat(7, 1fr); margin-top:3px; text-align:center; font:10px/1.2 var(--font-mono); color:var(--dim); }
-
 /* the banner: the message takes the row and its action stays beside it (no 44 px row of its own); an update is news (info, the accent's tint), the red bar
    is for errors */
 #banner { flex-wrap:nowrap; }
@@ -276,8 +202,6 @@ html.force-coarse #page .uc-backup { min-height:var(--tap); }
 @media (pointer:coarse) { .form .checks.import-repos label, .form .checks.batch-repos label { min-height:var(--tap); } }
 html.force-coarse .form .checks.import-repos label, html.force-coarse .form .checks.batch-repos label { min-height:var(--tap); }
 
-/* ---------- home (v0.5.5: pages/home.js: summary line, away strip, schedules strip, project blocks, rich rows from pages/agents.js) ---------- */
-
 /* the summary line: a filter chip per state; sticky under the page head (#main scrolls), a scrollable strip at 390 px */
 #page .summary.sumbar { position:sticky; top:0; z-index:6; display:flex; flex-wrap:nowrap; align-items:center; gap:6px; margin:0; padding:6px 0; overflow-x:auto; white-space:nowrap;
                         background:var(--bg); border-bottom:1px solid var(--line-soft); -webkit-overflow-scrolling:touch; scrollbar-width:none; }
@@ -294,420 +218,6 @@ html.force-coarse .form .checks.import-repos label, html.force-coarse .form .che
 #page .sum-seg.on { border-color:var(--sig); background:rgba(77,208,225,.14); color:var(--fg); }
 @media (hover:hover) { #page a.sum-seg:hover { border-color:var(--sig); color:var(--fg); } }
 #page .sum-seg:focus-visible, #page .seg-btn:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
-
-/* the group control in the page head */
-#page .seg-ctl { display:inline-flex; align-items:center; gap:0; }
-#page .seg-ctl .seg-k { margin-right:8px; }
-#page .seg-btn { min-height:28px; padding:0 12px; border:1px solid var(--line-strong, var(--line)); border-left-width:0; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-ui); cursor:pointer; }
-#page .seg-btn:first-of-type { border-left-width:1px; border-radius:2px 0 0 2px; }
-#page .seg-btn:last-of-type { border-radius:0 2px 2px 0; }
-#page .seg-btn[aria-pressed=true] { background:rgba(77,208,225,.14); border-color:var(--sig); color:var(--fg); }
-#page .seg-btn[aria-pressed=true] + .seg-btn { border-left-width:1px; }
-@media (hover:hover) { #page .seg-btn:hover { color:var(--fg); } }
-
-/* the away strip */
-#page .away { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; margin:10px 0 0; padding:8px 8px 8px 12px; }
-#page .away .away-text { color:var(--fg-2); }
-#page .away .away-list { flex:1 1 auto; min-width:0; }
-#page .away .away-n { color:var(--fg); font-weight:600; }
-#page .away .away-n + .away-n::before { content:'·'; display:inline-block; margin:0 8px 0 2px; color:var(--dim); font-weight:400; }
-#page .away .away-x { margin-left:auto; }
-
-/* the inbox section Inbox.section builds into #inbox-home */
-#page .home-inbox { margin:12px 0 0; }
-
-/* the schedules strip */
-#page .sched { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:12px 0 0; padding:6px 0; border-top:1px solid var(--line-soft); border-bottom:1px solid var(--line-soft); font-size:12px; }
-#page .sched .sched-list { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; min-width:0; flex:1 1 auto; }
-#page .sched .sched-item { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-height:28px; padding:0 4px; border:0; background:none; color:var(--fg-2); font:12px/1.2 var(--font-ui); cursor:pointer; }
-#page .sched .sched-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:28ch; }
-@media (hover:hover) { #page .sched .sched-item:hover { color:var(--fg); } }
-@media (pointer:coarse) { #page .sched .sched-item { min-height:var(--tap); } }
-html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
-
-/* project (and state / agent) blocks */
-#page .pblocks { display:flex; flex-direction:column; gap:14px; margin-top:12px; }
-#page .pblock .pb-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:4px 2px; border-bottom:1px solid var(--line); min-width:0; }
-#page .pblock .pb-toggle { min-width:28px; padding:0 4px; }
-#page .pblock .pb-name { font-size:14px; font-weight:600; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; }
-#page .pblock a.pb-name { display:inline-flex; align-items:center; }
-@media (hover:hover) { #page .pblock a.pb-name:hover { color:var(--sig); text-decoration:underline; } }
-#page .pblock .pb-count, #page .pblock .pb-cost, #page .pblock .pb-git { font-size:12px; }
-#page .pblock .pb-add { margin-left:auto; }
-#page .pblock.has-attn > .pb-head { border-bottom-color:var(--warn); }
-#page .pblock.collapsed > .pb-head { border-bottom-color:var(--line-soft); }
-#page .pblock .pgroup-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:6px 2px 2px 12px; font-size:12px; }
-#page .pblock .pg-name { color:var(--fg-2); }
-#page .pblock .pg-add { margin-left:auto; }
-#page .pblock .pg-list { display:flex; flex-direction:column; }
-#page .pblock .pb-older-toggle { display:flex; align-items:center; justify-content:flex-start; width:100%; min-height:var(--tap); padding:0 4px; border:0; border-radius:0; background:none; box-shadow:none; color:var(--fg-2); font:600 13px/1 var(--font-ui); text-align:left; cursor:pointer; }
-@media (hover:hover) { #page .pblock .pb-older-toggle:hover { color:var(--fg); } }
-#page .pblock.older > .pb-body { display:flex; flex-direction:column; gap:14px; padding-top:10px; }
-#page .pblock.older .pblock { margin-left:8px; }
-#page .home-note { margin:14px 0; }
-#page .home-idle { margin:14px 0 6px; }                            /* "No sessions running": projects exist, nothing is live */
-#page .home-idle.hidden { display:none; }
-#page .home-idle .home-idle-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }
-#page .home-idle .home-idle-actions button { min-height:var(--tap); }
-#page .home-scan-slow { margin:10px 0 0; }                     /* #31: "scan slowed (box is busy)" above the project list, only while state.scan_slow */
-
-/* the rich row (sessionCard rich:true): the state label, then the chips, in one wrapping line */
-#page .rrow .rr-metaline { grid-area:meta; display:flex; flex-wrap:wrap; align-items:center; gap:3px 8px; min-width:0; }
-#page .rrow .rr-metaline .rr-meta { grid-area:auto; }
-#page .rr-badges { display:inline-flex; flex-wrap:wrap; align-items:center; gap:3px 6px; min-width:0; }
-/* a chip: text, tint and edge come from the muted hue class it wears (tokens.css .hue-*: --hue / --hue-bg / --hue-bd; pages/agents.js chipHue), grey without one.
-   --bd and --bgc are the edge and the fill, so the touch rule below can draw the same pill behind a 44 px target. The label always says what the chip is. */
-#page .bdg { --bd:var(--hue-bd, var(--line)); --bgc:var(--hue-bg, transparent); display:inline-flex; align-items:center; min-height:18px; padding:0 7px; border:1px solid var(--bd); border-radius:9px; background:var(--bgc);
-             font:11px/1.5 var(--font-ui); color:var(--hue, var(--fg-2)); white-space:nowrap; text-decoration:none; }
-#page .bdg.mono, #page .bdg-model { font-family:var(--font-mono); }
-#page .bdg-wt { color:var(--hue, var(--dim)); }
-#page .bdg-pr.ok { --bd:var(--ok); --bgc:var(--ok-bg, transparent); color:var(--ok-fg, var(--ok)); }
-#page .bdg-pr.bad { --bd:var(--bad); --bgc:var(--bad-bg); color:var(--bad-fg, var(--bad)); }
-#page .bdg-pr.warn { --bd:var(--warn); --bgc:var(--warn-bg); color:var(--warn-fg, var(--warn)); }
-#page .bdg-cost.cost-warn { --bd:var(--warn); color:var(--warn-fg, var(--warn)); }
-#page .bdg-cost.cost-bad, #page .bdg-limit { --bd:var(--bad); --bgc:var(--bad-bg); color:var(--bad-fg, var(--bad)); }
-#page .bdg-blocked { --bd:var(--warn); --bgc:var(--warn-bg); color:var(--warn-fg, var(--warn)); }
-#page .bdg-noauto { color:var(--dim); }                       /* #84: dim but readable (the glyph and the words say it, not the colour) */
-@media (hover:hover) { #page a.bdg:hover { --bd:var(--sig); color:var(--fg); } }
-#page .ctx { display:inline-flex; align-items:center; gap:5px; font:11px/1 var(--font-mono); color:var(--dim); }
-#page .ctx-bar { display:inline-block; width:40px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
-#page .ctx-bar i { display:block; height:100%; background:var(--dim-2); }
-#page .ctx.ctx-hi .ctx-bar i { background:var(--warn); }
-#page .ctx.ctx-hi .ctx-pct { color:var(--warn); }
-#page .ctx.ctx-crit .ctx-bar i { background:var(--bad); }
-#page .ctx.ctx-crit .ctx-pct { color:var(--bad); }
-#page .rr-badges .chip-btn { --bd:var(--line-strong, var(--line)); --bgc:var(--hue-bg, transparent); min-height:22px; padding:0 8px; border-color:var(--bd); background:var(--bgc); color:var(--hue, var(--fg-2)); }
-#page .rrow.rich .rr-last > * { -webkit-line-clamp:1; }
-#page .rrow.rich .rr-actions { gap:4px; }
-/* a rich row keeps the nudge chips and the send box behind Reply (the inbox section above carries the full reply UI of what needs you) */
-#page .rrow.rich:not(.open) > .rr-chips, #page .rrow.rich:not(.open) > .rr-send { display:none; }
-#page .rrow .rr-tail { grid-area:tail; margin-top:6px; min-width:0; }
-#page .rrow .rr-tail pre.tail { margin:0; max-height:210px; font-size:11px; line-height:1.4; }
-/* touch: a chip keeps its small look and gets the 44 px target around it: the element is 44 px tall (so the audit and a thumb agree), transparent and borderless,
-   the negative margin gives the row its height back, and the pill is drawn behind the label (::before at -1) */
-@media (pointer:coarse) {
-  #page .sum-seg, #page .seg-btn { min-height:var(--tap); }
-  #page .away .away-n, #page .pblock a.pb-name { min-height:var(--tap); }
-  #page .away .away-n { display:inline-flex; align-items:center; }
-  #page .rr-badges .chip-btn, #page .rr-badges a.bdg-pr { position:relative; isolation:isolate; min-height:var(--tap); border-color:transparent; background:none; }
-  #page .rr-badges .chip-btn { margin:-11px 0; }
-  #page .rr-badges a.bdg-pr { margin:-13px 0; }
-  #page .rr-badges .chip-btn::before, #page .rr-badges a.bdg-pr::before { content:''; position:absolute; left:0; right:0; z-index:-1; border:1px solid var(--bd); background:var(--bgc); pointer-events:none; }
-  #page .rr-badges .chip-btn::before { top:11px; bottom:11px; border-radius:11px; }
-  #page .rr-badges a.bdg-pr::before { top:13px; bottom:13px; border-radius:9px; }
-  #page .pblock .pb-toggle { min-width:var(--tap); }
-}
-html.force-coarse #page .sum-seg, html.force-coarse #page .seg-btn { min-height:var(--tap); }
-html.force-coarse #page .away .away-n, html.force-coarse #page .pblock a.pb-name { min-height:var(--tap); }
-html.force-coarse #page .away .away-n { display:inline-flex; align-items:center; }
-html.force-coarse #page .rr-badges .chip-btn, html.force-coarse #page .rr-badges a.bdg-pr { position:relative; isolation:isolate; min-height:var(--tap); border-color:transparent; background:none; }
-html.force-coarse #page .rr-badges .chip-btn { margin:-11px 0; }
-html.force-coarse #page .rr-badges a.bdg-pr { margin:-13px 0; }
-html.force-coarse #page .rr-badges .chip-btn::before, html.force-coarse #page .rr-badges a.bdg-pr::before { content:''; position:absolute; left:0; right:0; z-index:-1; border:1px solid var(--bd); background:var(--bgc); pointer-events:none; }
-html.force-coarse #page .rr-badges .chip-btn::before { top:11px; bottom:11px; border-radius:11px; }
-html.force-coarse #page .rr-badges a.bdg-pr::before { top:13px; bottom:13px; border-radius:9px; }
-html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
-
-/* project route: repo list and actions beside the code-server links (until the v0.5.6 page) */
-#page .proj-repos .proj-repo { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
-#page .proj-actions { margin-top:6px; gap:8px; }
-
-/* ---------- project page + tree (v0.5.6: pages/project.js, tree.js, the sidebar's folder nodes in shell.js) ---------- */
-
-#page .proj { padding-bottom:24px; }
-#page .pj-head { display:flex; flex-direction:column; gap:10px; padding:14px 0 10px; min-width:0; }
-#page .pj-title { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 12px; min-width:0; }
-#page .pj-title .spacer { flex:1 1 0; min-width:0; }
-#page .pj-name { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
-#page .pj-path { font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; }
-#page .pj-more, #page .pj-quad { align-self:center; }
-#page .pj-epics { align-self:center; }
-/* the repos are one row that scrolls sideways (two chips used to take a row each); from 840 px they wrap again */
-#page .pj-repos { display:flex; flex-wrap:nowrap; gap:6px 10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
-#page .pj-repos::-webkit-scrollbar { display:none; }
-@media (min-width:840px) { #page .pj-repos { flex-wrap:wrap; overflow-x:visible; } }
-#page .pj-repo { flex:0 0 auto; display:inline-flex; align-items:center; gap:2px; max-width:100%; }
-#page a.pj-chip { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); max-width:100%; padding:0 10px; border:1px solid var(--line-strong, var(--line)); border-radius:14px; background:var(--panel); color:var(--fg-2); font-size:12px; text-decoration:none; }
-#page a.pj-chip .bp5-icon { color:var(--dim); }
-#page a.pj-chip .dot { margin-left:0; flex:none; }
-#page .pj-rname { color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-#page .pj-branch, #page .pj-rcost { font-size:11px; white-space:nowrap; }
-@media (hover:hover) { #page a.pj-chip:hover { border-color:var(--sig); color:var(--fg); text-decoration:none; } }
-#page .pj-stats { font:12px/1.5 var(--font-mono); color:var(--dim); }
-#page .pj-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
-
-#page .pj-manage { padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--card); }
-#page .pj-manage-body { display:flex; flex-direction:column; gap:6px; }
-#page .pj-mrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:2px 0; }
-#page .pj-danger { margin-top:6px; padding-top:8px; border-top:1px solid var(--line); }
-#page .pj-panel { padding-top:12px; min-width:0; }
-#page .pj-unknown { display:flex; flex-direction:column; align-items:center; gap:8px; padding:24px 0; }
-#page .pj-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin:0 0 10px; min-width:0; }
-#page .pj-toolbar .spacer { flex:1 1 0; min-width:0; }
-#page .pj-kanban { margin-top:0; }
-#page .pj-kanban .col { min-width:0; }
-#page .pj-job { margin-left:0; }
-#page .pj-sessions .pblock { margin-top:0; }
-
-/* files tab: switcher and toggles above, the tree beside the preview (stacked below 840 px) */
-#page .pj-files { display:flex; flex-direction:column; min-width:0; }
-#page .pj-switch { display:inline-flex; flex-wrap:wrap; gap:4px; }
-#page .pj-repo-btn[aria-pressed=true], #page .pj-toolbar button[aria-pressed=true] { color:var(--fg); background:rgba(77,208,225,.14); box-shadow:inset 0 0 0 1px var(--sig); }
-#page .pj-branchinfo { font-size:12px; }
-#page .pj-split { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; align-items:start; min-width:0; }
-#page .pj-treebox { min-width:0; border:1px solid var(--line); background:var(--bg); border-radius:2px; overflow:auto; }
-@media (min-width:840px) {
-  #page .pj-split { grid-template-columns:minmax(260px, 360px) minmax(0, 1fr); }
-  #page .pj-treebox { position:sticky; top:8px; max-height:calc(100vh - 150px); max-height:calc(100dvh - 150px); }
-}
-#page .pj-previewbox { min-width:0; border:1px solid var(--line); background:var(--bg); border-radius:2px; }
-#page .pj-previewbar { display:flex; justify-content:flex-end; }
-#page .pj-previewbar:has(.hidden:only-child) { display:none; }
-#page .pj-hint { margin:0; padding:20px 14px; }
-#page .pj-uchint { display:flex; flex-direction:column; gap:6px; padding:8px 12px; border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.45; min-width:0; }
-#page .pj-uchint .doc-cmdline { align-items:center; }
-html.force-coarse #page .pj-uchint button { min-height:var(--tap); min-width:var(--tap); }
-@media (max-width:839px) { #page .pj-previewbox:not(.open) { display:none; } }
-
-/* the tree: Blueprint's bp5-tree markup (semantic classes in core.js), restyled to the app's rows */
-#page .ftree { font-size:13px; padding:2px 0; }
-#page .ftree .treelist { list-style:none; margin:0; padding:0; }
-#page .ftree .treenode { outline:none; }
-#page .ftree .treecontent { display:flex; align-items:center; gap:6px; width:auto; height:auto; min-height:var(--row-h); padding:0 8px 0 calc(4px + var(--lvl, 0) * 16px); border-left:2px solid transparent; color:var(--fg-2); cursor:pointer; -webkit-touch-callout:none; }
-@media (hover:hover) { #page .ftree .treecontent:hover { background:var(--card); } }
-#page .ftree .treecaret, #page .ftree .tcaret-none { flex:none; display:inline-flex; align-items:center; justify-content:center; width:18px; min-width:18px; padding:0; margin:0; transition:transform .12s; color:var(--dim); }
-#page .ftree .treenode.open > .treecontent > .treecaret { transform:rotate(90deg); }
-#page .ftree .tglyph { flex:none; display:inline-flex; align-items:center; color:var(--dim); }
-#page .ftree .tglyph .bp5-icon { color:var(--dim); }
-#page .ftree .tglyph .g-open { display:none; }
-#page .ftree .treenode.open > .treecontent .g-open { display:inline-flex; }
-#page .ftree .treenode.open > .treecontent .g-closed { display:none; }
-#page .ftree .treelabel { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12.5px/1.3 var(--font-mono); }
-#page .ftree .treesecondary { flex:none; display:inline-flex; align-items:center; gap:8px; padding:0; }
-#page .ftree .tsize { font-size:11px; }
-#page .ftree .tstatus { min-width:1ch; font:600 11px/1 var(--font-mono); color:var(--warn); }
-#page .ftree .tstatus.st-A { color:var(--ok); }
-#page .ftree .tstatus.st-new { color:var(--sig); }
-#page .ftree .tstatus.st-D, #page .ftree .tstatus.st-U { color:var(--bad); }
-#page .ftree .tdot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn); }
-#page .ftree .treenode.ignored > .treecontent { opacity:.55; }
-#page .ftree .treenode.selected > .treecontent { border-left-color:var(--sig); background:rgba(77,208,225,.12); color:var(--fg); }
-#page .ftree .treenode:focus-visible > .treecontent { outline:2px solid var(--sig); outline-offset:-2px; }
-#page .ftree .treenode[aria-busy=true] > .treecontent .treecaret { opacity:.5; }
-#page .ftree .treemore { display:flex; align-items:center; gap:8px; min-height:28px; padding:0 8px 0 calc(28px + var(--lvl, 0) * 16px); font:12px/1.3 var(--font-mono); color:var(--dim); }
-#page .ftree .treemore.err { color:var(--bad); }
-@media (max-width:599px) { #page .ftree .tsize { display:none; } }
-
-/* the file preview: a header, then a gutter of line numbers (counters on an ol, one li per line) that stays put while long lines scroll */
-#page .tpreview { display:flex; flex-direction:column; min-width:0; }
-#page .tp-head { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:6px 10px; border-bottom:1px solid var(--line); }
-#page .tp-path { flex:1 1 auto; min-width:0; font:12px/1.4 var(--font-mono); color:var(--fg); overflow-wrap:anywhere; }
-#page .tp-meta { font-size:11px; }
-#page .tp-body { overflow:auto; max-height:calc(100vh - 230px); max-height:calc(100dvh - 230px); min-height:80px; background:var(--bg-0); }
-@media (max-width:839px) { #page .tp-body { max-height:70vh; max-height:70dvh; } }
-#page .tp-body:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
-#page .tp-lines { counter-reset:ln; list-style:none; margin:0; padding:6px 0; width:max-content; min-width:100%; font:12px/1.55 var(--font-mono); tab-size:4; color:var(--fg-2); }
-#page .tp-lines li { counter-increment:ln; white-space:pre; min-height:1.55em; padding:0 14px 0 0; }
-#page .tp-lines li::before { content:counter(ln); display:inline-block; position:sticky; left:0; box-sizing:border-box; width:4.4em; margin-right:12px; padding-right:10px; text-align:right; color:var(--dim-2); background:var(--bg-0); user-select:none; -webkit-user-select:none; cursor:pointer; }
-#page .tp-lines li.cur { background:rgba(77,208,225,.12); color:var(--fg); }
-#page .tp-lines li.cur::before { color:var(--sig); background:#10252a; }
-#page .tp-msg { display:flex; flex-direction:column; align-items:flex-start; gap:6px; padding:16px 14px; }
-#page .tp-foot { padding:8px 12px; border-top:1px solid var(--line); }
-
-/* sidebar: the current project's repos and folders (shell.js folder nodes: a link to the Files tab, the chevron toggles) */
-#sidebar .tn-row.d-row, #drawer .tn-row.d-row { padding-left:calc(14px + (var(--lvl, 2) - 1) * 14px); }
-#sidebar .tn-row.d-row .tw, #drawer .tn-row.d-row .tw { align-items:center; justify-content:center; }
-#sidebar .tn-row.d-row.leaf .tw, #drawer .tn-row.d-row.leaf .tw { visibility:hidden; }
-#sidebar .tn-row.d-row.cur, #drawer .tn-row.d-row.cur { background:var(--bg); color:var(--fg); border-left-color:var(--sig); }
-#sidebar .tn-note, #drawer .tn-note { padding:4px 10px 4px 44px; font-size:11px; }
-@media (pointer:coarse) { #sidebar .tn-row.d-row .tw, #drawer .tn-row.d-row .tw { width:var(--tap); min-height:var(--tap); margin:0 -14px 0 -15px; } }
-html.force-coarse #sidebar .tn-row.d-row .tw, html.force-coarse #drawer .tn-row.d-row .tw { width:var(--tap); min-height:var(--tap); margin:0 -14px 0 -15px; }
-@media (max-width:599px) {
-  #page .pj-title .spacer { order:1; }
-  #page .pj-more, #page .pj-quad { order:2; }
-  #page .pj-epics { order:2; }
-  #page .pj-path { order:3; flex:1 1 100%; }
-}
-
-/* ---------- tasks v2 (v0.5.14a: launcher.js taskForm, components.js backlog cards and the session picker, shell.js pickRepo hint) ---------- */
-
-/* the Run control (Now | Later | Schedule) in the create sheet: the same segmented buttons as the page head's group control, which only reaches #page */
-#sheet .seg-ctl { display:inline-flex; align-items:center; gap:0; }
-#sheet .seg-btn { min-height:30px; padding:0 16px; border:1px solid var(--line); border-left-width:0; background:var(--panel); color:var(--fg-2); font:13px/1 var(--font-ui); cursor:pointer; }
-#sheet .seg-btn:first-of-type { border-left-width:1px; border-radius:2px 0 0 2px; }
-#sheet .seg-btn:last-of-type { border-radius:0 2px 2px 0; }
-#sheet .seg-btn[aria-pressed=true] { background:rgba(77,208,225,.14); border-color:var(--sig); color:var(--fg); }
-#sheet .seg-btn[aria-pressed=true] + .seg-btn { border-left-width:1px; }
-#sheet .seg-btn:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
-@media (hover:hover) { #sheet .seg-btn:hover { color:var(--fg); } }
-@media (pointer:coarse) { #sheet .seg-btn { min-height:var(--tap); } }
-html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
-
-.task-form .field { margin-bottom:8px; }
-.task-form .tf-lede { margin:4px 0 8px; font-size:12px; }
-.task-form .tf-go-ic { display:inline-flex; align-items:center; justify-content:center; flex:0 0 14px; width:14px; margin-right:0; }   /* a flex item that collapsed to 0 px (the icon overflowed it, so the label touched the glyph): a fixed 14 px box */
-.task-form .submit .bp5-button { gap:6px; }                                                                                              /* the icon-to-label gap the session form's Start button gets from its text span */
-#sheet textarea.task-prompt { min-height:96px; }
-.task-form .tf-schedule { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
-.task-form .tf-cronnote { font-size:12px; }
-.task-form .tf-optnote { margin-left:4px; }
-.task-form .tf-hint { margin-left:auto; align-self:center; font:11px/1.2 var(--font-mono); }
-#sheet .task-form .chip-btn[aria-pressed=true] { border-color:var(--sig); color:var(--fg); background:rgba(77,208,225,.14); }
-@media (max-width:599px) { .task-form .tf-hint { display:none; } }
-
-/* backlog cards: dashed until a session exists; the prompt head clamps at two lines */
-.task.backlog { border-style:dashed; }
-.task.pending { opacity:.55; }                                                          /* #311: added a moment ago, the board has not answered yet */
-.task .tk-prompt { margin:2px 0 4px; font-size:12px; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
-#page .tasks-board { margin:12px auto; }
-#page .tk-head .summary { flex:1 1 220px; }
-#page .tk-head .actions { margin-left:auto; }
-/* a phone: the title and + task share the first line, the summary takes its own line under them (not a button stranded under a two-line sentence) */
-@media (max-width:599px) { #page .tk-head .summary { order:3; flex:1 1 100%; } #page .tk-head .actions { order:2; } }
-
-/* ---------- tasks v2, second half (v0.5.14b / v0.5.15): the two-row card, chips, the result, the Move sheet, chains ---------- */
-
-/* a card is a tab stop (the m key opens its Move sheet) and a press that is held is a long press: no iOS callout, no text selection under a finger */
-#page .task:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
-.task[data-movable] { -webkit-touch-callout:none; }
-@media (pointer:coarse) { .task[data-movable] { -webkit-user-select:none; user-select:none; } }
-html.force-coarse .task[data-movable] { -webkit-user-select:none; user-select:none; }
-.task .tk-title-row { align-items:center; }
-.task.finished .title { color:var(--fg-2); }
-
-/* the chips under the meta line: who runs it, what happens next */
-.task .tk-chips { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; margin:0 0 6px; }
-.task .tk-chips .badge, .task .tk-chips .state { max-width:100%; }
-.task .tk-chips .badge .bp5-icon { margin-right:2px; vertical-align:-2px; }
-#page .task .tk-owner { display:inline-flex; align-items:center; gap:4px; max-width:100%; min-height:22px; padding:0 8px; text-decoration:none; }
-#page .task .tk-owner .tk-owner-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-#page .task .tk-owner .tk-owner-state { color:var(--dim); white-space:nowrap; }
-#page .task { container-type:inline-size; }                                  /* a narrow kanban column drops the state word of the owner chip (its glyph says it), so the session name stays whole */
-@container (max-width: 300px) { .task .tk-owner-state { display:none; } }
-@media (pointer:coarse) { #page .task .tk-owner { min-height:var(--tap); } }
-html.force-coarse #page .task .tk-owner { min-height:var(--tap); }
-.task .tk-ac-tag, .task .tk-closed, .task .tk-hold, .task .tk-chain-badge { display:inline-flex; align-items:center; gap:4px; }              /* an icon, a word and a countdown: spaced by the gap, not by text spaces a flex row trims */
-.task .tk-asked, .task .tk-hold { white-space:normal; border-radius:10px; }                                                                  /* these two may take two lines on a narrow card: a pill that is not a stadium */
-.task .tk-ac-why { font-weight:400; }
-.task .tk-pv { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:0 0 6px; min-width:0; }
-.task .tk-pv-why { min-width:0; overflow-wrap:anywhere; }
-
-/* the pending close: '⏻ auto-close 0:32' and Keep open */
-.task .tk-ac { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; margin:0 0 6px; }
-.task .tk-keep.bp5-button { min-height:var(--row-btn); }
-.task .tk-count { font-variant-numeric:tabular-nums; }
-
-/* the result of a finished task: its first line, opened the excerpt */
-.task .tk-result { margin:0 0 6px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
-.task .tk-result > summary { display:flex; align-items:center; gap:8px; min-height:var(--row-btn); padding:2px 8px; cursor:pointer; font-size:12px; list-style:none; }
-.task .tk-result > summary::-webkit-details-marker { display:none; }
-.task .tk-result > summary::before { content:"▸"; flex:none; color:var(--dim); }
-.task .tk-result[open] > summary::before { content:"▾"; }
-.task .tk-result-k { flex:none; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
-.task .tk-result-first { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-2); }
-.task .tk-result[open] .tk-result-first { display:none; }
-.task .tk-result-body { padding:6px 8px; border-top:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
-.task .tk-result-more.bp5-button { margin:0 8px 8px; min-height:var(--row-btn); }
-@media (pointer:coarse) { .task .tk-result > summary { min-height:var(--tap); } }
-html.force-coarse .task .tk-result > summary { min-height:var(--tap); }
-
-/* the action rows: two rows on one 3-column grid, every cell the same width and height (28 px with a mouse, 44 px on touch); a phone keeps row 1 and a ... cell */
-.task .tk-acts { display:grid; gap:6px; margin-top:6px; }
-.task .tk-r { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; align-items:stretch; }
-.task .tk-r > .bp5-button, .task .tk-confirm > .row > .bp5-button { width:100%; min-width:0; min-height:var(--row-btn); padding:0 4px; justify-content:center; font-size:12px; }
-.task .tk-r .bp5-button-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.task .tk-confirm { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-.task .tk-confirm > .row { display:contents; }
-#page .task .tk-r > .tk-more.bp5-button.bp5-minimal { border:1px solid var(--line); }                    /* an icon-only minimal button is borderless elsewhere; here it is a cell of the grid */
-
-/* the Move sheet (long press, the card's Move… or the m key): labelled sections, the two lanes on 52 px buttons, the sessions that can take it */
-.tk-move .tk-sec, .tk-dispatch .tk-sec, .tk-chains .tk-sec { margin:14px 0 6px; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
-.tk-move .tk-sec:first-child { margin-top:0; }
-.tk-lane-btns { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
-#sheet .tk-lane-btn.bp5-button { min-height:52px; height:auto; flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; padding:6px 12px; text-align:left; }
-.tk-lane-top { display:inline-flex; align-items:center; gap:6px; font-size:14px; font-weight:600; }
-.tk-lane-sub { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:400; color:var(--dim); }
-#sheet .tk-lane-btn.primary.tinted .tk-lane-sub { color:var(--fg-2); }
-.tk-move .tk-st { font-size:12px; }
-.tk-foot { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0, 1fr); gap:8px; margin-top:16px; }
-#sheet .tk-foot .bp5-button { width:100%; min-height:var(--tap); justify-content:center; }
-
-/* chains: connected steps, each with its status; scrolls sideways when they do not fit */
-.tk-chains { margin:0 0 10px; }
-.tk-chains .tk-sec { margin-top:0; }
-.tk-chain { display:flex; align-items:stretch; gap:6px; padding:2px 0 6px; overflow-x:auto; scrollbar-width:thin; }
-.tk-link { flex:0 0 auto; align-self:center; color:var(--dim); }
-#page .tk-step { flex:0 0 auto; display:grid; grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"n t" "n s"; column-gap:8px; align-items:center; min-width:150px; max-width:240px; min-height:var(--row-btn); padding:6px 10px;
-                 border:1px solid var(--line); border-radius:2px; background:var(--panel); color:var(--fg); font:12px/1.3 var(--font-ui); text-align:left; cursor:pointer; }
-#page .tk-step[data-phase=running] { border-color:var(--sig-bd); }
-#page .tk-step[data-phase=failed] { border-color:var(--bad); }
-#page .tk-step[data-phase=queued], #page .tk-step[data-phase=backlog] { border-style:dashed; }
-#page .tk-step:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
-@media (hover:hover) { #page .tk-step:hover { border-color:var(--sig); } }
-.tk-step-n { grid-area:n; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--line-strong); border-radius:50%; font:600 11px/1 var(--font-mono); color:var(--fg-2); }
-.tk-step-title { grid-area:t; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-.tk-step-st { grid-area:s; color:var(--dim); white-space:nowrap; }
-@media (pointer:coarse) { #page .tk-step { min-height:var(--tap); } }
-html.force-coarse #page .tk-step { min-height:var(--tap); }
-
-/* v0.5.16: the schedule and batch forms' agent picker (Claude | Codex, with Codex's model and reasoning), and the Schedules tab's chains as connected cards */
-.job-form .lx-agentbox, .batch-form .lx-agentbox { display:flex; flex-direction:column; gap:12px; min-width:0; }
-.job-form .lx-hint, .batch-form .lx-hint { margin:4px 0 0; font-size:12px; }
-.job-form .lx-why:empty, .batch-form .lx-why:empty { display:none; }
-#page .pj-windows { flex:1 1 220px; min-width:0; }
-#page .pj-run-line { display:inline-flex; align-items:baseline; gap:4px; min-width:0; }
-#page .pj-chains { margin:14px 0 0; min-width:0; }
-#page .pj-sec { margin:0 0 6px; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
-#page .pj-chain { margin:0 0 12px; padding:8px 10px 10px; border:1px solid var(--line); border-radius:2px; background:var(--panel); min-width:0; }
-#page .pj-chain-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; margin:0 0 8px; }
-#page .pj-chain-title { margin:0; font-size:13px; font-weight:600; }
-#page .pj-steps { list-style:none; margin:0; padding:0 0 4px; display:flex; align-items:stretch; overflow-x:auto; scrollbar-width:thin; }
-#page .pj-step { position:relative; flex:1 0 200px; max-width:320px; display:flex; flex-direction:column; align-items:flex-start; gap:4px; margin:0 28px 0 0; padding:8px 10px; border:1px solid var(--line-strong); border-radius:2px; background:var(--bg); min-width:0; }
-#page .pj-step:last-child { margin-right:0; }
-#page .pj-step:not(:last-child)::after { content:'→'; position:absolute; right:-23px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:14px; }   /* the connector: an arrow in the gap between two cards */
-#page .pj-step[data-phase=running] { border-color:var(--sig-bd); }
-#page .pj-step[data-phase=failed] { border-color:var(--bad); }
-#page .pj-step[data-phase=queued], #page .pj-step[data-phase=backlog] { border-style:dashed; }
-#page .pj-step-n { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--line-strong); border-radius:50%; font:600 11px/1 var(--font-mono); color:var(--fg-2); }
-#page .pj-step-head { display:flex; align-items:baseline; gap:6px; min-width:0; max-width:100%; }
-#page .pj-step-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-#page .pj-step-st { color:var(--dim); white-space:nowrap; }
-#page .pj-step-res { margin:0; font-size:12px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
-#page .pj-step button { margin-top:2px; min-height:var(--row-btn); }
-@media (max-width:640px) {
-  #page .pj-steps { flex-direction:column; overflow-x:visible; }
-  #page .pj-step { flex:0 0 auto; max-width:none; margin:0 0 26px 0; }
-  #page .pj-step:last-child { margin-bottom:0; }
-  #page .pj-step:not(:last-child)::after { content:'↓'; right:auto; left:16px; top:auto; bottom:-23px; transform:none; }              /* stacked: the arrow points down */
-}
-
-/* the 'Then…' builder in the task form, and the dispatch-mode form behind Options… */
-.task-form .tf-then { margin:4px 0 8px; }
-.task-form .tf-steps { display:flex; flex-direction:column; gap:10px; margin:6px 0; }
-.task-form .tf-step { padding:8px 10px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
-.task-form .tf-step .field { margin-bottom:6px; }
-.task-form .tf-step-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
-.task-form .tf-step-k { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
-.task-form .tf-step-add.bp5-button { min-height:var(--row-btn); }
-.tk-dispatch .field { margin-bottom:8px; }
-
-/* the session picker behind the Move sheet's running-session list (and Send to session) */
-.tk-pick.bp5-button { flex-wrap:wrap; gap:2px 10px; height:auto; min-height:var(--tap); padding:6px 10px; }
-.tk-pick.off { opacity:.55; }
-.tk-pick .tk-last { flex:1 1 100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.tk-note, .pick-hint { margin:0 0 8px; font-size:12px; }
-.pick-hint { margin-top:10px; }
-@media (pointer:coarse) { .task-form details > summary { line-height:var(--tap); } }
-html.force-coarse .task-form details > summary { line-height:var(--tap); }
-
-/* the Home usage card links to the Usage page (v0.5.17): gauges are anchors, 'Usage →' is the card's more link */
-#page a.gauge { color:inherit; text-decoration:none; }
-@media (hover:hover) { #page a.gauge:hover .g-val { text-decoration:underline; } }
-#page .uc-tools { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
-#page .uc-more { font:12px/1.5 var(--font-mono); white-space:nowrap; text-decoration:none; }
-@media (pointer:coarse) { #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); } #page a.gauge { min-height:var(--tap); } }
-html.force-coarse #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); }
-html.force-coarse #page a.gauge { min-height:var(--tap); }
 
 /* ---------- v0.5.6d: settings rows, search results, the Agents legend ---------- */
 
@@ -733,19 +243,33 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }
 
-/* ---------- v0.5.13: the diff and pull request sheet (home.js openTaskModal, was the legacy #modal) ---------- */
-/* sections with small-caps labels (--dim, 10.5 px, 600, .07em) and hairlines between them; the diff keeps its own scroll box */
-.tm-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-width:0; overflow-wrap:anywhere; }
-.tm-sec { margin:12px 0 0; padding-top:10px; border-top:1px solid var(--line-soft); min-width:0; }
-.tm-k { margin:0 0 6px; font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); }
-.tm-line { font-size:12px; overflow-wrap:anywhere; }
-.tm-line:empty { display:none; }
-.tm-tabs:empty { display:none; }
-#sheet .tm-seg { display:flex; width:100%; max-width:100%; }                          /* one full-width track (the sheet's own .seg-btn rules carry an id: these match them) */
-#sheet .tm-seg .seg-btn { flex:1 1 auto; min-width:0; padding:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
-.tm-sec .diffbox { margin:8px 0 0; position:relative; }                          /* diff2html lays its line numbers out absolutely: without a positioned box they stay put when the sheet scrolls and land over the next section */
-.tm-form { margin:0; }
-.tm-form textarea { min-height:110px; }
+
+/* Shared by Project and Usage: keep pressed controls available on a cold route. */
+#page .pj-switch { display:inline-flex; flex-wrap:wrap; gap:4px; }
+#page .pj-repo-btn[aria-pressed=true], #page .pj-toolbar button[aria-pressed=true] { color:var(--fg); background:rgba(77,208,225,.14); box-shadow:inset 0 0 0 1px var(--sig); }
+
+/* Shared segmented controls: Home, Tasks, Quad and project toolbars. */
+#page .seg-ctl { display:inline-flex; align-items:center; gap:0; }
+#page .seg-ctl .seg-k { margin-right:8px; }
+#page .seg-btn { min-height:28px; padding:0 12px; border:1px solid var(--line-strong, var(--line)); border-left-width:0; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-ui); cursor:pointer; }
+#page .seg-btn:first-of-type { border-left-width:1px; border-radius:2px 0 0 2px; }
+#page .seg-btn:last-of-type { border-radius:0 2px 2px 0; }
+#page .seg-btn[aria-pressed=true] { background:rgba(77,208,225,.14); border-color:var(--sig); color:var(--fg); }
+#page .seg-btn[aria-pressed=true] + .seg-btn { border-left-width:1px; }
+@media (hover:hover) { #page .seg-btn:hover { color:var(--fg); } }
+
+
+/* Shared notes also appear on the Agents roster. */
+#page .unote { margin:6px 0 0; }
+#page .unote.warn { color:var(--warn); }
+
+/* Status rows are shared by task sheets and Team views. */
+.tm-status { margin-top:8px; min-height:1.4em; overflow-wrap:anywhere; }
+.pj-gotchas { min-width:0; }
+@media (pointer:coarse) { #page .seg-btn { min-height:var(--tap); } }
+html.force-coarse #page .seg-btn { min-height:var(--tap); }
+
+/* Actions are shared by task sheets and Settings > Team, including touch targets. */
 .tm-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .tm-merge { display:inline-flex; flex-wrap:wrap; align-items:center; gap:8px; }
 @media (max-width:599px) {                                                                      /* a two-column grid of equal cells; Merge (destructive) is last and takes the whole row, Confirm | Cancel share it */
@@ -755,112 +279,5 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
   .tm-merge > button { width:100%; justify-content:center; min-width:0; }
   .tm-merge > button:only-child { grid-column:1 / -1; }
 }
-.tm-status { margin-top:8px; min-height:1.4em; overflow-wrap:anywhere; }
 @media (pointer:coarse) { .tm-actions .bp5-button, .tm-merge .bp5-button { min-height:var(--tap); } }
 html.force-coarse .tm-actions .bp5-button, html.force-coarse .tm-merge .bp5-button { min-height:var(--tap); }
-
-/* ---------- v0.5.13: create from anywhere (the Home block's + task, the quad's empty tile) ---------- */
-#page .pblock .pb-add-task { margin-left:0; }
-#page .pblock .pb-add.hidden + .pb-add-task { margin-left:auto; }                    /* a project that can take a task but no session: the lone button keeps the right edge */
-
-/* ---------- v0.5.13: the launcher sheet (launcher.js openLauncher; slice A). Sections are labelled fields; the segmented controls are the sheet's .seg-ctl on one full-width track ---------- */
-.lx-form .lx-k, .lx-form .field-label { margin:0; font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); }
-.lx-form .lx-agentbox { display:flex; flex-direction:column; gap:12px; min-width:0; }
-#sheet .lx-seg { display:flex; width:100%; max-width:100%; }
-#sheet .lx-seg .seg-btn { flex:1 1 auto; min-width:0; padding:0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
-#sheet .lx-seg .seg-btn:disabled, #sheet .lx-seg .seg-btn[disabled] { opacity:.45; cursor:not-allowed; }
-#sheet .lx-agent .seg-btn { font-weight:500; }
-#sheet .lx-chips .seg-btn[aria-pressed=true].hue-blue, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-violet, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-green, #sheet .lx-chips .seg-btn[aria-pressed=true].hue-slate { color:var(--hue); background:var(--hue-bg); border-color:var(--hue-bd); }
-.lx-form .lx-model { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.lx-form .lx-presets { align-items:center; }
-.lx-form .lx-pchip { display:inline-flex; align-items:stretch; }
-.lx-form .lx-pchip .chip-btn:first-child { border-top-right-radius:0; border-bottom-right-radius:0; }
-.lx-form .lx-pchip .lx-pdrop { min-width:var(--tap); padding:0 6px; border-left-width:0; border-top-left-radius:0; border-bottom-left-radius:0; color:var(--dim); }
-#sheet .lx-presets .chip-btn[aria-pressed=true] { border-color:var(--sig); color:var(--fg); background:rgba(77,208,225,.14); }
-.lx-form .lx-presets .lx-save { border-style:dashed; color:var(--dim); }
-.lx-form .lx-ptail { display:inline-flex; flex-wrap:nowrap; align-items:stretch; gap:6px; }                  /* the last preset and the save chip wrap as one: the save chip is never alone on a line */
-.lx-form .lx-saverow { display:flex; flex:1 1 100%; align-items:center; gap:6px; }
-.lx-form .lx-saverow input { flex:1 1 auto; min-width:0; }
-.lx-form .lx-promptbox { display:flex; flex-direction:column; align-items:stretch; gap:4px; min-width:0; }
-.lx-form .lx-promptbox .nl { display:none; align-self:flex-end; }
-@media (pointer:coarse) { .lx-form .lx-promptbox .nl { display:inline-flex; } }
-html.force-coarse .lx-form .lx-promptbox .nl { display:inline-flex; }
-.lx-form .lx-hint, .lx-form .lx-lede { margin:4px 0 0; font-size:12px; }
-.lx-form .lx-why { display:none; }                                                              /* why Codex or Shell is off: a title shows it to a mouse, this line shows it on touch */
-@media (pointer:coarse) { .lx-form .lx-why:not(:empty) { display:block; } }
-html.force-coarse .lx-form .lx-why:not(:empty) { display:block; }
-.lx-form .lx-wt { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.lx-form .lx-adv > .field, .lx-form .lx-adv > .grid, .lx-form .lx-adv > .checks, .lx-form .lx-adv > .lx-wt, .lx-form .lx-adv > div { margin-top:10px; }
-.lx-form .lx-others { margin-top:10px; }
-.lx-form .lx-cmdbox { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.lx-form .lx-cmdhead { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.lx-form pre.lx-cmd { margin:0; padding:8px 10px; max-height:140px; overflow:auto; border:1px solid var(--line); border-radius:2px; background:var(--bg); color:var(--fg-2); font:12px/1.5 var(--font-mono); font-variant-ligatures:none; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; }
-.lx-form pre.lx-cmd .lx-t { white-space:nowrap; }                                                  /* a token never breaks (not after its --); the spaces between tokens are the wrap points */
-/* the checkbox rows (Fast mode, Ultracode, worktree, fork, Close the session, the bypass 'I understand') are 44 px on touch, as the import list's rows are */
-@media (pointer:coarse) { .lx-form .checks label { min-height:var(--tap); } }
-html.force-coarse .lx-form .checks label { min-height:var(--tap); }
-.lx-form .lx-danger { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--bad); border-radius:2px; background:var(--bad-bg); }
-.lx-form .lx-danger > .bp5-icon { flex:none; margin-top:2px; color:var(--bad-fg); }
-.lx-form .lx-danger-b { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:8px; }
-.lx-form .lx-danger-t { color:var(--fg); font-size:13px; line-height:1.45; }
-.lx-form .lx-ack { display:flex; flex-direction:column; gap:2px; }
-.lx-form .lx-ack .checks label { color:var(--fg); font-weight:600; }
-.job-fable { display:flex; flex-direction:column; gap:2px; }
-.job-fable .checks label { color:var(--fg); font-weight:600; }
-@media (pointer:coarse) { .job-fable .checks label { min-height:var(--tap); } }
-html.force-coarse .job-fable .checks label { min-height:var(--tap); }
-.lx-form .lx-foot { align-items:center; }
-.lx-form .lx-acct { flex:1 1 100%; display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; min-width:0; font-size:12px; }
-.lx-form .lx-acct-t { min-width:0; overflow-wrap:anywhere; }
-.lx-form .lx-acct .lx-switch { margin-left:auto; }
-.lx-form .lx-custom { margin:0; }
-/* v0.5.20: work from a GitHub issue. The launcher's quiet note under the issue select, the untrusted-author callout, and the task card's comment row. */
-.lx-form .lx-issue { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.lx-form .lx-issue-meta, .lx-form .lx-issue-note { margin:0; overflow-wrap:anywhere; }
-.lx-form .lx-issue-reset { vertical-align:baseline; }
-.task .tk-issue { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
-.task .tk-issue-body { margin:0; padding:6px 8px; border:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:200px; overflow:auto; }
-.task .tk-issue-link { font-variant-numeric:tabular-nums; }
-.task a.tk-issue-link { text-decoration:underline; text-underline-offset:2px; }   /* a link inside running text is told apart by more than its colour (axe link-in-text-block) */
-/* work an epic started on this board (issue #149): its phase in words with a glyph; a lost claim is a state of its own (amber is attention, never the only signal) */
-.task .tk-epic { margin:0 0 6px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
-.task .tk-epic-g { display:inline-block; min-width:1em; text-align:center; font-family:var(--font-glyph); }
-.task .tk-epic.lost, .task .tk-lostclaim { color:var(--warn-fg); }
-.task .tk-lostclaim { display:inline-flex; align-items:center; gap:4px; }
-
-.lx-form .lx-mem { min-width:0; }
-.pj-gotchas { min-width:0; }
-
-/* A node found on the tailnet (issue #134, NodeView.row in nodes.js; Settings > Nodes, and the node pages after it): the name and the online word, the chips, one plain line; the
-   action (Pair) sits at the right and drops under the text on a phone. A stale row (older than 30 s) is dimmed, never hidden. */
-.nd-list { display:flex; flex-direction:column; }
-.nd-row { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:6px 12px; padding:10px 0; border-bottom:1px solid var(--line-soft); }
-.nd-row .nd-main { display:flex; flex-direction:column; gap:4px; flex:1 1 240px; min-width:0; }
-.nd-row .nd-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; }
-.nd-row .nd-name { font-weight:500; color:var(--fg); overflow-wrap:anywhere; }
-.nd-row .nd-online { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); }
-.nd-row .nd-online .dot { margin-left:0; flex:none; }
-.nd-row .nd-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
-.nd-row .nd-chips .badge { max-width:100%; }
-.nd-row .nd-glyph { font-family:var(--font-mono); }
-#page .badge > .nd-glyph { margin-right:.3em; }                                     /* a chip's glyph never touches its words */
-.nd-row .nd-note { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
-.nd-row .nd-act { display:flex; align-items:center; flex:none; }
-.nd-row .nd-act .bp5-button { min-height:var(--row-btn); }
-.nd-row.stale .nd-name, .nd-row.stale .nd-chips { opacity:.75; }
-.nd-row .nd-key-soon { font-weight:500; color:var(--warn-fg); }
-.nd-row .nd-replaced { font-size:12px; line-height:1.5; font-weight:500; color:var(--warn-fg); overflow-wrap:anywhere; }
-.nd-row.superseded { box-shadow:inset 3px 0 0 var(--warn); padding-left:10px; }
-.nd-sheet .nd-rm-list { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
-.nd-sheet .nd-rm-row .set-pref-t { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; }
-
-/* The node chip (issue #139, nodes.js Nodes.chip): a bordered neutral chip, a two-letter monogram and the node's name. It never takes an agent or state hue; this board's own is dim. */
-.nchip { display:inline-flex; align-items:center; gap:5px; max-width:100%; min-height:18px; padding:0 7px 0 3px; border:1px solid var(--line-strong); border-radius:9px; color:var(--fg-2); font:11px/16px var(--font-ui); white-space:nowrap; vertical-align:middle; }
-.nchip.local { border-color:var(--line); color:var(--dim); }
-.nchip-m { display:inline-grid; place-items:center; min-width:16px; height:14px; padding:0 2px; border:1px solid var(--line); border-radius:3px; font:600 9px/1 var(--font-mono); letter-spacing:.02em; }
-.nchip-n { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.nchip-g { font-family:var(--font-mono); }
-#page .task .meta .nchip { margin-left:4px; }
-#page .rrow .rr-main .nchip, #page .peek-sub .nchip { flex:none; }
-
-#page .home-settings-pending { overflow-wrap:anywhere; }

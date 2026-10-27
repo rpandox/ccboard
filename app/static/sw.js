@@ -1,62 +1,45 @@
-/* ccboard service worker: offline shell (network-first; vendor and fonts cache-first) + Web Push. API and terminal are never cached.
-   This file is a template: /sw.js (app/main.py render_sw) fills in the build id and the list of static files,
-   both generated from one glob over app/static, so no file can be forgotten. */
+/* Release-scoped offline shell + Web Push. /sw.js stamps the board's asset
+   version and complete shell list. Installation must finish before activation. */
 'use strict';
-const CACHE = 'ccboard-shell-__ASSET_VERSION__';
+const RELEASE = '__ASSET_VERSION__';
+const CACHE = 'ccboard-shell-' + RELEASE;
 const SHELL = JSON.parse('__SHELL_JSON__');
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
-    // cache: 'reload' skips the browser's HTTP cache: /static/vendor/** and fonts are served with a one-year immutable
-    // Cache-Control, and only this versioned shell cache (its name carries the build id) decides when they change.
-    try { const c = await caches.open(CACHE); await c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))); } catch (_) { /* offline or 403 at install: keep going */ }
+    // addAll is atomic. A missing file rejects installation; the active worker
+    // and its complete release remain available. Never activate a partial shell.
+    const c = await caches.open(CACHE);
+    await c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })));
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k !== CACHE) await caches.delete(k);
-    await self.clients.claim();
-  })());
+  // Keep older releases for documents still running their boot.js. Navigation
+  // uses only this worker's complete shell; static lookups use the URL's release.
+  event.waitUntil(self.clients.claim());
 });
 
 function offline() { return new Response('offline', { status: 503, headers: { 'Content-Type': 'text/plain' } }); }
 
-async function remember(key, res) {
-  try { const c = await caches.open(CACHE); await c.put(key, res); } catch (_) { /* partial or opaque response: not cacheable */ }
-}
-
-// Network first, the cached copy when offline. `key` is what the response is stored under (the request, or '/' for a navigation).
-async function networkFirst(req, key) {
-  try {
-    const res = await fetch(req);
-    if (res.ok) { remember(key, res.clone()); return res; }
-    if (res.status >= 500) {                                   // the proxy answered for a board that is restarting (a deploy, a busy box):
-      const c = await caches.open(CACHE);                      // show the last shell; the page's own poll paints 'offline' and retries
-      const hit = await c.match(key);
-      if (hit) return hit;
-    }
-    return res;
-  } catch (_) {
-    const c = await caches.open(CACHE);
-    return (await c.match(key)) || offline();
-  }
-}
-
-// Cache first: vendor files and fonts are immutable under one build id, so a hit never touches the network; a miss (install
-// failed offline) refetches past the HTTP cache so a stale immutable copy from an older build can never come back.
-async function cacheFirst(req) {
-  const c = await caches.open(CACHE);
+async function releaseAsset(req, version) {
+  const c = await caches.open('ccboard-shell-' + version);
   const hit = await c.match(req);
   if (hit) return hit;
+  // Do not populate a complete release with responses from a later deployment.
+  // The server refuses a version it no longer has. Exact URL lookup also keeps
+  // pre-versioning workers from supplying an unversioned, incompatible loader.
+  try { return await fetch(req); } catch (_) { return offline(); }
+}
+
+async function navigation(req) {
   try {
-    const res = await fetch(new Request(req.url, { cache: 'reload' }));
-    if (res.ok) remember(req, res.clone());
-    return res;
-  } catch (_) {
-    return offline();
-  }
+    const res = await fetch(req);
+    if (res.ok || res.status < 500) return res;
+  } catch (_) { /* use the installed release as one complete unit */ }
+  const c = await caches.open(CACHE);
+  return (await c.match('/?v=' + RELEASE)) || offline();
 }
 
 self.addEventListener('fetch', (event) => {
@@ -67,11 +50,21 @@ self.addEventListener('fetch', (event) => {
   const path = url.pathname;
   if (path.startsWith('/api/') || path.startsWith('/tty') || path === '/healthz') return;
   if (req.mode === 'navigate') {
-    if (path === '/') event.respondWith(networkFirst(req, '/'));   // /term/... and every other document: network only
+    if (path === '/') event.respondWith(navigation(req));
     return;
   }
-  if (path.startsWith('/static/vendor/') || path.endsWith('.woff2')) event.respondWith(cacheFirst(req));   // immutable (see main.py cache headers)
-  else if (path.startsWith('/static/')) event.respondWith(networkFirst(req, req));
+  if (path.startsWith('/static/')) {
+    const version = url.searchParams.get('v');
+    if (version) event.respondWith(releaseAsset(req, version));
+    else if (path.endsWith('.woff2') || path.endsWith('.png') || path.startsWith('/static/vendor/')) {
+      // CSS-relative fonts and icons have no query of their own. Use the
+      // stylesheet's release when supplied, otherwise the active offline shell.
+      const parent = req.referrer ? new URL(req.referrer) : null;
+      const release = parent?.searchParams.get('v') || RELEASE;
+      url.searchParams.set('v', release);
+      event.respondWith(releaseAsset(new Request(url.href), release));
+    }
+  }
 });
 
 /* ---- Web Push (app/push.py payload_for, app/notify.py Notice.web_extra) ----
