@@ -13,7 +13,7 @@ function kw({ platform = LINUX, dialogs = [], active = null } = {}) {
   w.document.querySelectorAll = (sel) => (sel === 'dialog[open]' ? dialogs : []);
   Object.defineProperty(w.document, 'activeElement', { get: () => active, configurable: true });
   w.load('keymap.js');
-  w.run('globalThis.__t = 1000; Keymap.now = () => __t;');
+  w.run('Keymap.uninstall(); Keymap.reset(); globalThis.__t = 1000; Keymap.now = () => __t;');
   return w;
 }
 
@@ -37,18 +37,15 @@ const input = { tagName: 'INPUT' };
 
 // ---------------------------------------------------------------- load and specs
 
-test('keymap.js defines only: no DOM, storage, listener, timer or navigator access at load', () => {
-  const trap = (what) => new Proxy(function () {}, {
-    get(_t, prop) { if (prop === Symbol.toPrimitive || prop === 'then') return undefined; throw new Error(`load-time access to ${what}.${String(prop)}`); },
-    apply() { throw new Error(`load-time call of ${what}()`); },
-  });
-  const boom = (what) => () => { throw new Error(`load-time call of ${what}()`); };
-  const w = makeWorld({ document: trap('document'), localStorage: trap('localStorage'), sessionStorage: trap('sessionStorage'), navigator: trap('navigator'),
-    location: trap('location'), history: trap('history'), matchMedia: boom('matchMedia'), addEventListener: boom('window.addEventListener'),
-    setTimeout: boom('setTimeout'), setInterval: boom('setInterval'), fetch: boom('fetch') });
+test('keymap installs on evaluation and repeated install preserves one listener and one default table', () => {
+  const w = makeWorld();
   w.load('keymap.js');
-  assert.equal(w.run('Keymap.list.length'), 0, 'no binding is registered until install()');
-  assert.equal(w.run('Keymap.installed'), false);
+  assert.equal(w.run('Keymap.installed'), true);
+  const count = w.run('Keymap.help().length');
+  assert.ok(count > 20);
+  w.run('Keymap.install(); Keymap.install()');
+  assert.equal(w.run('Keymap.help().length'), count);
+  assert.equal(w.document.listeners.keydown.length, 1);
 });
 
 test('parse: keys, modifiers, aliases and chords; bad specs throw', () => {

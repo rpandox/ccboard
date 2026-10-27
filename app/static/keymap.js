@@ -1,5 +1,5 @@
-/* ccboard keymap (v0.5.3b): one document keydown listener and a table of bindings. Definition only at load: nothing here touches the
-   DOM, storage or a timer until main.js calls Keymap.install() (bindDefaults() + the listener). Classic script, one namespace (Keymap).
+/* ccboard keymap (v0.5.3b): one document keydown listener and a table of bindings. Installs on load; Keymap.install()
+   idempotently binds defaults, attaches its listener and replays queued feature bindings. Classic script, one namespace (Keymap).
 
    A spec is one key ('j', '?', '/', '[', 'Enter', 'Esc'), a modified key ('mod+k', 'mod+1', 'mod+\\', 'mod+enter'; mod is the Command key on
    macOS and iPadOS and Ctrl elsewhere, read from navigator.platform on every event) or a chord of keys typed within 800 ms ('g h').
@@ -299,6 +299,7 @@ Keymap.listen = function () {
 Keymap.install = function () {
   Keymap.bindDefaults();
   Keymap.listen();
+  if (typeof KeyBindings !== 'undefined') KeyBindings.flush();
 };
 
 Keymap.uninstall = function () {
@@ -307,3 +308,6 @@ Keymap.uninstall = function () {
   Keymap.installed = false;
   Keymap.pending = null;
 };
+
+// Every loading path (including mouse-opened help) installs exactly once.
+Keymap.install();

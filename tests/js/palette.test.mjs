@@ -1045,7 +1045,7 @@ test('lists longer than 30 rows get cv-auto (the CSS class that skips layout off
 
 test('main.js: installs the keyboard layer before the shell, marks html.pwa, and offers a share once the first state is in', async () => {
   const { w } = world({ search: '?text=read%20this&url=https%3A%2F%2Fexample.com', keys: false });
-  assert.equal(w.get('Keymap.installed'), false);
+  assert.equal(w.get('Keymap.installed'), true, 'keymap installs on every loading path');
   w.run('poll = async () => {}; registerServiceWorker = () => {}; installLifecycleListeners = () => {};');
   w.run('globalThis.__order = []; { const real = Keymap.install; Keymap.install = function () { __order.push("keymap"); return real.apply(this, arguments); }; }');
   w.run('globalThis.installShell = () => { __order.push("shell"); };');

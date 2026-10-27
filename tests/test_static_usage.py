@@ -271,7 +271,7 @@ def test_sw_shell_carries_the_usage_assets(lite_client):
     assert r.status_code == 200
     m = re.search(r"JSON\.parse\('([^']*)'\)", r.text)
     assert m, "SHELL = JSON.parse('...') not found in the served worker"
-    shell = json.loads(m.group(1))
+    shell = [u.split("?", 1)[0] for u in json.loads(m.group(1))]
     for must in ("/static/charts.css", "/static/charts.js", "/static/pages/usage.js",
                  "/static/vendor/uplot/uPlot.min.css", "/static/vendor/uplot/uPlot.iife.min.js"):
         assert must in shell, f"{must} is missing from the service-worker SHELL: the Usage page would not open offline"

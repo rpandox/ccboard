@@ -138,7 +138,7 @@ function demoOn() {
   return demoFlag;
 }
 async function api(method, path, body) {
-  if (demoOn()) { if (typeof demoApi !== 'function') await loadAsset('/static/demo-api.js'); return demoApi(method, path, body); }
+  if (demoOn()) { if (typeof demoApi !== 'function') await (typeof Lazy !== 'undefined' ? Lazy.load('demo') : loadAsset('/static/demo-api.js')); return demoApi(method, path, body); }
   const headers = { 'X-CCBoard': '1' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -399,10 +399,11 @@ function savePrefs(key, v) { try { localStorage.setItem(key, JSON.stringify(v));
 /* Lazy vendored assets (diff2html today, uPlot later): one <link>/<script> injection per file, memoised. */
 const assetLoading = {};
 function loadAsset(path) {
+  const url = typeof Lazy !== 'undefined' ? Lazy.url(path) : path;
   if (assetLoading[path]) return assetLoading[path];
   assetLoading[path] = new Promise((resolve, reject) => {
-    if (path.endsWith('.css')) { const css = el('link', { rel: 'stylesheet', href: path }); css.onload = () => resolve(); css.onerror = () => reject(new Error('could not load ' + path)); document.head.append(css); return; }
-    const s = el('script', { src: path }); s.defer = true; s.async = false; s.onload = () => resolve(); s.onerror = () => reject(new Error('could not load ' + path)); document.head.append(s);
+    if (path.endsWith('.css')) { const css = el('link', { rel: 'stylesheet', href: url }); css.onload = () => resolve(); css.onerror = () => reject(new Error('could not load ' + path)); document.head.append(css); return; }
+    const s = el('script', { src: url }); s.defer = true; s.async = false; s.onload = () => resolve(); s.onerror = () => reject(new Error('could not load ' + path)); document.head.append(s);
   });
   assetLoading[path].catch(() => { delete assetLoading[path]; });
   return assetLoading[path];

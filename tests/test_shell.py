@@ -15,7 +15,7 @@ SHELL_EXTS = {".js", ".css", ".woff2", ".webmanifest", ".png"}
 def shell_in(sw_text):
     m = re.search(r"JSON\.parse\('([^']*)'\)", sw_text)
     assert m, "SHELL = JSON.parse('...') not found in the served worker"
-    return json.loads(m.group(1))
+    return [u.split("?", 1)[0] for u in json.loads(m.group(1))]
 
 
 def static_copy(tmp_path, monkeypatch):
@@ -34,7 +34,7 @@ def test_sw_is_generated_from_the_shell(lite_client):
     assert r.status_code == 200 and "javascript" in r.headers["content-type"]
     assert r.headers["cache-control"] == "no-cache"
     assert "__" not in r.text                       # no placeholder survives the substitution
-    assert "'ccboard-shell-" + main.ASSET_VERSION + "'" in r.text and len(main.ASSET_VERSION) == 12
+    assert "const RELEASE = '" + main.ASSET_VERSION + "'" in r.text and len(main.ASSET_VERSION) == 12
     # the board serves what it computed at start: compare with the import-time constants only (a static file edited
     # mid-run must not fail this; the hashing and rendering rules are covered on frozen copies below)
     assert shell_in(r.text) == shell_in(main.SW_JS.decode())
@@ -298,14 +298,13 @@ def test_maskable_icon_in_the_shell_and_screenshots_left_out_on_purpose(lite_cli
         "screenshots still count towards the asset version"
 
 
-def test_sw_precaches_past_the_http_cache_and_serves_vendor_cache_first(lite_client):
-    """/static/vendor/** and *.woff2 are served immutable for a year under unversioned URLs: only this versioned shell cache
-    may decide when they change, so the worker must never read them through the browser's HTTP cache."""
+def test_sw_precaches_past_the_http_cache_and_serves_exact_release_cache_first(lite_client):
     sw = lite_client.get("/sw.js", headers=H).text
     assert "cache: 'reload'" in sw
-    assert "path.startsWith('/static/vendor/')" in sw and "cacheFirst(req)" in sw
-    assert "fetch(new Request(req.url, { cache: 'reload' }))" in sw
-    assert "res.status >= 500" in sw, "a 5xx from the proxy during a deploy serves the cached shell instead of a 502 page"
+    assert "releaseAsset(req, version)" in sw
+    assert "c.match(req)" in sw
+    assert "res.status < 500" in sw, "a proxy 5xx falls back to the installed shell"
+    assert "c.match('/?v=' + RELEASE)" in sw
 
 
 def test_cache_policy_vendor_and_fonts_immutable_the_app_no_cache(lite_client):

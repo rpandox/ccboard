@@ -474,7 +474,11 @@ function homeRender(st) {
   for (const [k, btn] of Object.entries(r.group.ccBtns)) btn.setAttribute('aria-pressed', model.mode === k ? 'true' : 'false');
   homePatchAway(s);
   if (!teamUse(() => TeamView.homePaint(r)) && r.team) { r.team.remove(); r.team = null; }                          // Team (issue #200): one quiet line while a repository is shared; with none shared there is no node at all
-  Nodes.use(() => Nodes.slot('strip', r.away));                                     // paired nodes: the Nodes strip after the away line, before the inbox (nodes-hub.js)
+  Nodes.use(() => {
+    Nodes.slot('strip', r.away);
+    // Both lazy features insert after away; keep Team above Nodes in either load order.
+    if (r.team && r.away.parentNode && r.away.nextSibling !== r.team) r.away.parentNode.insertBefore(r.team, r.away.nextSibling);
+  });
   homePatchInbox(s);
   Nodes.use(() => Nodes.slot('inbox', r.inboxHost, { limit: HOME_INBOX_LIMIT }));   // and the inbox items of other nodes under the local ones
   homePatchSched(s);

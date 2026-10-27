@@ -755,7 +755,7 @@ test('unmounting (a route change) tears every tile down: iframe.src = about:blan
   const logs = {};
   for (const t of [CK, P3, P2]) { logs[t] = []; spy(frameOf(w, t), logs[t]); }
   env.w.get('Quad').current.setMode(P2, 'tail');
-  const before = w.run('Keymap.list.filter((b) => /^Quad/.test(b.help)).length');
+  const before = w.run("Keymap.list.filter((b) => b.group === 'Quad' && b.spec.startsWith('mod+alt+')).length");
   assert.equal(before, 5, 'five help-only entries while the page is up');
   assert.ok(live(w).sub.includes(P2), 'the tail subscribed');
   w.location.hash = '#/memory';
@@ -766,8 +766,8 @@ test('unmounting (a route change) tears every tile down: iframe.src = about:blan
   assert.equal(page(w).querySelectorAll('.qtile').length, 0);
   assert.ok(ros.length >= 4 && ros.every((r) => r.gone), 'every ResizeObserver disconnected (the page\'s and one per tile)');
   assert.equal(w.get('Quad').current, null);
-  assert.equal(w.run('Keymap.list.filter((b) => /^Quad/.test(b.help)).length'), 0, 'the help entries left with the page');
-  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 0, 'no document keydown listener is left behind');
+  assert.equal(w.run("Keymap.list.filter((b) => b.group === 'Quad' && b.spec.startsWith('mod+alt+')).length"), 0, 'the help entries left with the page');
+  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 1, 'only the global keymap listener remains');
   const before2 = calls(w).length;
   env.clock.advance(5000);
   assert.equal(calls(w).length, before2, 'a timer that was still pending (TermKit\'s fit debounce) finds the iframes gone and does nothing');
@@ -1111,7 +1111,7 @@ test('Ctrl+Alt+K with nothing waiting says so', () => {
 
 test('the help dialog lists the quad shortcuts while the page is up', () => {
   const { w } = quadWorld({ hash: '#/quad' });
-  const help = plain(w.run('Keymap.help()')).filter((h) => h.group === 'Quad');
+  const help = plain(w.run('Keymap.help()')).filter((h) => h.group === 'Quad' && h.keys[0].startsWith('Ctrl+Alt+'));
   assert.deepEqual(help.map((h) => h.keys[0]), ['Ctrl+Alt+1…0', 'Ctrl+Alt+Z', 'Ctrl+Alt+K', 'Ctrl+Alt+R', 'Ctrl+Alt+F']);
 });
 
@@ -2117,7 +2117,7 @@ test('leaving the page leaves fullscreen: the class goes, the browser is told, n
   assert.equal(inFs(w), false);
   assert.equal(api.exits, 1);
   assert.equal(w.document.listeners.fullscreenchange ? w.document.listeners.fullscreenchange.length : 0, 0, 'no fullscreenchange listener is left behind');
-  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 0);
+  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 1);
 });
 
 test('F is full screen and Z zooms the active tile (the keymap), Ctrl+Alt+F works from inside a terminal; all inert in a field', () => {
@@ -2857,7 +2857,7 @@ test('quad.js is registered once, as the quad route, and does nothing at load', 
   assert.deepEqual(plain(w.run("Object.keys(pages).filter((k) => k === 'quad')")), ['quad']);
   assert.equal(w.get('Quad').current, null);
   assert.equal(w.run('PLACEHOLDER_INFO.quad'), undefined);
-  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 0, 'no listener before the page is mounted');
+  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 1, 'only the global keymap listener before mount');
 });
 
 // ---------------------------------------------------------------- v0.5.13: a new session from an empty tile (openLauncher)

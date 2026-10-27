@@ -65,7 +65,7 @@ function makeNode(tag) {
  *   world.document.nodes selector -> node map used by document.querySelector (default: nothing, so querySelector returns null)
  */
 export function makeWorld(extra0 = {}) {
-  const { companions = true, ...extra } = extra0;            // companions: false keeps the lazy halves out (lazy.test.mjs makes the loader fetch them)
+  const { companions = true, primitives = true, ...extra } = extra0;            // companions: false keeps the lazy halves out (lazy.test.mjs makes the loader fetch them)
   const win = emitter();
   const doc = emitter();
   let hash = '';
@@ -107,7 +107,7 @@ export function makeWorld(extra0 = {}) {
   const ctx = vm.createContext(sandbox);
   if (!companions) NO_COMPANIONS.add(ctx);
   vm.runInContext('globalThis.window = globalThis;', ctx);
-  loadScript(ctx, 'refs.js');
+  if (primitives) loadScript(ctx, 'refs.js');
   if (companions) loadScript(ctx, 'nodes.js');       // index.html loads nodes.js (the Ref helpers) right after core.js; it is definition-only and needs nothing, so every world has it (never load it again)
   if (companions) loadScript(ctx, 'nodes-pair.js');  // the pairing half (lazy.js loads it with the settings bundle, not index.html); definition-only too, so a world that needs the pair words and the demo's writes has it up front
   return {
@@ -161,7 +161,7 @@ function runCompanions(ctx, abs) {
 export function loadScript(ctx, file) {
   const abs = path.isAbsolute(file) ? file : path.join(STATIC, file);
   if (!fs.existsSync(abs)) throw new Error(`${path.basename(abs)} missing: expected ${abs}`);
-  if (abs === path.join(STATIC, 'nodes-pair.js') && vm.runInContext("typeof NodeView !== 'undefined' && typeof NodeView.peerRow", ctx) === 'function') return;     // makeWorld already ran it
+  if (abs === path.join(STATIC, 'nodes-pair.js') && vm.runInContext("typeof NodeView !== 'undefined' && NodeView.SCOPES && typeof NodeView.peer", ctx) === 'function') return;     // makeWorld already ran it
   if (abs === path.join(STATIC, 'refs.js') && vm.runInContext('typeof Ref', ctx) !== 'undefined') return;     // makeWorld already ran it (a `const Ref` cannot be declared twice); index.html's list still names it
   if (abs === path.join(STATIC, 'nodes.js') && vm.runInContext('typeof NodeView', ctx) !== 'undefined') return;
   new vm.Script(fs.readFileSync(abs, 'utf8'), { filename: abs }).runInContext(ctx);

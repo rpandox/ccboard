@@ -242,3 +242,19 @@ Nodes.mark = function (at, item) {
   at.parentNode.insertBefore(n, at.nextSibling);
   at.ccNode = n;
 };
+
+/* Bindings may be registered before the keyboard bundle arrives. The returned
+   disposer cancels a queued binding too, so a departed route cannot leak keys. */
+const KeyBindings = {
+  pending: new Set(),
+  bind(...args) {
+    if (typeof Keymap !== 'undefined' && Keymap.installed) return Keymap.bindKey(...args);
+    const entry = { args, off: null };
+    KeyBindings.pending.add(entry);
+    return () => { KeyBindings.pending.delete(entry); if (entry.off) entry.off(); };
+  },
+  flush() {
+    for (const entry of KeyBindings.pending) entry.off = Keymap.bindKey(...entry.args);
+    KeyBindings.pending.clear();
+  },
+};

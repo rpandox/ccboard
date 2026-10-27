@@ -23,7 +23,7 @@ const LAZY_BUNDLES = {
   tabs: { js: ['/static/tabs.js'], probe: () => typeof tabs === 'function' },
   quickeditor: { js: ['/static/quick-editor.js'] },
   app: { js: ['/static/core.js', '/static/refs.js', '/static/components.js', '/static/session-model.js', '/static/accounts.js', '/static/inbox-model.js', '/static/page-actions.js', '/static/banner.js', '/static/widgets-core.js', '/static/live.js', '/static/shell.js', '/static/router.js'], css: [{ href: '/static/vendor/blueprint/blueprint-used.css', rank: 0 }, { href: '/static/vendor/blueprint/blueprint-icons.css', rank: 1 }, { href: '/static/tokens.css', rank: 2 }, { href: '/static/style.css', rank: 3 }, { href: '/static/shell.css', rank: 4 }, { href: '/static/pages.css', rank: 5 }] },
-  main: { js: ['/static/main.js'] },
+  main: { needs: ['app'], js: ['/static/main.js'] },
   home: { needs: ['sessionrows', 'inboxcards', 'restartnotice'], js: ['/static/pages/home.js'], css: [{ href: '/static/pages/home.css', rank: 40 }], probe: () => typeof homePage !== 'undefined' },
   sessionrows: { js: ['/static/pages/agents.js', '/static/page-selection.js', '/static/session-groups.js'], css: [{ href: '/static/pages/session-row.css', rank: 41 }], probe: () => typeof sessionCard === 'function' },
   inboxcards: { needs: ['sessionrows'], js: ['/static/inbox-cards.js'], probe: () => typeof inboxCard === 'function' },
@@ -71,6 +71,86 @@ const LAZY_BUNDLES = {
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 111 }], probe: () => typeof wizPage !== 'undefined' },
 };
 
+/* A declared export from EVERY script, including the secondary members of a
+   bundle. load fires even after a runtime exception, so it is not a success probe.
+   No eval/Function: these checks remain compatible with default-src 'self'. */
+const LAZY_EXPORTS = {
+  '/static/lazy.js': () => Lazy !== undefined,
+  '/static/demo-api.js': () => demoApi !== undefined,
+  '/static/account-actions.js': () => accountSwitch !== undefined && !accountSwitch.lazyStub,
+  '/static/settings-restart.js': () => settingsRestart !== undefined,
+  '/static/settings-restart-actions.js': () => settingsRestartPoll !== undefined,
+  '/static/tabs.js': () => tabs !== undefined,
+  '/static/quick-editor.js': () => quickReplyEditor !== undefined && !quickReplyEditor.lazyStub,
+  '/static/core.js': () => api !== undefined,
+  '/static/refs.js': () => Ref !== undefined,
+  '/static/components.js': () => toast !== undefined,
+  '/static/session-model.js': () => SESSION_RANK !== undefined,
+  '/static/accounts.js': () => acctStore !== undefined,
+  '/static/inbox-model.js': () => Inbox !== undefined,
+  '/static/page-actions.js': () => deployNow !== undefined,
+  '/static/banner.js': () => homeAway !== undefined,
+  '/static/widgets-core.js': () => Widgets !== undefined,
+  '/static/live.js': () => Live !== undefined,
+  '/static/shell.js': () => Shell !== undefined,
+  '/static/router.js': () => route !== undefined,
+  '/static/main.js': () => firstStateReady !== undefined,
+  '/static/pages/home.js': () => homePage !== undefined,
+  '/static/pages/agents.js': () => sessionCard !== undefined,
+  '/static/page-selection.js': () => Pages !== undefined,
+  '/static/session-groups.js': () => homeGroupNode !== undefined,
+  '/static/inbox-cards.js': () => inboxCard !== undefined,
+  '/static/pages/inbox.js': () => inboxPage !== undefined,
+  '/static/pages/widgets.js': () => Widgets.usageCard !== undefined,
+  '/static/components-tasks.js': () => taskCard !== undefined,
+  '/static/task-views.js': () => renderJobs !== undefined,
+  '/static/pages/tasks.js': () => tasksPage !== undefined,
+  '/static/pages/search.js': () => searchPage !== undefined,
+  '/static/pages/session.js': () => sessionPeek !== undefined,
+  '/static/pages/placeholders.js': () => PLACEHOLDER_INFO !== undefined,
+  '/static/nodes.js': () => NodeView !== undefined,
+  '/static/page-keys.js': () => Pages.act !== undefined,
+  '/static/keymap.js': () => typeof Keymap.install === 'function' && Keymap.installed,
+  '/static/shell-tree.js': () => Shell.dirKey !== undefined,
+  '/static/shell-dock.js': () => Shell.dockMount !== undefined,
+  '/static/pool-usage.js': () => paintPoolStrip !== undefined,
+  '/static/bare-play.js': () => demoBare !== undefined,
+  '/static/bare.js': () => Shell.bareDevice !== undefined,
+  '/static/shell-create.js': () => Shell.pickRepo !== undefined,
+  '/static/task-sheets.js': () => diffSideControl !== undefined,
+  '/static/launcher.js': () => launcherSchema !== undefined,
+  '/static/launcher-node.js': () => lxnKit !== undefined,
+  '/static/palette.js': () => Palette !== undefined,
+  '/static/dnd.js': () => Dnd !== undefined,
+  '/static/tree.js': () => Tree !== undefined,
+  '/static/termkit.js': () => TermKit !== undefined,
+  '/static/pages/memory.js': () => Memory !== undefined,
+  '/static/pages/project.js': () => projectPage !== undefined,
+  '/static/pages/agents-page.js': () => agentsPage !== undefined,
+  '/static/nodes-pair.js': () => NodeView.peer !== undefined && Array.isArray(NodeView.SCOPES),
+  '/static/pages/doctor.js': () => doctorStore !== undefined,
+  '/static/pages/settings.js': () => settingsPage !== undefined,
+  '/static/nodes-hub.js': () => Nodes.ready === true,
+  '/static/pages/node.js': () => nodePage !== undefined,
+  '/static/pages/epic.js': () => epicPage !== undefined,
+  '/static/pages/epic-new.js': () => epicNewOpen !== undefined,
+  '/static/team.js': () => Team !== undefined,
+  '/static/pages/team.js': () => TeamView !== undefined,
+  '/static/nodes-worker.js': () => EpicWorker !== undefined,
+  '/static/charts.js': () => Charts !== undefined,
+  '/static/pages/usage.js': () => Usage !== undefined,
+  '/static/pages/quad.js': () => Quad !== undefined,
+  '/static/pages/onboarding.js': () => wizPage !== undefined,
+};
+
+function lazyUrl(path) {
+  const release = typeof BOOT_RELEASE !== 'undefined' ? BOOT_RELEASE : document.documentElement?.getAttribute('data-release');
+  return release && release !== '__ASSET_VERSION__' ? path + '?v=' + encodeURIComponent(release) : path;
+}
+function lazyExport(src) {
+  try { return !!(LAZY_EXPORTS[src] && LAZY_EXPORTS[src]()); } catch (_) { return false; }
+}
+
 /* route id -> the bundle that registers its page (the routes not named here are registered by index.html's own scripts) */
 const LAZY_ROUTES = { home: 'home', inbox: 'inbox', tasks: 'tasks', search: 'search', session: 'session', agents: 'agents', project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub', epic: 'epic', team: 'teamview' };
 
@@ -78,6 +158,7 @@ const lazyPromises = {};      // bundle -> the promise of its load, while it is 
 const lazyDoneSet = {};       // bundle -> true once its files ran (a probe can say so too, until this loader has touched the bundle)
 const lazyStarted = {};       // bundle -> true once this loader began to fetch it: a half-loaded bundle (a script ran, its sheet failed) is not done because a probe sees a global
 const lazyScripts = {};       // src -> promise
+const lazyScriptDone = {};    // fulfilled scripts can only be reused with their exports
 const lazySheets = {};        // href -> promise
 const lazyLinks = [];         // { rank, node } of the sheets this loader put in
 const lazyWaiting = {};       // bundle -> callbacks queued by Lazy.later
@@ -89,24 +170,43 @@ function lazyFinePointer() {
   try { return !!(window.matchMedia && window.matchMedia('(pointer: fine)').matches); } catch (_) { return false; }
 }
 
-function lazyProbe(name) {
+function lazyDone(name) {
   const b = LAZY_BUNDLES[name];
-  try { return !!(b && b.probe && b.probe()); } catch (_) { return false; }
+  return !!b && (b.js || []).every(lazyExport) && (b.needs || []).every(lazyDone)
+    && (!!lazyDoneSet[name] || !lazyStarted[name]);
 }
-
-function lazyDone(name) { return !!lazyDoneSet[name] || (!lazyStarted[name] && lazyProbe(name)); }
 
 function lazyHead() { return document.head || document.documentElement || document.body; }
 
-/* One script, once. Sequential callers get the order they ask in; async=false keeps a dynamically inserted script from jumping the queue. */
+/* Fetch a dependent's bytes while its prerequisites load, without executing it
+   against missing globals. Match script priority so dependents cannot crowd out
+   prerequisites. The eventual script uses the same release URL. */
+function lazyPreload(src) {
+  if (lazyScripts[src] || lazyExport(src)) return;
+  const link = document.createElement('link');
+  link.setAttribute('rel', 'preload');
+  link.setAttribute('as', 'script');
+  link.setAttribute('fetchpriority', 'low');
+  link.setAttribute('href', lazyUrl(src));
+  link.onload = link.onerror = () => { if (link.parentNode) link.parentNode.removeChild(link); };
+  lazyHead().appendChild(link);
+}
+
+/* One script, once. Insert a bundle together: async=false downloads in parallel
+   while the browser executes classic scripts in insertion order. */
 function lazyScript(src) {
+  if (lazyScriptDone[src] && !lazyExport(src)) { delete lazyScripts[src]; delete lazyScriptDone[src]; }
   if (lazyScripts[src]) return lazyScripts[src];
+  if (lazyExport(src)) return Promise.resolve();
   const p = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = src;
+    s.src = lazyUrl(src);
     s.async = false;
     s.defer = true;
-    s.onload = () => resolve();
+    s.onload = () => {
+      if (!lazyExport(src)) { reject(new Error('missing export from ' + src)); return; }
+      lazyScriptDone[src] = true; resolve();
+    };
     s.onerror = () => { try { if (s.parentNode) s.parentNode.removeChild(s); } catch (_) { /* detached */ } reject(new Error('could not load ' + src)); };
     lazyHead().appendChild(s);
   });
@@ -122,7 +222,7 @@ function lazySheet(sheet) {
   const p = new Promise((resolve, reject) => {
     const link = document.createElement('link');
     link.setAttribute('rel', 'stylesheet');
-    link.setAttribute('href', href);
+    link.setAttribute('href', lazyUrl(href));
     link.setAttribute('data-lazy', '1');
     link.onload = () => resolve();
     link.onerror = () => {
@@ -152,37 +252,52 @@ function lazyFlush(name) {
   for (const fn of q) { try { fn(); } catch (e) { console.error('ccboard lazy', name, e); } }
 }
 
-/* What loading a bundle takes, in order: the bundles it needs (and theirs) that are not here yet, then itself. */
-function lazyPlan(name, plan = { names: [], js: [], css: [] }) {
-  const b = LAZY_BUNDLES[name];
-  if (!b) throw new Error('unknown bundle ' + name);
-  if (plan.names.includes(name) || lazyDone(name)) return plan;
-  for (const n of b.needs || []) lazyPlan(n, plan);
-  plan.names.push(name);
-  plan.js.push(...(b.js || []));
-  plan.css.push(...(b.css || []));
-  return plan;
+/* Wait for every in-flight member before exposing Retry. Otherwise a late load
+   from the failed attempt could race with its replacement. */
+async function lazySettled(promises) {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find((r) => r.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
-/* Load a bundle: every file it needs is requested at once (the scripts are inserted in order with async=false, so they also run in order) and the promise settles when all of
-   them ran and the sheets are in. One promise per bundle; a failure is forgotten so the next ask tries again; a file that did load is not fetched twice. */
+/* Dependencies settle before dependents execute. Retry traverses the whole
+   failed bundle again, reusing only scripts whose declared exports exist. */
 function lazyLoad(name) {
-  if (!LAZY_BUNDLES[name]) return Promise.reject(new Error('unknown bundle ' + name));
+  const b = LAZY_BUNDLES[name];
+  if (!b) return Promise.reject(new Error('unknown bundle ' + name));
   if (lazyDone(name)) { lazyFlush(name); return Promise.resolve(); }
+  if (lazyDoneSet[name]) { delete lazyDoneSet[name]; delete lazyPromises[name]; }
   if (lazyPromises[name]) return lazyPromises[name];
+  lazyStarted[name] = true;
   const p = (async () => {
-    const plan = lazyPlan(name);
-    for (const n of plan.names) lazyStarted[n] = true;
-    const sheets = Promise.all(plan.css.map(lazySheet));
-    const scripts = Promise.all(plan.js.map(lazyScript));
-    sheets.catch(() => {});                                             // one failure rejects the whole load below; this keeps the other half from going unhandled
-    scripts.catch(() => {});
-    await Promise.all([sheets, scripts]);
-    for (const n of plan.names) lazyDoneSet[n] = true;
-    for (const n of plan.names) lazyFlush(n);
+    const dependencies = (b.needs || []).map(lazyLoad);
+    if (dependencies.length) (b.js || []).forEach(lazyPreload);
+    await lazySettled([
+      ...(b.css || []).map(lazySheet),
+      lazySettled(dependencies).then(() => lazySettled((b.js || []).map(lazyScript))),
+    ]);
+    if (!(b.js || []).every(lazyExport)) throw new Error('incomplete bundle ' + name);
+    lazyDoneSet[name] = true;
+    lazyFlush(name);
   })();
   lazyPromises[name] = p;
-  p.catch(() => { if (lazyPromises[name] === p) delete lazyPromises[name]; });
+  p.catch(() => {
+    // Invalidate every transitive dependent, including a previously memoized
+    // success whose prerequisite has lost an export. In-flight failures settle
+    // before the Retry handler is available.
+    const invalid = new Set([name]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [n, spec] of Object.entries(LAZY_BUNDLES)) {
+        if (!invalid.has(n) && (spec.needs || []).some((d) => invalid.has(d))) { invalid.add(n); changed = true; }
+      }
+    }
+    for (const n of invalid) {
+      delete lazyPromises[n]; delete lazyDoneSet[n];
+      for (const src of LAZY_BUNDLES[n].js || []) if (!lazyExport(src)) delete lazyScripts[src];
+    }
+  });
   return p;
 }
 
@@ -201,7 +316,7 @@ function lazyWants(name) {
 /* Run fn once the bundle is there: now when it is, else after it loads. A load that fails says so in a toast (the opener the person used does nothing else). */
 function lazyRun(name, fn, what) {
   if (lazyDone(name)) return fn();
-  lazyLoad(name).then(() => fn(), (e) => lazyFail(what || name, e));
+  lazyLoad(name).then(() => fn()).catch((e) => Lazy.fail(what || name, e, () => lazyRun(name, fn, what)));
   return undefined;
 }
 
@@ -213,9 +328,13 @@ function lazyLater(name, fn) {
   if (q.length > LAZY_WAIT_MAX) q.shift();
 }
 
-function lazyFail(what, err) {
+function lazyFail(what, err, retry = () => location.reload()) {
   console.error('ccboard lazy', what, err);
-  if (typeof toast === 'function') toast(`Could not load ${what}. Check the connection and try again.`, { kind: 'bad' });
+  if (typeof toast !== 'function') return;
+  const node = toast(`Could not load ${what}. Check the connection and try again.`, { kind: 'bad', ttl: retry ? 0 : 7000 });
+  if (node && retry) node.append(el('button', { type: 'button', class: 'btn small', text: 'Retry', onclick: (e) => {
+    e.stopPropagation(); node.remove(); Promise.resolve().then(retry).catch((error) => lazyFail(what, error, retry));
+  } }));
 }
 
 /* Start loading a route's bundle quietly (a pointer over its link, a focus, a touch): the click that follows finds it there. Failures are not reported. */
@@ -240,19 +359,23 @@ function lazyWatchLinks() {
 
 const Lazy = {
   bundles: LAZY_BUNDLES, routes: LAZY_ROUTES,
-  done: lazyDone, wants: lazyWants, load: lazyLoad, pending: lazyPending, run: lazyRun, later: lazyLater, warm: lazyWarm, watchLinks: lazyWatchLinks, watchKeys: lazyWatchKeys, fail: lazyFail,
+  done: lazyDone, wants: lazyWants, load: lazyLoad, pending: lazyPending, run: lazyRun, later: lazyLater, warm: lazyWarm, watchLinks: lazyWatchLinks, watchKeys: lazyWatchKeys, fail: lazyFail, url: lazyUrl,
 };
 
 /* ---------- entry points that open from anywhere: the real ones come with launcher.js (the launcher bundle) or task-sheets.js (the tasksheets bundle) ---------- */
 
 function lazyStub(name, what, bundle = 'launcher') {
   const stub = function (...args) {
-    lazyLoad(bundle).then(() => {
+    const invoke = () => lazyLoad(bundle).then(() => {
       const real = window[name];
-      if (typeof real === 'function' && real !== stub) real(...args);
-    }, (e) => lazyFail(what, e));
-    return true;
+      if (typeof real !== 'function' || real === stub) throw new Error('missing action ' + name);
+      return real(...args);
+    });
+    // Click handlers may ignore the return value; never leave a rejection
+    // unhandled. Awaiting callers still receive the real result on success.
+    return invoke().catch((e) => { Lazy.fail(what, e, () => stub(...args)); return false; });
   };
+  stub.lazyStub = true;
   return stub;
 }
 if (typeof openLauncher !== 'function') window.openLauncher = lazyStub('openLauncher', 'the launcher');
@@ -268,7 +391,7 @@ function lazyWatchKeys() {
   const queue = [];
   let loading = false;
   const gate = (e) => {
-    if (typeof Keymap !== 'undefined') return;
+    if (typeof Keymap !== 'undefined') { Keymap.install(); return; }
     const t = e.target;
     const typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     const mac = /Mac|iP(?:hone|ad|od)/.test(navigator.platform || navigator.userAgent || '');
@@ -299,8 +422,7 @@ function lazyWatchKeys() {
 
 // Actions keep their promise (callers await mutations); the real declaration replaces the stub.
 for (const [name, bundle] of [['acctProblemBack', 'accountactions'], ['acctProblemDismiss', 'accountactions'], ['accountSwitch', 'accountactions'], ['accountLogin', 'accountactions'], ['cxSwitch', 'accountactions'], ['quickReplyEditor', 'quickeditor']]) {
-  if (typeof window[name] !== 'function') window[name] = (...args) => lazyLoad(bundle).then(() => window[name](...args));
+  if (typeof window[name] !== 'function') window[name] = lazyStub(name, name === 'quickReplyEditor' ? 'the quick reply editor' : 'account actions', bundle);
 }
 
-function settingsRestartArm(...args) { return Lazy.load('restartactions').then(() => settingsRestartArm(...args)); }
-function settingsRestartSend(...args) { return Lazy.load('restartactions').then(() => settingsRestartSend(...args)); }
+for (const name of ['settingsRestartArm', 'settingsRestartSend']) if (typeof window[name] !== 'function') window[name] = lazyStub(name, 'restart actions', 'restartactions');

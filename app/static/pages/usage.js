@@ -1845,8 +1845,8 @@ registerPage('usage', {
       P.onVisible = () => { if (Usage.alive(P) && !Usage.hidden() && P.stale) { P.stale = false; Usage.paintGauges(P); Usage.load(P, { fresh: true }); } };
       document.addEventListener('visibilitychange', P.onVisible);
     }
-    if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'function') {
-      P.unbind = Keymap.bindKey('r', () => Usage.cycle(P), { when: () => Usage.alive(P) && typeof currentRoute === 'function' && !!currentRoute() && currentRoute().id === 'usage', help: 'Cycle the Usage range (24h, 7d, 30d)', group: 'Usage' });
+    if (typeof KeyBindings !== 'undefined') {
+      P.unbind = KeyBindings.bind('r', () => Usage.cycle(P), { when: () => Usage.alive(P) && typeof currentRoute === 'function' && !!currentRoute() && currentRoute().id === 'usage', help: 'Cycle the Usage range (24h, 7d, 30d)', group: 'Usage' });
     }
   },
   update(st) {

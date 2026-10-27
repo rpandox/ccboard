@@ -43,6 +43,7 @@ NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 
 EXPECTED = {
+    ("GET", "/static/boot.js"): "identity",  # server stamps the release into the external bootstrap
     ("GET", "/api/pools"): "identity",
     ("POST", "/api/pools"): "identity+csrf",
     ("PATCH", "/api/pools/{pool_id}"): "identity+csrf",
