@@ -15,7 +15,8 @@
    /api/series/events?series=state&since=24h|48h, and per open live session
    /api/series?series=ctx,scost&key=<tmux>&since=24h. They are fetched in parallel on mount and on a range change, then every 60 s while the tab is
    visible. A response for a range or a page that is no longer current is cached and never painted (the route token). A range already seen paints
-   at once from its cache and refreshes behind it; a new one paints a skeleton. uPlot is loaded lazily through Charts.ready(), only on this page.
+   at once from its cache and refreshes behind it; a new one paints a skeleton. The Usage bundle loads uPlot through the ordered loader;
+   a direct Usage boot starts those downloads alongside app/main. Charts.ready() shares its script/CSS barrier.
 
    The accounts come from the same summary (accounts[], total, episodes[].acct, rate_limits.by_account): no extra polling; their labels are overlaid
    from state.accounts.list (the 3 s poll). The one write, PATCH /api/accounts/{key} {label}, belongs to the shared rename sheet of settings.js

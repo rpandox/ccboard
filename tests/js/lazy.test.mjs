@@ -23,9 +23,12 @@ const settle = async (until, max = 200) => {
 let realm = 0;
 
 /** The first-paint set of index.html (shell.js included, main.js left out) in a world whose head fetches lazy files from app/static. */
-function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false, cold = false } = {}) {
-  const w = makeWorld({ companions: false, setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; }, setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; }, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
+function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false, cold = false, realPoll = false } = {}) {
+  const w = makeWorld({ companions: false, devicePixelRatio: 1, setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; }, setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; }, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
   const dom = installDom(w);
+  // uPlot announces its initial device pixel ratio when the real vendor runs.
+  w.ctx.CustomEvent = class { constructor(type) { this.type = type; } };
+  w.ctx.dispatchEvent = event => w.fire(event.type, event);
   const doc = w.document;
   const head = new dom.El('head');
   doc.documentElement.insertBefore(head, doc.body);
@@ -73,7 +76,8 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
     for (const file of ['settings-restart.js', 'tabs.js', 'pages/agents.js', 'page-selection.js', 'page-keys.js', 'session-groups.js', 'inbox-cards.js', 'pages/inbox.js', 'pages/widgets.js', 'pages/home.js', 'components-tasks.js', 'task-views.js', 'pages/tasks.js', 'pages/search.js', 'pages/session.js', 'keymap.js', 'shell-dock.js']) w.load(file);
   }
   w.ctx.__calls = [];
-  w.run(`api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; }; poll = async () => {};`);
+  w.run(`api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; };`);
+  if (!realPoll) w.run('poll = async () => {}');
   w.ctx.__st = state;
   w.run('state = __st');
   if (!realCreate) w.run('Shell.openCreate = () => true');
@@ -184,7 +188,7 @@ test('the Tasks page with a mouse keeps the dispatch bar\'s room, loads dnd.js o
 
 const ROUTES = [
   { hash: '#/agents', id: 'agents', scripts: ['/static/pages/agents-page.js'], sheets: [] },
-  { hash: '#/usage', id: 'usage', scripts: ['/static/charts.js', '/static/pages/usage.js'], sheets: ['/static/charts.css'] },
+  { hash: '#/usage', id: 'usage', scripts: ['/static/vendor/uplot/uPlot.iife.min.js', '/static/charts.js', '/static/pages/usage.js'], sheets: ['/static/vendor/uplot/uPlot.min.css', '/static/charts.css'] },
   { hash: '#/settings', id: 'settings', scripts: ['/static/nodes.js', '/static/pages/agents-page.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], sheets: ['/static/pages/node-base.css', '/static/pages/settings.css'] },
   { hash: '#/memory', id: 'memory', scripts: ['/static/pages/memory.js'], sheets: ['/static/pages/memory.css'] },
   { hash: '#/quad', id: 'quad', scripts: ['/static/termkit.js', '/static/pages/quad.js'], sheets: ['/static/termkit.css', '/static/shell-dock.css', '/static/pages/quad.css'] },
@@ -590,8 +594,8 @@ test('cold keyboard: the first chord is queued through the loader and field typi
 
 test('bootstrap gives the skeleton two animation frames before requesting the entry bundle', async () => {
   const frames = [], scripts = [], loads = [];
-  const loader = { load: name => {
-    loads.push(name);
+  const loader = { boot: () => {
+    loads.push('boot');
     return Promise.resolve();
   } };
   const w = makeWorld({ companions: false, requestAnimationFrame: fn => frames.push(fn) });
@@ -606,8 +610,83 @@ test('bootstrap gives the skeleton two animation frames before requesting the en
   assert.equal(scripts[0].async, false);
   w.ctx.Lazy = loader;
   scripts[0].onload();
-  assert.deepEqual(loads, ['main']);
+  assert.deepEqual(loads, ['boot']);
 });
+
+for (const hash of ['#/usage', '#/usage?range=30d&agent=codex', '#/', '#/agents', '#/usage-other', '#/usage/']) {
+  test(`cold boot ${hash}: only Usage requests its charts in the startup batch`, async () => {
+    const frames = [], pending = [];
+    const w = makeWorld({ companions: false, primitives: false, requestAnimationFrame: fn => frames.push(fn) });
+    const dom = installDom(w);
+    w.setHash(hash, { silent: true });
+    const head = new dom.El('head');
+    w.document.head = head;
+    const insert = head.appendChild.bind(head);
+    const before = head.insertBefore.bind(head);
+    head.appendChild = n => { pending.push(n); return insert(n); };
+    head.insertBefore = (n, ref) => { pending.push(n); return before(n, ref); };
+    w.run(read('boot.js').replaceAll('__ASSET_VERSION__', 'release-b'));
+    frames.shift()(); frames.shift()();
+    const loader = pending.shift();
+    assert.equal(loader.src, '/static/lazy.js?v=release-b');
+    w.load('lazy.js'); loader.onload();
+    // Nothing in the startup batch has completed, even core.js. All these
+    // requests must already exist in this same synchronous turn of the loader.
+    const requested = pending.map(n => n.src || n.getAttribute('href'));
+    for (const file of ['core.js', 'router.js', 'main.js']) {
+      assert.ok(requested.includes('/static/' + file + '?v=release-b'), file);
+    }
+    const usage = hash === '#/usage' || hash.startsWith('#/usage?');
+    for (const file of ['pages/usage.js', 'pages/widgets.js', 'pages/widgets.css', 'charts.js', 'charts.css', 'vendor/uplot/uPlot.iife.min.js', 'vendor/uplot/uPlot.min.css']) {
+      assert.equal(requested.includes('/static/' + file + '?v=release-b'), usage, file);
+    }
+    assert.ok(requested.every(url => url.endsWith('?v=release-b')));
+    await settle(null, 2);
+    assert.equal(pending.some(n => n.tagName === 'SCRIPT' && /pages\/(usage|widgets)\.js/.test(n.src)), false,
+      'page scripts cannot execute before app globals and styles are ready');
+  });
+}
+
+for (const [hash, id, wide = false] of [['#/usage', 'usage'], ['#/usage?range=30d&agent=codex', 'usage'], ['#/usage', 'usage', true], ['#/', 'home'], ['#/agents', 'agents']]) {
+  test(`startup ${hash} ${wide ? 'desktop' : 'mobile'}: only narrow Usage mounts and fetches charts before shared state arrives`, async () => {
+    const L = lazyWorld({ cold: true, hash, realPoll: true, fine: false });
+    L.w.ctx.matchMedia = q => ({ matches: wide && q === '(min-width: 840px)', addEventListener() {}, removeEventListener() {} });
+    if (hash.includes('agent=codex')) L.w.ctx.__st.agents = { codex: { installed: true } };
+    const errors = [];
+    L.w.ctx.console = { ...console, error: (...a) => errors.push(a.map(String).join(' ')) };
+    let release;
+    L.w.ctx.__statePromise = new Promise(resolve => { release = resolve; });
+    L.w.run(`state = null; api = async (method, path) => {
+      __calls.push({method, path});
+      return path === '/api/state' ? __statePromise : {};
+    }`);
+    await L.w.run('Lazy.boot()');
+    await settle(null, 50);
+    const usage = id === 'usage' && !wide;
+    assert.equal(L.mounted(), usage ? 'usage' : null);
+    assert.equal(L.w.run("__calls.some(c => c.path.startsWith('/api/usage/summary'))"), usage);
+    const page = usage ? L.w.get('Usage.cur') : null;
+    release(L.w.ctx.__st);
+    assert.ok(await settle(() => L.mounted() === id && L.w.get('state') === L.w.ctx.__st));
+    await settle(null, 20);
+    if (usage) {
+      assert.equal(L.w.get('Usage.cur'), page, 'the first state updates the mounted charts without remounting');
+      assert.equal(L.w.get('Usage.cur.st'), L.w.ctx.__st);
+      assert.equal(L.w.run("__calls.filter(c => c.path.startsWith('/api/usage/summary')).length"), 1);
+      if (hash.includes('range=30d')) assert.equal(L.w.get('Usage.cur.range'), '30d');
+      if (hash.includes('agent=codex')) {
+        assert.equal(L.w.get('Usage.cur.agentNow'), 'codex', 'the deep-link provider survives late shared state');
+        assert.ok(L.w.run("__calls.some(c => c.path.includes('&key=codex&'))"));
+      }
+    } else if (id !== 'usage') {
+      assert.ok(!L.net.scripts.includes('/static/charts.js'));
+      assert.ok(!L.net.scripts.includes('/static/vendor/uplot/uPlot.iife.min.js'));
+    }
+    assert.deepEqual(errors, []);
+    assert.deepEqual(L.net.errors || [], []);
+    L.w.run('takeDownPage()');
+  });
+}
 
 test('the entry script preloads with app but cannot execute until all base CSS has loaded', async () => {
   const L = lazyWorld({ cold: true });
@@ -631,6 +710,25 @@ test('the entry script preloads with app but cannot execute until all base CSS h
   L.w.run('const firstStateReady = true');
   pending.find(n => n.tagName === 'SCRIPT').onload();
   await load;
+});
+
+test('Usage boot failure waits for its outstanding chart CSS before exposing boot Retry', async () => {
+  const L = lazyWorld({ cold: true, hash: '#/usage', fail: ['/static/style.css'] });
+  L.w.run('lazyStarted.app = true');
+  L.net.hold.add('/static/charts.css');
+  let failed = false;
+  const attempt = L.w.run('Lazy.boot()').catch(() => { failed = true; });
+  assert.ok(await settle(() => L.net.held.has('/static/charts.css')));
+  await settle(null, 20);
+  assert.equal(failed, false, 'boot Retry must wait for every bundle in its batch');
+  L.net.held.get('/static/charts.css')();
+  await attempt;
+  assert.equal(failed, true);
+  L.net.fail.clear(); L.net.hold.clear();
+  await L.w.run('Lazy.boot()');
+  assert.ok(await settle(() => L.mounted() === 'usage'));
+  assert.deepEqual(L.net.errors || [], []);
+  L.w.run('takeDownPage()');
 });
 
 test('cold Home renders pending settings without Settings and loads restart actions only on a tap', async () => {
@@ -844,6 +942,45 @@ test('LCP: batch preloads start together but execution awaits each export and mo
   await load;
   assert.equal(L.w.run("Lazy.done('sessionrows')"), true);
 });
+
+for (const sheet of ['/static/charts.css', '/static/vendor/uplot/uPlot.min.css']) {
+  test(`Usage warmup retains the ${sheet} barrier before mounting`, async () => {
+    const L = lazyWorld({ cold: true, hash: '#/usage' });
+    L.net.hold.add(sheet);
+    L.w.run("Lazy.warm('usage'); route()");
+    assert.ok(await settle(() => L.net.held.has(sheet) && L.w.run('typeof window.uPlot') === 'function'));
+    await settle(null, 10);
+    assert.equal(L.mounted(), null, 'no chart DOM before every sheet loads');
+    if (sheet.includes('uPlot')) {
+      L.w.load('charts.js');
+      let ready = false;
+      const wait = L.w.run('Charts.ready()').then(() => { ready = true; });
+      await settle(null, 2);
+      assert.equal(ready, false, 'uPlot exports cannot bypass its pending CSS');
+      L.net.held.get(sheet)();
+      await wait;
+    } else L.net.held.get(sheet)();
+    assert.ok(await settle(() => L.mounted() === 'usage'));
+    assert.deepEqual(L.net.errors || [], []);
+    L.w.run('takeDownPage()');
+  });
+}
+
+for (const file of ['/static/charts.css', '/static/vendor/uplot/uPlot.min.css', '/static/vendor/uplot/uPlot.iife.min.js']) {
+  test(`Usage warmup can retry a failed ${file} through the route's error UI`, async () => {
+    const L = lazyWorld({ cold: true, hash: '#/usage', fail: [file] });
+    L.w.run("Lazy.warm('usage'); route()");
+    assert.ok(await settle(() => L.w.document.querySelector('.load-error button')));
+    assert.equal(L.mounted(), null);
+    L.net.fail.clear();
+    L.w.document.querySelector('.load-error button').click();
+    assert.ok(await settle(() => L.mounted() === 'usage'));
+    assert.equal(L.net.scripts.filter(p => p === '/static/pages/usage.js').length, 1);
+    assert.equal(L.net.scripts.filter(p => p === '/static/vendor/uplot/uPlot.iife.min.js').length, file.endsWith('.js') ? 2 : 1);
+    assert.deepEqual(L.net.errors || [], []);
+    L.w.run('takeDownPage()');
+  });
+}
 
 test('Home keeps the Team line above Nodes even when Team arrives first', async () => {
   const L = lazyWorld({ cold: true, hash: '#/' });

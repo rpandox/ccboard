@@ -10,4 +10,7 @@ test('first view records bootstrap, real API demo prerequisites and Home widgets
   assert.ok(view.requests.includes('/static/demo/state.json'), 'uses the actual core.api/demo fetch path');
   assert.ok(view.requests.includes('/static/demo/usage_summary.json'), 'the widget was mounted');
   assert.equal(view.executed.filter(u => u === '/static/refs.js').length, 1, 'no eager fixture globals hide script bytes');
+  for (const file of ['pages/usage.js', 'charts.js', 'charts.css', 'vendor/uplot/uPlot.iife.min.js', 'vendor/uplot/uPlot.min.css']) {
+    assert.ok(!view.files.includes('/static/' + file), file + ' is only paid for on Usage');
+  }
 });

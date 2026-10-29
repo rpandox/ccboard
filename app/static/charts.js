@@ -5,7 +5,7 @@
    (Charts.css reads them with getComputedStyle). Text is always written with textContent / el() `text:`, never as markup.
 
    Data
-     Charts.ready()              Promise: uPlot's css + js, loaded once, resolved at once when window.uPlot exists. A failed load can be retried.
+     Charts.ready()              Promise: uPlot's css + js through the ordered loader (loadAsset fallback for standalone use). A failed load can be retried.
      Charts.fetch(path, {force}) Promise<body>: GET through api(), cached by the full path (30 s when since=1h|6h|24h, else 300 s), in-flight dedupe,
                                  an error is never cached. Charts.cached(path[, stale]) is the synchronous read of that cache (data | null) so a
                                  range toggle can paint at once. Charts.clear([path]) empties it. Charts.now() is the clock (tests replace it).
@@ -180,6 +180,8 @@ Charts.loadOne = function (path) {
 };
 
 Charts.ready = function () {
+  // The bundle's promise includes CSS, even when the uPlot export is present.
+  if (typeof Lazy !== 'undefined') return Lazy.load('uplot');
   if (typeof window !== 'undefined' && window.uPlot) return Promise.resolve();
   if (Charts._ready) return Charts._ready;
   const p = Promise.resolve()

@@ -3,12 +3,12 @@
 const BOOT_RELEASE = '__ASSET_VERSION__';
 
 function bootBoard() {
-  if (typeof Lazy !== 'undefined') { Lazy.load('main').catch(bootFailed); return; }
+  if (typeof Lazy !== 'undefined') { Lazy.boot().catch(bootFailed); return; }
   const loader = document.createElement('script');
   loader.src = '/static/lazy.js?v=' + encodeURIComponent(BOOT_RELEASE);
   loader.defer = true;
   loader.async = false;
-  loader.onload = () => Lazy.load('main').catch(bootFailed);
+  loader.onload = () => Lazy.boot().catch(bootFailed);
   loader.onerror = bootFailed;
   document.head.appendChild(loader);
 }

@@ -2,6 +2,13 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.120 - 2026-10-29
+
+### Fixed
+- Start the Usage page, chart styles and uPlot downloads alongside startup on direct Usage links and reloads. On mobile, fetch chart data while shared state loads; desktop retains its state barrier to avoid layout shifts. Keep ordered execution, release-scoped URLs, stylesheet barriers and Retry handling; other routes retain their startup behavior (#333).
+
+Upgrade: nothing to do.
+
 ## v0.5.119 - 2026-10-27
 
 ### Changed
