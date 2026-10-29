@@ -85,6 +85,17 @@ styles carry ranks so visiting routes in a different order preserves the cascade
 The usage card loads as it approaches the viewport; shortcuts load on first use,
 including the first key of a chord. No build, bundler or minifier is involved.
 
+On a boot at `#/usage` (including query parameters), the ordered loader starts
+the Usage bundle, widgets, chart styles and uPlot in the same batch as app/main.
+Widgets and uPlot wait for app before executing; the router waits for all route
+styles before mounting, and `Charts.ready()` shares uPlot's script/CSS promise.
+Below Usage's 840 px desktop breakpoint, it starts its own data requests while
+the shared state poll is in flight; the arriving state updates that mounted page
+without rebuilding it. Desktop Usage and other routes keep their first-state
+barrier, preventing desktop account columns from shifting after mounting.
+Home and other boot routes do not request these chart assets. The cold-boot tests
+hold startup requests open to check this parallel batch and the CSS/Retry barriers.
+
 Regenerate the checked-in Blueprint subset with
 `python3 scripts/dev/blueprint_subset.py` (or verify it with `--check`). The script
 uses only Python's standard library. It scans app-owned JS, CSS and HTML (including
@@ -104,7 +115,7 @@ that executes index/boot/main, the real `core.api()` demo path, and the Home mou
 It records every requested script and stylesheet, including the demo prerequisites,
 widgets and features enabled in the default demo state (Nodes, Team and bare
 sessions). Raw JS + CSS is **1,075,413 bytes**, with a **1,129,184-byte budget**
-(review baseline plus 5%; the parallel loader now measures **1,076,529 bytes**
+(review baseline plus 5%; the Usage startup change now measures **1,077,330 bytes**
 within that unchanged budget). This exceeds 700,000 bytes; the former manifest-only
 budget omitted runtime requests. HTML, JSON data, fonts and images are outside
 this JS + CSS budget. The small skeleton budget and subset reproducibility checks
@@ -119,9 +130,10 @@ for a release the server no longer holds fails instead of returning newer bytes.
 Offline failures show Retry. No inline script or CSP relaxation is needed.
 
 Bundles wait for prerequisites and check a declared export from every module.
-Independent prerequisites load together. Each bundle inserts all its scripts with
-`async=false` to download in parallel and execute in order; dependent scripts are
-preloaded at the same release URL but execute only after prerequisites succeed.
+Independent prerequisites load together. Each bundle preloads its scripts in
+parallel, then inserts them with `async=false` one at a time, checking each export;
+dependent scripts execute only after prerequisites succeed. Preloads and scripts
+use the same release URL.
 Stylesheets retain their cascade ranks and gate mount. Failure waits for every
 in-flight member before exposing Retry, so attempts cannot overlap.
 Failed bundles and their dependents can retry; successful modules are reused only

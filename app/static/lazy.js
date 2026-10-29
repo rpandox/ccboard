@@ -28,7 +28,7 @@ const LAZY_BUNDLES = {
   sessionrows: { js: ['/static/pages/agents.js', '/static/page-selection.js', '/static/session-groups.js'], css: [{ href: '/static/pages/session-row.css', rank: 41 }] },
   inboxcards: { needs: ['sessionrows'], js: ['/static/inbox-cards.js'] },
   inbox: { needs: ['inboxcards'], js: ['/static/pages/inbox.js'] },
-  widgets: { css: [{ href: '/static/pages/widgets.css', rank: 30 }], js: ['/static/pages/widgets.js'] },
+  widgets: { needs: ['app'], css: [{ href: '/static/pages/widgets.css', rank: 30 }], js: ['/static/pages/widgets.js'] },
   taskui: { js: ['/static/components-tasks.js', '/static/task-views.js'], css: [{ href: '/static/pages/tasks.css', rank: 60 }] },
   tasks: { needs: ['taskui'], js: ['/static/pages/tasks.js'] },
   search: { needs: ['sessionrows'], js: ['/static/pages/search.js'] },
@@ -66,7 +66,8 @@ const LAZY_BUNDLES = {
   teamview: { needs: ['team'], js: ['/static/pages/team.js'], css: [{ href: '/static/pages/team-view.css', rank: 117 }] },
   // the epic worker's panel (issue #157): Settings > Nodes and a paired node's page ask for it on first use (and the demo's answers for /api/epic-worker); never at first paint
   worker: { js: ['/static/nodes-worker.js'], css: [{ href: '/static/pages/worker.css', rank: 118 }] },
-  usage: { needs: ['widgets'], css: [{ href: '/static/charts.css', rank: 200 }], js: ['/static/charts.js', '/static/pages/usage.js'] },
+  uplot: { needs: ['app'], css: [{ href: '/static/vendor/uplot/uPlot.min.css', rank: 202 }], js: ['/static/vendor/uplot/uPlot.iife.min.js'] },
+  usage: { needs: ['widgets', 'uplot'], css: [{ href: '/static/charts.css', rank: 200 }], js: ['/static/charts.js', '/static/pages/usage.js'] },
   quad: { needs: ['termkit', 'sessionrows', 'shelldock'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 112 }] },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 111 }] },
 };
@@ -138,6 +139,7 @@ const LAZY_EXPORTS = {
   '/static/pages/team.js': () => typeof pages.team?.mount === 'function',
   '/static/nodes-worker.js': () => typeof EpicWorker.build === 'function',
   '/static/charts.js': () => typeof Charts.ready === 'function' && typeof Charts.line === 'function' && typeof Charts.spark === 'function',
+  '/static/vendor/uplot/uPlot.iife.min.js': () => typeof window.uPlot === 'function',
   '/static/pages/usage.js': () => typeof pages.usage?.mount === 'function',
   '/static/pages/quad.js': () => typeof pages.quad?.mount === 'function',
   '/static/pages/onboarding.js': () => typeof pages.onboarding?.mount === 'function',
@@ -309,6 +311,21 @@ function lazyPending(routeId) {
   return own && !lazyDone(own) ? [own] : [];
 }
 
+/* Start Usage's downloads in the same batch as app/main on a direct visit or
+   reload. widgets waits for app before executing; the router retains the route
+   CSS barrier and its normal error/Retry UI. A warm failure is handled there. */
+function lazyBoot() {
+  const startup = lazyLoad('main');
+  if (!/^#\/usage(?:\?|$)/.test(location.hash)) return startup;
+  const usage = lazyLoad('usage');
+  usage.catch(() => {}); // The router owns Usage failures after main starts.
+  return startup.catch(async error => {
+    // Boot Retry must not overlap the route downloads from this attempt.
+    await Promise.allSettled([usage]);
+    throw error;
+  });
+}
+
 /* Is it worth loading this bundle now? Not loaded yet, and its `when` (dnd: the pointer is a mouse) agrees. */
 function lazyWants(name) {
   const b = LAZY_BUNDLES[name];
@@ -360,7 +377,7 @@ function lazyWatchLinks() {
 }
 
 const Lazy = {
-  bundles: LAZY_BUNDLES, routes: LAZY_ROUTES,
+  bundles: LAZY_BUNDLES, routes: LAZY_ROUTES, boot: lazyBoot,
   done: lazyDone, wants: lazyWants, load: lazyLoad, pending: lazyPending, run: lazyRun, later: lazyLater, warm: lazyWarm, watchLinks: lazyWatchLinks, watchKeys: lazyWatchKeys, fail: lazyFail, url: lazyUrl,
 };
 

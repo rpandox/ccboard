@@ -99,7 +99,7 @@ test('review: an app prerequisite missing offline shows Retry without evaluating
   let offline = true;
   const loads = [], scripts = [];
   const w = makeWorld({ companions: false, primitives: false, requestAnimationFrame: f => f(), Lazy: {
-    load: async name => { loads.push(name); if (offline) throw new Error('core.js unavailable offline'); },
+    boot: async () => { loads.push('boot'); if (offline) throw new Error('core.js unavailable offline'); },
   } });
   installDom(w);
   w.document.head = { appendChild: script => scripts.push(script) };
@@ -109,7 +109,7 @@ test('review: an app prerequisite missing offline shows Retry without evaluating
   assert.equal(retry?.textContent, 'Retry');
   offline = false; retry.click();
   await new Promise(r => setImmediate(r));
-  assert.deepEqual(loads, ['main', 'main']);
+  assert.deepEqual(loads, ['boot', 'boot']);
   assert.equal(scripts.length, 0, 'retry reuses Lazy and cannot redeclare its lexical globals');
 });
 

@@ -79,7 +79,10 @@ if (typeof renderHeader !== 'function') window.renderHeader = () => {};
 if (typeof renderUsage !== 'function') window.renderUsage = () => {};
 rewriteLegacyHash();                                              // #s=<tmux> (old ntfy links) becomes #/s/<tmux> in place
 watchLaunches();
-// Fetch the route while the first state arrives, keeping the startup skeleton stable.
+// Fetch the route while the first state arrives.
 if (typeof Lazy !== 'undefined') Lazy.warm(parseHash(location.hash).id);
+// Narrow Usage fetches its chart data while shared state is in flight. Keep
+// desktop's state barrier so its account columns do not shift after mounting.
+if (parseHash(location.hash).id === 'usage' && !matchMedia('(min-width: 840px)').matches) route();
 const firstStateReady = () => { route(); openSharedText(); registerWorkerAfterPaint(); };
 startStatePolling().then(firstStateReady, firstStateReady);         // the poll's promise settles after the first state (or the offline fallback) is painted
